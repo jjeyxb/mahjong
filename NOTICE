@@ -1,0 +1,68 @@
+Majsoul Copilot
+===============
+
+第三方成果致謝與授權聲明
+------------------------
+
+本專案在開發過程中參考了下列第三方專案。此檔案記錄各自的授權狀態與
+本專案的使用方式。
+
+
+1. Akagi — https://github.com/shinkuan/Akagi
+------------------------------------------
+授權:Apache License 2.0
+使用方式:**參考其協定說明文件,以 Python 重新實作;未複製其原始碼。**
+
+具體而言,`src/majsoul_copilot/groundtruth/to_mjai.py` 所實作的
+「雀魂 liqi 動作 → MJAI 事件」對應關係,參考了 Akagi 專案中
+`src/bridge/majsoul/README.md` 所記載的協定語意,包括:
+
+  * ActionNewRound 的配牌拆解(莊家 14 張 → 13 張 + tsumo)
+  * 槓之後寶牌指示牌的翻牌時機(暗槓即乗り、加槓與大明槓後乗り)
+  * reach_accepted 的插入位置與立直作廢條件
+  * 榮和放銃者的判定(需追蹤搶槓、國士搶暗槓、搶北等亮牌動作)
+  * 線路格式與 ActionPrototype.data 的 XOR 混淆演算法
+  * GameRestore 內夾帶的動作未經混淆
+
+Akagi 目前以 Rust 實作;本專案的實作為獨立以 Python 撰寫,
+上述引用屬於協定事實與規格說明,而非程式碼複製。
+
+Apache License 2.0 全文:https://www.apache.org/licenses/LICENSE-2.0
+
+  Copyright (c) shinkuan and Akagi contributors
+  Licensed under the Apache License, Version 2.0.
+
+
+2. Mortal — https://github.com/Equim-chan/Mortal
+------------------------------------------------
+授權:GNU Affero General Public License v3.0 (AGPL-3.0)
+使用方式:**以獨立子程序執行,透過 MJAI 的 stdio 協定通訊。**
+
+本專案不連結、不匯入、不包含任何 Mortal 或 libriichi 的原始碼。
+兩者以明確定義的行程間通訊介面互動,詳見 README 的「三進程模型」一節。
+
+模型權重不隨本專案散布,請依 Mortal 專案的規範自行取得。
+
+
+3. 雀魂協定定義 liqi.json
+-------------------------
+`assets/proto/liqi.json` 取自雀魂官方網頁版的公開資源端點
+(https://game.maj-soul.com/1/<version>/res/proto/liqi.json),
+為遊戲客戶端自身散布的協定描述檔,非第三方著作。
+版本與雜湊記錄於 `assets/proto/liqi.version.json`,
+更新方式見 `tools/fetch_liqi.py`。
+
+
+4. mahjong (Python 套件)
+------------------------
+授權:MIT
+使用方式:一般相依套件,用於向聽數與點數計算。
+
+
+5. Ground Truth 擷取所用的第三方工具
+------------------------------------
+* Playwright (Apache-2.0) —— 驅動 Chromium 並透過 Chrome DevTools Protocol
+  讀取瀏覽器已解密的 WebSocket frame。一般相依套件。
+* mitmproxy (MIT) —— MITM 攔截後端,用於錄製 Steam 桌面版的流量。一般相依套件。
+
+兩者皆僅用於離線產生標註資料與量化辨識準確率,不參與線上決策。

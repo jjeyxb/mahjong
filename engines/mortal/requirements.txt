@@ -1,0 +1,28 @@
+# Mortal AI 引擎子程序環境 — 必須是 Python 3.12
+#
+# 為什麼要獨立環境:
+#   1. libriichi 不在 PyPI,需從 Mortal repo 自行編譯;
+#      mjai (mjai.app simulator) 在 PyPI 上只有 cp312 wheel。
+#      兩者都無法在主程式的 Python 3.14 環境安裝。
+#   2. torch 載入慢且可能崩潰,不應拖垮 UI 主進程。
+#   3. AGPL 隔離:透過子程序 + MJAI stdio 協定通訊,
+#      通常視為獨立程式,避免授權傳染到主程式。
+#
+# 建置步驟:
+#   python3.12 -m venv engines/mortal/.venv
+#   engines/mortal/.venv/bin/pip install -r engines/mortal/requirements.txt
+#   # 編譯 libriichi(**不需要 maturin**,Mortal 是直接用 cargo 建 cdylib):
+#   #   git clone https://github.com/Equim-chan/Mortal && cd Mortal
+#   #   cargo build -p libriichi --lib --release
+#   #   # Linux : cp target/release/libriichi.so  mortal/libriichi.so
+#   #   # Windows: cp target/release/riichi.dll   mortal/libriichi.pyd  (需 MSYS2)
+#   # 權重 .pth 放到專案根目錄的 models/(已 gitignore)
+#
+# 若日後要做風格微調(見 README「候選延伸」一節),還需要 Mortal 自己的
+# environment.yml 依賴:tqdm / toml / tensorboard。
+
+torch>=2.13
+numpy>=2.5
+
+# libriichi — 不在 PyPI,見上方建置步驟
+# mjai>=0.2.1               # 選用:離線牌譜模擬與三方比較評測

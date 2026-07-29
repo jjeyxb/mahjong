@@ -1,0 +1,80 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ---- 虛擬環境 ----
+.venv/
+venv/
+env/
+engines/*/.venv/
+
+# ---- 測試與型別檢查快取 ----
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# ---- 專案專屬:大型檔案,不進版控 ----
+# 錄製的畫面 + Ground Truth 資料集(可能數 GB)
+# 註:目錄本身要留在版控,故需 !data/**/ 讓 git 願意下探
+data/**
+!data/**/
+!data/**/.gitkeep
+
+# 模型權重 (.pth) — Mortal 為 AGPL-3.0,權重亦有其散布限制,一律不上傳
+models/*
+!models/.gitkeep
+*.pth
+*.pt
+*.onnx
+
+# Mortal 原始碼若 clone 進來,不納入本 repo
+engines/mortal/Mortal/
+engines/mortal/*.whl
+
+# 牌面模板圖:小張的模板要進版控(辨識必需),但錄製的原始截圖不要
+assets/**/raw/
+assets/**/*.psd
+
+# 執行期產物
+logs/
+*.log
+out/
+reports/
+
+# mitmproxy 憑證與流量錄影
+.mitmproxy/
+*.mitm
+*.flow
+
+# 執行期覆寫的本機設定(config/*.yaml 的預設檔仍進版控)
+config/*.local.yaml
+config/local/
+
+# ---- 作業系統 ----
+.DS_Store
+.AppleDouble
+Thumbs.db
+desktop.ini
+
+# ---- 編輯器 / IDE ----
+# 專案層級的 Claude Code 設定要進版控(它記錄的是專案結構,對所有人都一樣),
+# 個人覆寫則不要。
+.claude/settings.local.json
+.claude/*.local.json
+.vscode/
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
