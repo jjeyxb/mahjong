@@ -97,8 +97,8 @@ src/majsoul_copilot/
 └── utils/
 
 engines/mortal/    Mortal 子程序的獨立環境 (Python 3.12)
-tools/             開發用 CLI:capture_probe / roi_annotate / roi_union / record / gt
-assets/tiles/      牌面模板圖,依 skin profile 分目錄
+tools/             開發用 CLI:capture_probe / roi_annotate / roi_union / record / gt / fetch_*
+assets/tiles/      牌面模板圖(37 張/皮膚),由 tools/fetch_tiles.py 產生
 config/            ROI 定義、skin profile YAML
 data/              錄製資料集 (gitignore)
 models/            權重 .pth (gitignore)
@@ -134,7 +134,19 @@ python3.14 -m venv .venv
 - **Windows**：程式啟動時會設定 `PER_MONITOR_AWARE_V2` DPI awareness，
   否則座標會被系統縮放偷改。
 
-### 4. 驗證安裝
+### 4. 取得牌面模板
+
+```bash
+python tools/fetch_tiles.py                       # 預設牌面皮膚
+python tools/fetch_tiles.py --list-skins          # 看有哪些皮膚
+python tools/fetch_tiles.py --skin mjpface_25summer
+```
+
+從雀魂官方資源取得牌面圖集並切成 37 張模板（34 種牌 + 3 種赤寶牌），
+存進 `assets/tiles/<皮膚>/`。**遊戲裡換了牌面皮膚就要重跑一次**（牌**背**
+皮膚不影響——手牌定位那一層已經不看顏色了）。
+
+### 5. 驗證安裝
 
 ```bash
 python tools/capture_probe.py --list                     # 看得到哪些視窗
@@ -152,7 +164,7 @@ python tools/capture_probe.py --bench 60                 # 測擷取幀率
 21 種不同的 `table_rect`，其中 16% 明顯錯誤。詳見
 [docs/decisions.md](docs/decisions.md) 第二節。
 
-### 5. 錄製資料集
+### 6. 錄製資料集
 
 ```bash
 python tools/record.py --duration 60          # 錄 60 秒
@@ -161,7 +173,7 @@ python tools/record.py --inspect data/recordings/<id>    # 檢視
 python tools/record.py --export data/recordings/<id> --export-dir out/  # 輸出關鍵幀
 ```
 
-### 6. 封包擷取（功能 2 的狀態來源）
+### 7. 封包擷取（功能 2 的狀態來源）
 
 三種擷取方式，寫出的錄影檔格式**完全相同**，下游不需要知道資料是怎麼來的：
 
@@ -215,7 +227,7 @@ python tools/gt.py inspect data/ws.jsonl --actions --mjai-out data/g1.mjai.jsonl
 | M0 | 專案骨架、設定載入、日誌 | ✅ 完成 |
 | M1 | 擷取層雙平台 + 校正 | ✅ macOS 完成並實機驗證;Windows 待驗證 |
 | M2 | 封包擷取 → MJAI 事件流 + recorder | ✅ 已用真實對局驗證;MITM 兩模式已實作但未實測 |
-| M3 | **功能 1**:手牌 CV | 進行中 —— 校正穩定化與手牌定位已完成,剩牌面分類 |
+| M3 | **功能 1**:手牌 CV | ✅ 校正穩定化、手牌定位、牌面分類皆完成;準確率報告待錄影 |
 | M4 | **功能 1**:向聽 / 進張計算 | |
 | M5 | **功能 2**:engine 子程序 + Mortal 接入 | |
 | M6 | UI 側邊視窗 | |
@@ -231,8 +243,10 @@ python tools/gt.py inspect data/ws.jsonl --actions --mjai-out data/g1.mjai.jsonl
 2. ~~**擺脫可自訂牌背的色相依賴**~~ —— ✅ 已完成（`vision/tiles/hand.py`）。
    改用**固定槽位模型** `x_k = origin + k*pitch`（實測殘差 < 1 px），佔用以
    標準差判斷，完全不看顏色。原本要做的「開局就地量測色相」整項取消。
-3. **牌面模板庫 + 分類器** —— 用封包當 GT 自動標註，建 `assets/tiles/`，
-   再量 per-tile 準確率。
+3. ~~**牌面模板庫 + 分類器**~~ —— ✅ 已完成（`vision/tiles/classify.py`）。
+   模板改從**雀魂官方資源**取（`tools/fetch_tiles.py`），37 張已經標好、
+   不需要人工標註。24 張目視確認過答案的牌全數正確，最低分 0.631、
+   最小差距 0.084。**per-tile 準確率報告仍待一份畫面 ↔ 封包配對的錄影。**
 
 ---
 
