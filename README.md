@@ -235,7 +235,7 @@ python tools/gt.py inspect data/ws.jsonl --actions --mjai-out data/g1.mjai.jsonl
 | M2 | 封包擷取 → MJAI 事件流 + recorder | ✅ 已用真實對局驗證;MITM 兩模式已實作但未實測 |
 | M3 | **功能 1**:手牌 CV | ✅ 校正穩定化、手牌定位、牌面分類皆完成;準確率報告待錄影 |
 | M4 | **功能 1**:向聽 / 進張計算 | ✅ 完成 —— `analysis/shanten.py`,整條管線已跑通 |
-| M5 | **功能 2**:engine 子程序 + Mortal 接入 | 進行中 —— libriichi 與權重已在 macOS 實測跑通,剩子程序層 |
+| M5 | **功能 2**:engine 子程序 + Mortal 接入 | ✅ 完成 —— 已用真實對局驗證,見下方「M5 實測」 |
 | M6 | UI 側邊視窗 | |
 | M7 | Overlay 模式 | |
 | M8 | **功能 3**:風格微調(見下節) | |
@@ -364,6 +364,38 @@ JSONL。liqi 解析全在離線階段。這樣解析程式有 bug 或協定改�
 且 **242/242 全部需要 XOR 反混淆**。節錄已收進
 `tests/fixtures/real_game_excerpt.jsonl` 當作永久迴歸測試。
 更多實測發現（含一個合成測試抓不到的 bug）見 [docs/decisions.md](docs/decisions.md) 第四節。
+
+### M5 實測：引擎子程序與 Mortal 接入
+
+**協定是嚴格的一問一答。** MJAI 原本的形式是「有動作才輸出」，但那樣父程序分不出
+「引擎不打算動作」與「引擎還在算」，只能等滿逾時 —— 一場 250 手就是好幾分鐘的純等待。
+子程序端不動作時補一行 `{"type":"none"}`，這個問題就完全消失。啟動時另外要求一行
+`hello`，用來區分「還在載入 130 MB 權重」與「已經死了」。
+
+**子程序端沒有沿用上游的 `mortal.py`。** 它只在有動作時輸出，而它的 `review_mode`
+雖然會補 `none`，卻在 stdin 關閉後接著跑 GRP 分析 —— 本專案還沒有 GRP 權重，每次
+關閉都會以例外收場。`engines/mortal/bot.py` 是一層薄殼，只多做握手、補 `none`、
+把例外轉成一行 JSON；推論完全交給上游的 `MortalEngine` 與 `libriichi.mjai.Bot`。
+它也**不 import 上游的 `prelude`** —— 那會連帶要求安裝 tensorboard，那是訓練才需要的。
+
+**重啟不等於復原。** MJAI 引擎有狀態，它自己從事件流重建局面，所以崩潰後起一個新
+行程只會拿到一個對這局一無所知的引擎，而且**不會報錯**。`SubprocessEngine` 預設
+會重送先前的事件讓它追上進度。
+
+用 [tools/advise.py](tools/advise.py) 把 M2 錄下的真實對局重播給引擎：
+
+| 引擎 | 與真人實際打法一致 | 延遲 |
+|---|---|---|
+| `mortal_298k` | **25/33（76%）** | 10~23 ms/決策 |
+| 規則式 baseline | 13/33（39%） | < 1 ms |
+
+兩個引擎彼此只有 42% 一致 —— 這個差距正是功能 3 要調的東西。
+**一致率不是準確率**：人打錯的時候引擎不跟著錯，這個數字反而會下降，
+它衡量的是「像不像這個人」。
+
+```bash
+python tools/advise.py data/gt/ws.jsonl --mortal models/mortal_298k.pth
+```
 
 ---
 

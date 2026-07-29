@@ -10,14 +10,21 @@ dataclass 而不是直接傳 dict:事件流會同時被 AI 引擎消費與被測
 
 省略 ``None`` 欄位是刻意的:MJAI 的消費端(libriichi / Mortal)以「鍵不存在」
 而非「值為 null」來判斷選填欄位。
+
+兩個方向
+--------
+事件流是**雙向**的:``to_dict`` 把我們產生的事件送進引擎,:func:`parse_event`
+把引擎回覆的動作讀回來。同一組 dataclass 兩邊共用 —— 引擎回的「打 3s」與我們
+送出的「某家打 3s」本來就是同一件事,分成兩套型別只會在對照時多一層轉換。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, fields
 from typing import Any, ClassVar
 
 __all__ = [
+    "NONE_ACTION",
     "Ankan",
     "Chi",
     "Dahai",
@@ -29,6 +36,7 @@ __all__ = [
     "Kakan",
     "Kita",
     "MjaiEvent",
+    "MjaiFormatError",
     "Pon",
     "Reach",
     "ReachAccepted",
@@ -36,7 +44,16 @@ __all__ = [
     "StartGame",
     "StartKyoku",
     "Tsumo",
+    "parse_event",
 ]
+
+#: 引擎用來表示「這一手我不動作」的 ``type`` 值。它不是對局事件,沒有對應的
+#: dataclass —— :func:`parse_event` 會拒絕它,呼叫端應先自行判斷。
+NONE_ACTION = "none"
+
+
+class MjaiFormatError(ValueError):
+    """收到的 JSON 不是合法的 MJAI 事件。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,12 +82,21 @@ class MjaiEvent:
 
 @dataclass(frozen=True, slots=True)
 class StartGame(MjaiEvent):
-    """一場對局開始。``id`` 是自己的座位(0~3)。"""
+    """一場對局開始。``id`` 是自己的座位(0~3)。
+
+    Attributes:
+        id: 自己的座位。
+        names: 四家的暱稱。**不知道時要留 ``None``,不能給空 list** ——
+            libriichi 對這個欄位的規則是「可以不存在,存在就必須剛好四個」,
+            送 ``[]`` 進去會被拒絕(``invalid length 0, expected an array of
+            length 4``)。``None`` 會被 :meth:`~MjaiEvent.to_dict` 省略掉,
+            正好對應「沒有這個鍵」。
+    """
 
     TYPE: ClassVar[str] = "start_game"
 
     id: int
-    names: list[str] = field(default_factory=list)
+    names: list[str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,11 +270,19 @@ class Hora(MjaiEvent):
 
 @dataclass(frozen=True, slots=True)
 class Ryukyoku(MjaiEvent):
-    """流局。``deltas`` 為聽牌罰符等點數變動,無變動時為 None。"""
+    """流局。``deltas`` 為聽牌罰符等點數變動,無變動時為 None。
+
+    這個型別身兼兩用。從封包來的是**結果**(荒牌平局,只有 ``deltas``);
+    從引擎回來的是**宣告**(九種九牌,帶 ``actor`` 與 ``reason``)。
+    MJAI 用同一個 ``type`` 表示兩者,這裡跟著它 —— 拆成兩個型別會讓
+    「引擎宣告的流局」與「實際發生的流局」在事件流上對不起來。
+    """
 
     TYPE: ClassVar[str] = "ryukyoku"
 
     deltas: list[int] | None = None
+    actor: int | None = None
+    reason: str | None = None
 
 
 # --------------------------------------------------------------------- 三麻
@@ -262,3 +296,77 @@ class Kita(MjaiEvent):
 
     actor: int
     pai: str = "N"
+
+
+# --------------------------------------------------------------------- 反序列化
+
+_EVENT_TYPES: tuple[type[MjaiEvent], ...] = (
+    StartGame,
+    EndGame,
+    StartKyoku,
+    EndKyoku,
+    Tsumo,
+    Dahai,
+    Dora,
+    Chi,
+    Pon,
+    Daiminkan,
+    Ankan,
+    Kakan,
+    Reach,
+    ReachAccepted,
+    Hora,
+    Ryukyoku,
+    Kita,
+)
+
+_BY_TYPE: dict[str, type[MjaiEvent]] = {cls.TYPE: cls for cls in _EVENT_TYPES}
+
+
+def parse_event(data: dict[str, Any]) -> MjaiEvent:
+    """MJAI 的 JSON 物件 → 對應的 dataclass。
+
+    引擎的回覆走這裡進來。解析而不是原封不動傳 dict,是為了讓格式錯誤在
+    **收到的當下**就炸掉 —— 一個少了 ``pai`` 的 ``dahai`` 如果一路傳到 UI
+    才出事,現場只會看到一個 KeyError,追不回是哪個引擎送錯的。
+
+    Args:
+        data: 已 ``json.loads`` 的物件,須含 ``type``。
+
+    Returns:
+        對應的事件。
+
+    Raises:
+        MjaiFormatError: 缺 ``type``、type 不認得、或缺必填欄位。
+
+    Note:
+        認不得的鍵會被**忽略**。引擎會在回覆裡夾帶自訂欄位(Mortal 的
+        ``meta`` 帶著 Q 值與候選遮罩),那些不屬於協定本身,由
+        :mod:`majsoul_copilot.engine` 在解析前先取走。
+
+        ``{"type": "none"}`` **不是**事件,這裡會拒絕 —— 見 :data:`NONE_ACTION`。
+    """
+    if not isinstance(data, dict):
+        raise MjaiFormatError(f"MJAI 事件必須是物件,收到 {type(data).__name__}")
+
+    kind = data.get("type")
+    if kind is None:
+        raise MjaiFormatError(f"缺少 type 欄位: {data!r}")
+    if kind == NONE_ACTION:
+        raise MjaiFormatError(
+            f"{NONE_ACTION!r} 表示「不動作」,不是事件。呼叫端應先判斷這個值"
+        )
+
+    cls = _BY_TYPE.get(kind)
+    if cls is None:
+        raise MjaiFormatError(f"認不得的事件型別: {kind!r}")
+
+    kwargs = {}
+    for f in fields(cls):
+        if f.name in data:
+            kwargs[f.name] = data[f.name]
+    try:
+        return cls(**kwargs)
+    except TypeError as exc:
+        # dataclass 少了必填參數 —— 訊息是 Python 的,補上事件內容才追得回來
+        raise MjaiFormatError(f"{kind} 事件的欄位不完整: {data!r}") from exc
