@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import cv2
 
-from majsoul_copilot.calibration import TableCalibrator
+from majsoul_copilot.calibration import StableCalibrator
 from majsoul_copilot.calibration.debug import annotate_calibration
 from majsoul_copilot.capture import (
     CaptureBackend,
@@ -126,10 +126,28 @@ def cmd_calibrate(
     *,
     canvas_out: Path | None = None,
 ) -> None:
+    # 刻意取多幀:單幀校正是啟發式,會被動畫與立繪干擾。實測同一場錄影的
+    # 216 幀產生了 21 種不同的 table_rect,其中 16% 明顯錯誤 —— 探測工具若
+    # 只看一幀,回報的「可靠」就是抽籤抽到的結果,不是這台機器真正的狀況。
+    stable = StableCalibrator(config.calibration)
+    calibration = None
     frame = backend.capture(window)
-    calibration = TableCalibrator(config.calibration).calibrate(frame)
+    for _ in range(config.calibration.stabilize_frames * 4):
+        frame = backend.capture(window)
+        calibration = stable.feed(frame)
+        if calibration is not None:
+            break
+        time.sleep(1.0 / config.capture.target_fps)
+
+    if calibration is None:
+        accepted, needed = stable.progress
+        print(f"校正失敗  : 只蒐集到 {accepted}/{needed} 個可用的候選")
+        print("  多數畫面都沒被判定成牌桌。請確認遊戲確實在畫面上(不是載入畫面或選單),")
+        print("  或在 config/default.local.yaml 用 manual_table_rect 手動指定。")
+        return
 
     print(f"影像      : {frame.size}")
+    print(f"採用候選  : {stable.progress[0]} 幀")
     print(f"牌桌矩形  : {calibration.table_rect}")
     print(f"寬高比    : {calibration.aspect:.4f}  (預期 {config.calibration.aspect_ratio:.4f})")
     print(f"來源      : {calibration.source}")

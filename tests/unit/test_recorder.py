@@ -75,6 +75,31 @@ class TestManifest:
         assert manifest.image_size == [120, 80]
         assert manifest.table_rect == [0, 56, 120, 24]
 
+    def test_table_rect_can_arrive_after_the_first_frame(
+        self, window: WindowInfo, tmp_path: Path
+    ) -> None:
+        """StableCalibrator 要蒐集數幀才鎖定,前幾幀傳進來的是 None。
+
+        把寫入 table_rect 綁在「第一幀」分支裡的話,manifest 會永遠沒有校正
+        結果 —— 而且不會有任何錯誤,只是後續所有 ROI 都失去座標基準。
+        """
+        with SessionWriter(tmp_path, session_id="s", change_threshold=0.0) as writer:
+            writer.add_frame(_frame(window, 100, 0.0))          # 還在蒐集
+            writer.add_frame(_frame(window, 110, 0.1))          # 還在蒐集
+            writer.add_frame(_frame(window, 120, 0.2), table_rect=Rect(0, 56, 120, 24))
+
+        assert writer.manifest.table_rect == [0, 56, 120, 24]
+
+    def test_table_rect_is_not_overwritten_once_set(
+        self, window: WindowInfo, tmp_path: Path
+    ) -> None:
+        """校正一旦鎖定就不會變,後來的值不該覆寫掉已經定案的那個。"""
+        with SessionWriter(tmp_path, session_id="s", change_threshold=0.0) as writer:
+            writer.add_frame(_frame(window, 100, 0.0), table_rect=Rect(0, 56, 120, 24))
+            writer.add_frame(_frame(window, 110, 0.1), table_rect=Rect(9, 9, 9, 9))
+
+        assert writer.manifest.table_rect == [0, 56, 120, 24]
+
     def test_timestamps_are_relative_to_session_start(
         self, window: WindowInfo, tmp_path: Path
     ) -> None:
