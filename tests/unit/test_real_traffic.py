@@ -23,6 +23,7 @@ from majsoul_copilot.groundtruth.to_mjai import MajsoulToMjai
 from majsoul_copilot.mjai.events import MjaiEvent
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "real_game_excerpt.jsonl"
+FULL_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "real_game_full.jsonl"
 
 pytestmark = pytest.mark.skipif(
     not (FIXTURE.is_file() and DEFAULT_LIQI_PATH.is_file()),
@@ -244,3 +245,43 @@ class TestMjaiConversion:
             t for e in events for t in (getattr(e, "tehais", None) or []) for t in t
         }
         assert tiles & {"5mr", "5pr", "5sr"}, "這份錄影應該有赤五出現"
+
+
+class TestFullGame:
+    """完整一場東風戰。
+
+    ``real_game_excerpt.jsonl`` 只到第一次和了為止,涵蓋不到「一場比賽」層級的
+    東西:連續五局、局間過場、``end_game``。這份是 2026-07-29 錄的完整對局,
+    550 個 MJAI 事件、解析成功率 100%。
+
+    加碼槓(``kakan``)只在這份素材裡出現過 —— 它與暗槓、大明槓的寶牌翻牌時機
+    不同(後乗り),是 ``to_mjai`` 最容易寫錯的地方之一。
+    """
+
+    @staticmethod
+    def _events() -> list[MjaiEvent]:
+        schema = LiqiSchema.load()
+        converters: dict[str, MajsoulToMjai] = {}
+        events: list[MjaiEvent] = []
+        for frame, message in parse_dump(FULL_FIXTURE, schema):
+            converter = converters.setdefault(frame.flow, MajsoulToMjai(LiqiParser(schema)))
+            events.extend(converter.handle(message))
+        return events
+
+    def test_every_frame_parses(self) -> None:
+        stats = DumpStats()
+        list(parse_dump(FULL_FIXTURE, LiqiSchema.load(), stats=stats))
+        assert stats.failed == 0
+        assert stats.total > 1000
+
+    def test_the_whole_game_is_covered(self) -> None:
+        kinds = Counter(e.TYPE for e in self._events())
+        assert kinds["start_game"] == 1
+        assert kinds["end_game"] == 1
+        assert kinds["start_kyoku"] == kinds["end_kyoku"] == 5, "東風戰應該有五局"
+
+    def test_the_rarer_actions_appear(self) -> None:
+        """節錄那份沒有加槓 —— 那是寶牌翻牌時機最容易寫錯的地方。"""
+        kinds = Counter(e.TYPE for e in self._events())
+        for kind in ("chi", "pon", "kakan", "reach", "reach_accepted", "hora", "dora"):
+            assert kinds[kind] > 0, f"完整對局裡應該要有 {kind}"
