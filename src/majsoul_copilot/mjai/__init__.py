@@ -1,6 +1,6 @@
 """MJAI 協定的事件型別與牌表示法轉換。
 
-這一層由兩條路徑共用:Ground Truth(封包解析)與視覺辨識(M4 的 tracker)。
+這一層目前由封包解析路徑(:mod:`majsoul_copilot.groundtruth.to_mjai`)產生。
 M5 的準確率評測會把兩條事件流對齊比較,所以它們必須產出同一種型別。
 """
 

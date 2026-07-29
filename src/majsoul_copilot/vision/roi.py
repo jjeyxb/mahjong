@@ -1,8 +1,8 @@
 """ROI 解析:把設定檔裡的正規化矩形換算成當下畫面的像素位置。
 
-這是設定與影像之間唯一的橋。上層(hand / meld / river 等辨識模組)只跟
-:class:`RoiSet` 要「某個區域的影像」,不需要知道座標是怎麼換算的,也不需要
-碰到 :class:`~majsoul_copilot.calibration.Calibration`。
+這是設定與影像之間唯一的橋。上層辨識模組只跟 :class:`RoiSet` 要「某個區域的
+影像」,不需要知道座標是怎麼換算的,也不需要碰到
+:class:`~majsoul_copilot.calibration.Calibration`。
 
 為什麼不直接在各辨識模組裡算座標
 --------------------------------
@@ -17,10 +17,11 @@
 
 ROI 名稱
 --------
-用點號表示巢狀,與 ``config/default.yaml`` 和 ROI 標註工具一致:
-``own_hand``、``own.river``、``kamicha.melds`` ……。名稱是從
-:class:`~majsoul_copilot.config.models.RoiConfig` 的欄位**動態導出**的,
-不是寫死的清單 —— 之後往設定模型加區域,這裡自動跟著有,不會漏。
+名稱是從 :class:`~majsoul_copilot.config.models.RoiConfig` 的欄位**動態導出**
+的,不是寫死的清單 —— 之後往設定模型加區域,這裡自動跟著有,不會漏。
+
+目前只有 ``own_hand`` 一個:牌河、副露等狀態改由封包提供,不走 CV
+(見 ``docs/decisions.md``)。
 """
 
 from __future__ import annotations
@@ -31,9 +32,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from majsoul_copilot.calibration.table import Calibration
-from majsoul_copilot.config.models import RiverGridConfig, RoiConfig, SeatRoiConfig
-from majsoul_copilot.utils.geometry import NormQuad, NormRect, Rect
-from majsoul_copilot.vision.grid import Grid
+from majsoul_copilot.config.models import RoiConfig
+from majsoul_copilot.utils.geometry import NormRect, Rect
 
 __all__ = ["MissingRoiError", "Roi", "RoiSet", "roi_names"]
 
@@ -47,7 +47,7 @@ class Roi:
     """一個已解析的區域。
 
     Attributes:
-        name: 點號分隔的 ROI 名稱,例如 ``kamicha.melds``。
+        name: ROI 名稱,例如 ``own_hand``。
         norm: 設定檔裡的正規化座標(相對牌桌矩形)。
         rect: 換算後的像素矩形,**相對整張擷取影像**,可直接拿去切片。
     """
@@ -65,19 +65,9 @@ class Roi:
 
 
 def _iter_fields(config: RoiConfig) -> Iterator[tuple[str, tuple[float, ...] | None]]:
-    """走訪 RoiConfig 裡所有**矩形**欄位,巢狀的展開成點號名稱。
-
-    牌河網格(``river_grid``)存的是四邊形不是矩形,型別不同,由
-    :attr:`RoiSet.grids` 另外處理 —— 混在一起的話 ``NormRect(*value)`` 會拿到
-    四個 (x, y) 對而不是四個數字。
-    """
+    """走訪 RoiConfig 的所有欄位。"""
     for name in type(config).model_fields:
-        value = getattr(config, name)
-        if isinstance(value, SeatRoiConfig):
-            for sub in type(value).model_fields:
-                yield f"{name}.{sub}", getattr(value, sub)
-        elif not isinstance(value, RiverGridConfig):
-            yield name, value
+        yield name, getattr(config, name)
 
 
 def roi_names() -> tuple[str, ...]:
@@ -104,16 +94,6 @@ class RoiSet:
             norm = NormRect(*value)
             self._rois[name] = Roi(name, norm, calibration.roi_to_pixels(norm))
 
-        self._grids: dict[str, Grid] = {}
-        for seat in type(config.river_grid).model_fields:
-            quad = getattr(config.river_grid, seat)
-            if quad is None:
-                self._missing.append(f"river_grid.{seat}")
-                continue
-            self._grids[seat] = Grid.from_norm(
-                NormQuad(tuple(quad)), calibration.table_rect
-            )
-
     # ------------------------------------------------------------------ 查詢
 
     @property
@@ -136,21 +116,6 @@ class RoiSet:
 
     def get(self, name: str) -> Roi | None:
         return self._rois.get(name)
-
-    @property
-    def grids(self) -> dict[str, Grid]:
-        """四家牌河的網格,鍵是 ``own`` / ``kamicha`` / ``toimen`` / ``shimocha``。"""
-        return dict(self._grids)
-
-    def grid(self, seat: str) -> Grid:
-        """取某一家的牌河網格;沒標定過就拋錯,不給預設值硬跑。"""
-        grid = self._grids.get(seat)
-        if grid is None:
-            raise MissingRoiError(
-                f"{seat} 的牌河網格還沒標定。請用 tools/grid_annotate.py 拉四個角,"
-                "填進 config/default.yaml 的 roi.river_grid 區塊。"
-            )
-        return grid
 
     def __getitem__(self, name: str) -> Roi:
         """取一個 ROI;沒量測或名稱打錯都會拋出可讀的錯誤。"""
