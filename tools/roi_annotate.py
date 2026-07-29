@@ -15,7 +15,7 @@
 就分次跑,用 --only 指定欄位、--out 指定同一個檔案累積結果::
 
     python tools/roi_annotate.py --image a.png --out roi.yaml
-    python tools/roi_annotate.py --image b.png --out roi.yaml --only own.melds
+    python tools/roi_annotate.py --image b.png --out roi.yaml --only own_hand
 
 --out 檔已存在時會先載入當作起始值,只覆寫這次真的重畫的欄位。
 
@@ -88,21 +88,10 @@ class RoiField:
     hint: str
 
 
-#: 標註順序:先自己(最好認),再順時針繞一圈,最後是 HUD。
-#: 每個座位都是「副露在外側(靠牌牆),牌河在內側(靠中央 HUD)」。
+#: 目前 CV 只辨識自己的手牌 —— 其餘狀態由封包提供,見 docs/decisions.md。
+#: 這個清單刻意跟 config.models.RoiConfig 的欄位一一對應,加欄位時兩邊要一起改。
 FIELDS: tuple[RoiField, ...] = (
     RoiField("own_hand", "own_hand  [BOTTOM edge]", "自己的手牌,畫面最下緣那一排(含摸進來那張)"),
-    RoiField("own.melds", "own.melds  [BOTTOM-RIGHT]", "自己的副露,手牌右邊、畫面右下角"),
-    RoiField("own.river", "own.river  [BOTTOM-CENTER]", "自己的牌河,中央 HUD 正下方"),
-    RoiField("shimocha.melds", "shimocha.melds  [RIGHT outer]", "下家副露,螢幕右側最外圈(靠牌牆)"),
-    RoiField("shimocha.river", "shimocha.river  [RIGHT inner]", "下家牌河,螢幕右側靠中央那一團"),
-    RoiField("toimen.melds", "toimen.melds  [TOP outer]", "對面副露,螢幕上方最外圈(靠牌牆)"),
-    RoiField("toimen.river", "toimen.river  [TOP inner]", "對面牌河,螢幕上方靠中央那一團"),
-    RoiField("kamicha.melds", "kamicha.melds  [LEFT outer]", "上家副露,螢幕左側最外圈(靠牌牆)"),
-    RoiField("kamicha.river", "kamicha.river  [LEFT inner]", "上家牌河,螢幕左側靠中央那一團"),
-    RoiField("dora_indicators", "dora_indicators",
-             "寶牌指示器,框要留夠 5 張(1 起始 + 最多 4 槓寶)"),
-    RoiField("round_info", "round_info", "中央 HUD:局數 / 本場 / 供託 / 四家點數"),
 )
 
 FIELD_BY_PATH = {f.path: f for f in FIELDS}
@@ -439,7 +428,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, metavar="PATH",
                         help="輸出 YAML 片段。檔案已存在時會先載入當起始值")
     parser.add_argument("--only", metavar="A,B",
-                        help="只標註這幾個欄位(逗號分隔),例如 own.melds,dora_indicators")
+                        help="只標註這幾個欄位(逗號分隔),例如 own_hand")
     parser.add_argument("--fresh", action="store_true",
                         help="不要載入任何既有值,從全空開始")
     parser.add_argument("--max-width", type=int, default=DEFAULT_MAX_WIDTH,

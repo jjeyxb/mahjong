@@ -22,10 +22,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass
 
-__all__ = ["NormQuad", "NormRect", "Rect", "Size"]
+__all__ = ["NormRect", "Rect", "Size"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,56 +218,3 @@ class NormRect:
         return (
             f"({self.x:.4f}, {self.y:.4f}, {self.width:.4f}, {self.height:.4f})"
         )
-
-
-@dataclass(frozen=True, slots=True)
-class NormQuad:
-    """正規化的任意四邊形,座標同樣是相對容器的 0.0 ~ 1.0 比例。
-
-    為什麼需要它而不是只用 :class:`NormRect`
-    ----------------------------------------
-    牌河是平面上的規則網格,但雀魂是 3D 斜視角,投影到畫面上會變成**梯形**
-    而不是矩形 —— 上家與下家的牌河甚至是斜的。軸對齊矩形描述不了這種形狀,
-    硬用矩形去切格子會愈往邊緣偏得愈多。
-
-    四邊形則剛好夠用:平面上的矩形經過透視投影後必定還是四邊形,所以四個角
-    就唯一決定了整個網格的每一格在哪裡(見
-    :mod:`majsoul_copilot.vision.grid`)。同樣的變換反過來用,還能把每一格
-    反扭回正矩形,讓模板比對不必應付形變。
-
-    四個點依序是四邊形的四個角,順時針或逆時針都可以,但**順序必須固定** ——
-    它決定了網格的 (col, row) 對應到畫面的哪個方向。
-    """
-
-    points: tuple[tuple[float, float], ...]
-
-    def __post_init__(self) -> None:
-        if len(self.points) != 4:
-            raise ValueError(f"四邊形需要剛好 4 個點,拿到 {len(self.points)} 個")
-        for x, y in self.points:
-            if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
-                raise ValueError(f"NormQuad 的點須落在 0~1: ({x}, {y})")
-
-    def to_pixels(self, container: Rect | Size) -> tuple[tuple[float, float], ...]:
-        """換算成實際像素座標。
-
-        刻意回傳浮點數而不取整:這些點會拿去算單應變換,提前取整會讓遠端的
-        格子累積出可見的偏移。
-        """
-        ox, oy = (container.x, container.y) if isinstance(container, Rect) else (0, 0)
-        cw, ch = container.width, container.height
-        return tuple((ox + x * cw, oy + y * ch) for x, y in self.points)
-
-    @classmethod
-    def from_pixels(
-        cls, points: Sequence[tuple[float, float]], container: Rect | Size
-    ) -> NormQuad:
-        """由像素座標反推正規化四邊形。標註工具會用到。"""
-        ox, oy = (container.x, container.y) if isinstance(container, Rect) else (0, 0)
-        cw, ch = container.width, container.height
-        if cw <= 0 or ch <= 0:
-            raise ValueError(f"容器尺寸須為正: {cw}x{ch}")
-        return cls(tuple(((x - ox) / cw, (y - oy) / ch) for x, y in points))
-
-    def __str__(self) -> str:
-        return " ".join(f"({x:.4f},{y:.4f})" for x, y in self.points)

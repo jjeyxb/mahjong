@@ -13,9 +13,7 @@ __all__ = [
     "AppConfig",
     "CalibrationConfig",
     "CaptureConfig",
-    "RiverGridConfig",
     "RoiConfig",
-    "SeatRoiConfig",
     "WindowMatchConfig",
 ]
 
@@ -24,12 +22,6 @@ BackendName = Literal["auto", "macos", "windows", "mss"]
 #: ROI 一律用相對 table_rect 的正規化 (x, y, width, height) 儲存,格式與
 #: CalibrationConfig.manual_table_rect 一致 —— 轉成 NormRect 是使用端的事。
 NormRectTuple = tuple[float, float, float, float]
-
-#: 四邊形的四個角,同樣是相對 table_rect 的正規化座標。牌河用得到 —— 斜視角下
-#: 平面矩形會投影成梯形,軸對齊矩形描述不了。見 :class:`RiverGridConfig`。
-NormQuadTuple = tuple[
-    tuple[float, float], tuple[float, float], tuple[float, float], tuple[float, float]
-]
 
 
 class _Base(BaseModel):
@@ -143,93 +135,25 @@ class CalibrationConfig(_Base):
     )
 
 
-class SeatRoiConfig(_Base):
-    """單一座位(相對自己的螢幕方位)的牌河 / 副露 ROI。
-
-    兩個欄位都是**外框**,不是逐張切好的子格。牌河張數會隨牌局進行增加,
-    快流局時甚至會疊成 2~3 列;副露的寬度更不固定 —— 吃/碰是 3 張一組,
-    槓是 4 張一組(暗槓還會把頭尾兩張畫成蓋牌),硬切固定子格遇到槓就會
-    溢出或被裁掉。框內實際有幾張牌、切到哪裡停,是掃描時(M3 的 vision 層)
-    該解決的問題,不該在 ROI 定義階段就假設好結構。
-    """
-
-    river: NormRectTuple | None = Field(
-        None,
-        description="牌河外框。量測參考畫面時盡量挑接近流局的一局,"
-        "外框高度才不會漏掉疊到第二、三列的情況",
-    )
-    melds: NormRectTuple | None = Field(
-        None,
-        description="副露區外框。量測參考畫面時盡量挑有槓出現的一局(槓比吃/碰寬),"
-        "外框寬度才不會抓太窄",
-    )
-
-
-class RiverGridConfig(_Base):
-    """四家牌河的網格四角。
-
-    為什麼牌河除了 ``river`` 那個矩形之外還要這個
-    ----------------------------------------------
-    矩形只能框出「牌河大概在哪」,切不出「第幾張捨牌在哪一格」。牌河是 6x3 的
-    網格,而斜視角讓它在畫面上變成梯形(上家與下家的還是斜的),用矩形等分會
-    愈往邊緣偏愈多。四個角則剛好夠 —— 平面矩形投影後必定仍是四邊形,單應變換
-    就能算出全部 18 格,還能把每格反扭回正矩形供模板比對用。
-
-    這個東西**不能自動偵測**:試過凸包逼近與四邊包絡線加穩健迴歸,四家都對不
-    準,因為參考畫面裡沒有任何一個牌河是滿的 18 格,右下角那格從沒被填過,
-    等於在對不存在的資料外推。用 ``tools/grid_annotate.py`` 手動標。
-
-    四個角依畫面上的視覺順序存:左上、右上、右下、左下。
-    """
-
-    own: NormQuadTuple | None = Field(None, description="自家牌河,畫面下方")
-    kamicha: NormQuadTuple | None = Field(None, description="上家牌河,畫面左側")
-    toimen: NormQuadTuple | None = Field(None, description="對面牌河,畫面上方")
-    shimocha: NormQuadTuple | None = Field(None, description="下家牌河,畫面右側")
-
-
 class RoiConfig(_Base):
-    """牌桌上每個區域的 ROI。
+    """牌桌上 CV 需要辨識的區域。
 
-    以「螢幕方位」而非「實際座位風」命名:雀魂的攝影機視角永遠讓自己在畫面
-    最下方,上家/對面/下家對應的螢幕位置(左/上/右)因此每局都固定不變 ——
-    只有「這個方位這局對應到哪個 actor index」會隨自己的座位改變,那個對應
-    由 tracker 處理,不在這裡定義。
+    **只有自己的手牌。** 牌河、副露、寶牌指示區、局數 HUD 這些狀態現在一律
+    由封包(``groundtruth`` 那條路)提供,不再靠影像辨識 —— 決策過程見
+    ``docs/decisions.md``。四家牌河的 ROI 與網格四角曾經量測完成,量測值保留
+    在該文件中,若日後要重啟牌河 CV 可以直接取用。
 
-    每個 ROI 預設 ``None``,代表「尚未量測」。刻意不給一個看似合理的假座標——
-    寧可讓用到它的程式碼在忘記設定時直接炸掉,也不要靜默地拿錯的框去跑辨識,
-    那種錯誤只會在準確率報告上不明不白地變差,事後很難追查是哪個環節錯了。
+    預設 ``None`` 代表「尚未量測」。刻意不給一個看似合理的假座標 —— 寧可讓
+    用到它的程式碼在忘記設定時直接炸掉,也不要靜默地拿錯的框去跑辨識,那種
+    錯誤只會在準確率報告上不明不白地變差,事後很難追查是哪個環節錯了。
     """
 
-    own: SeatRoiConfig = Field(default_factory=SeatRoiConfig, description="自己的牌河 / 副露")
     own_hand: NormRectTuple | None = Field(
         None,
         description="自己的手牌外框,含摸進來的第 14 張。對手的手牌永遠蓋牌,"
-        "沒有辨識價值,所以只有這一個欄位,不像 river/melds 四個方位都要。"
-        "摸的那張會與暗手牌空一格,但不能獨立成一個 ROI —— 暗手牌長度隨副露數"
-        "改變,那張牌的位置跟著在 x≈0.19~0.78 之間移動,沒有固定座標可框",
-    )
-    kamicha: SeatRoiConfig = Field(default_factory=SeatRoiConfig, description="上家,螢幕左側")
-    toimen: SeatRoiConfig = Field(default_factory=SeatRoiConfig, description="對面,螢幕上方")
-    shimocha: SeatRoiConfig = Field(default_factory=SeatRoiConfig, description="下家,螢幕右側")
-
-    dora_indicators: NormRectTuple | None = Field(
-        None,
-        description="左上角那塊面板整塊,不只寶牌指示器。上半是 5 個寶牌槽"
-        "(1 張起始 + 最多 4 張槓寶牌),下半約 1/3 高度是「立直棒 ×N」「本場棒 ×N」"
-        "兩個計數 —— 供託與本場同樣是 tracker 需要的狀態,又緊貼在寶牌下方,"
-        "拆成兩個 ROI 沒有好處",
-    )
-    round_info: NormRectTuple | None = Field(
-        None,
-        description="中央 HUD 方塊:局數、余牌數、四家點數,以及四角的座位風標記"
-        "(莊家那個是紅底)。本場與供託不在這裡,在 dora_indicators 那塊面板",
-    )
-
-    river_grid: RiverGridConfig = Field(
-        default_factory=RiverGridConfig,
-        description="四家牌河的網格四角。上面那些 river 矩形只框出範圍,"
-        "要切到「第幾張捨牌在哪一格」得靠這個",
+        "沒有辨識價值。摸的那張會與暗手牌空一格,但不能獨立成一個 ROI —— "
+        "暗手牌長度隨副露數改變,那張牌的位置跟著在 x≈0.19~0.78 之間移動,"
+        "沒有固定座標可框",
     )
 
 

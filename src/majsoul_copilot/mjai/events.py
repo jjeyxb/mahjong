@@ -1,10 +1,12 @@
 """MJAI 事件型別。
 
 MJAI 是 JSON Lines 協定,每個事件是一個帶 ``type`` 欄位的物件。這裡用
-dataclass 表示,原因是這些事件會由**兩條路徑**產生 —— Ground Truth
-(:mod:`majsoul_copilot.groundtruth.to_mjai`)與視覺辨識(M4 的 tracker)——
-而 M5 的評測要把兩條流對齊比較。有明確的型別,比對與除錯都好做得多;
-真正要送進 AI 引擎時再 :meth:`MjaiEvent.to_dict` 轉成 JSON。
+dataclass 而不是直接傳 dict:事件流會同時被 AI 引擎消費與被測試比對,有明確
+的型別,除錯與斷言都好做得多;真正要送進引擎時再 :meth:`MjaiEvent.to_dict`
+轉成 JSON。
+
+目前事件由封包解析(:mod:`majsoul_copilot.groundtruth.to_mjai`)產生 ——
+視覺辨識不再重建完整對局狀態,見 ``docs/decisions.md``。
 
 省略 ``None`` 欄位是刻意的:MJAI 的消費端(libriichi / Mortal)以「鍵不存在」
 而非「值為 null」來判斷選填欄位。
