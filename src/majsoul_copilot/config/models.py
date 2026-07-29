@@ -116,6 +116,25 @@ class CalibrationConfig(_Base):
     aspect_tolerance: float = Field(
         0.03, gt=0, description="偵測到的比例偏離 aspect_ratio 超過此相對誤差就示警"
     )
+    aspect_reject: float = Field(
+        0.10,
+        gt=0.0,
+        description=(
+            "StableCalibrator 專用:偏離 aspect_ratio 超過此相對誤差的候選直接丟棄,"
+            "不納入中位數。比 aspect_tolerance 寬鬆是刻意的 —— 那個是「示警」的門檻,"
+            "這個是「這一幀根本沒看到牌桌」的門檻(實測失敗樣本落在 1.51~2.24)"
+        ),
+    )
+    stabilize_frames: int = Field(
+        15,
+        ge=1,
+        description=(
+            "StableCalibrator 要蒐集幾個**通過檢查**的候選才鎖定結果。"
+            "15 幀在 15 fps 下約 1 秒。單幀校正是啟發式,會被和了動畫、角色立繪、"
+            "暗轉干擾 —— 實測 216 幀的同一場錄影產生了 21 種不同的 table_rect,"
+            "其中 16% 明顯錯誤。取多幀中位數是為了不讓那 16% 被鎖進整場對局"
+        ),
+    )
     enforce_aspect: bool = Field(
         False,
         description=(

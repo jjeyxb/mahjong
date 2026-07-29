@@ -212,13 +212,18 @@ class SessionWriter:
             b = frame.window.bounds
             self.manifest.window_bounds = [b.x, b.y, b.width, b.height]
             self.manifest.image_size = [frame.size.width, frame.size.height]
-            if table_rect is not None:
-                self.manifest.table_rect = [
-                    table_rect.x,
-                    table_rect.y,
-                    table_rect.width,
-                    table_rect.height,
-                ]
+
+        # 校正**不是**第一幀就有:StableCalibrator 要蒐集數幀才鎖定,在那之前
+        # 傳進來的是 None。所以這段不能放在上面的「第一幀」分支裡,否則整份
+        # manifest 會永遠沒有 table_rect。第一個拿到的值就定案,後面不再改
+        # —— 校正一旦鎖定就不會變,真的變了(視窗縮放)是另一場錄製的事。
+        if table_rect is not None and self.manifest.table_rect is None:
+            self.manifest.table_rect = [
+                table_rect.x,
+                table_rect.y,
+                table_rect.width,
+                table_rect.height,
+            ]
 
         index = self.manifest.frame_count
         timestamp = frame.captured_at - self._start_time

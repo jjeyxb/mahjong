@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-from majsoul_copilot.calibration.table import Calibration, TableCalibrator
+from majsoul_copilot.calibration.stable import StableCalibrator
 from majsoul_copilot.capture.base import CaptureBackend, CaptureFailedError, WindowInfo
 from majsoul_copilot.recorder.session import SessionWriter
 from majsoul_copilot.utils.logging import logger
@@ -39,7 +39,7 @@ def record_session(
     *,
     target_fps: float = 15.0,
     duration: float | None = None,
-    calibrator: TableCalibrator | None = None,
+    calibrator: StableCalibrator | None = None,
     max_consecutive_errors: int = 30,
     stop_check: object = None,
 ) -> RecorderStats:
@@ -47,8 +47,11 @@ def record_session(
 
     Args:
         duration: 錄製秒數;None 表示錄到被 Ctrl-C 中斷為止。
-        calibrator: 提供時會在第一幀做牌桌校正,並把結果寫進 manifest。
-            畫面尺寸改變(使用者縮放視窗)時會自動重新校正。
+        calibrator: 提供時會做牌桌校正並把結果寫進 manifest。校正需要蒐集
+            數幀才會鎖定(見 :class:`StableCalibrator`),在那之前錄下的幀
+            ``table_rect`` 為 None —— 錄製不會因此暫停,單幀校正本來就不可靠,
+            寧可讓那幾幀沒有座標基準,也不要寫進一個可能錯 10% 的矩形。
+            畫面尺寸改變(使用者縮放視窗)時會自動重置並重新蒐集。
         max_consecutive_errors: 連續擷取失敗超過此數就中止。單次失敗很正常
             (視窗剛好在切換),但持續失敗代表遊戲關了或權限沒了。
         stop_check: 可呼叫物件,回傳 True 時提前結束。給 GUI / 測試用。
@@ -58,7 +61,6 @@ def record_session(
     """
     interval = 1.0 / target_fps
     stats = RecorderStats()
-    calibration: Calibration | None = None
     consecutive_errors = 0
 
     start = time.monotonic()
@@ -100,9 +102,7 @@ def record_session(
                 continue
             consecutive_errors = 0
 
-            if calibrator is not None and (calibration is None or not calibration.matches(frame)):
-                calibration = calibrator.calibrate(frame)
-                logger.info("牌桌校正: {}", calibration)
+            calibration = calibrator.feed(frame) if calibrator is not None else None
 
             record = writer.add_frame(
                 frame, table_rect=calibration.table_rect if calibration else None

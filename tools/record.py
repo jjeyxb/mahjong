@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import cv2
 
-from majsoul_copilot.calibration import TableCalibrator
+from majsoul_copilot.calibration import StableCalibrator
 from majsoul_copilot.capture import CaptureError, WindowInfo, create_backend
 from majsoul_copilot.capture.base import CaptureBackend
 from majsoul_copilot.config.loader import load_config
@@ -165,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
                     writer,
                     target_fps=args.fps or config.capture.target_fps,
                     duration=args.duration,
-                    calibrator=TableCalibrator(config.calibration),
+                    calibrator=StableCalibrator(config.calibration),
                 )
     except CaptureError as exc:
         print(f"\n擷取失敗:\n{exc}", file=sys.stderr)
