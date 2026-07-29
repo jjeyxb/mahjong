@@ -10,10 +10,8 @@ import pytest
 
 from majsoul_copilot.engine import DummyEngine, EngineError
 from majsoul_copilot.mjai import (
-    Ankan,
     Chi,
     Dahai,
-    Pon,
     Reach,
     StartGame,
     StartKyoku,
@@ -83,31 +81,8 @@ class TestRedFives:
         assert advice.action.pai == "5sr"  # type: ignore[attr-defined]
 
 
-class TestHandTracking:
-    def test_a_pon_removes_only_my_own_tiles(self) -> None:
-        """被碰的那張來自別家,本來就不在我手上 —— 扣掉它會讓手牌少一張。"""
-        hand = ["1m", "1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "2p", "3p"]
-        bot = started(hand)
-        bot.react(Pon(actor=0, target=2, pai="1m", consumed=["1m", "1m"]))
-        assert len(bot._hand) == 11  # noqa: SLF001
-
-    def test_a_chi_removes_only_my_own_tiles(self) -> None:
-        hand = ["2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "2p", "3p", "5p", "5p"]
-        bot = started(hand)
-        bot.react(Chi(actor=0, target=3, pai="1m", consumed=["2m", "3m"]))
-        assert len(bot._hand) == 11  # noqa: SLF001
-
-    def test_an_ankan_removes_all_four(self) -> None:
-        hand = ["1m", "1m", "1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "2p"]
-        bot = started(hand)
-        bot.react(Tsumo(actor=0, pai="1m"))
-        bot.react(Ankan(actor=0, consumed=["1m"] * 4))
-        assert len(bot._hand) == 10  # noqa: SLF001
-
-    def test_other_players_melds_do_not_touch_my_hand(self) -> None:
-        bot = started()
-        bot.react(Pon(actor=1, target=2, pai="1z", consumed=["1z", "1z"]))
-        assert len(bot._hand) == 13  # noqa: SLF001
+class TestMelds:
+    """手牌追蹤本身在 ``test_mjai_handstate.py``,這裡只驗引擎有沒有接對。"""
 
     def test_calling_a_chi_immediately_requires_a_discard(self) -> None:
         """吃碰**不從牌山補牌**,鳴完直接輪到自己打 —— 建議要在鳴牌事件當下就給。
@@ -131,21 +106,6 @@ class TestHandTracking:
         bot.react(Chi(actor=0, target=3, pai="1m", consumed=["2m", "3m"]))
         bot.react(Dahai(actor=0, pai="9m", tsumogiri=False))
         assert bot.react(Tsumo(actor=0, pai="9s")).action is not None
-
-    def test_a_new_kyoku_resets_the_hand(self) -> None:
-        bot = started()
-        bot.react(Tsumo(actor=0, pai="9s"))
-        bot.react(kyoku(["1z"] * 4 + ["2z"] * 4 + ["3z"] * 4 + ["4z"]))
-        assert bot._hand.count("1z") == 4  # noqa: SLF001
-
-    def test_a_non_zero_seat_reads_its_own_tehai(self) -> None:
-        """自己不一定坐 0 —— 讀錯 tehais 的索引會拿到別人的配牌。"""
-        bot = DummyEngine()
-        bot.start()
-        bot.react(StartGame(id=2))
-        tehais = [["?"] * 13, ["?"] * 13, TENPAI, ["?"] * 13]
-        bot.react(StartKyoku("E", 1, 0, 0, 0, "2s", tehais, [25000] * 4))
-        assert bot._hand == TENPAI  # noqa: SLF001
 
 
 class TestRobustness:

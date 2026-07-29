@@ -233,7 +233,8 @@ python tools/gt.py inspect data/ws.jsonl --actions --mjai-out data/g1.mjai.jsonl
 | M0 | 專案骨架、設定載入、日誌 | ✅ 完成 |
 | M1 | 擷取層雙平台 + 校正 | ✅ macOS 完成並實機驗證;Windows 待驗證 |
 | M2 | 封包擷取 → MJAI 事件流 + recorder | ✅ 已用真實對局驗證;MITM 兩模式已實作但未實測 |
-| M3 | **功能 1**:手牌 CV | ✅ 校正穩定化、手牌定位、牌面分類皆完成;準確率報告待錄影 |
+| M3 | **功能 1**:手牌 CV | ✅ 校正穩定化、手牌定位、牌面分類皆完成 |
+| M3-1b | 準確率評測工具鏈 | ✅ 對齊與報告已完成並測過;**待錄一份成對素材**跑出數字，見 [docs/recording.md](docs/recording.md) |
 | M4 | **功能 1**:向聽 / 進張計算 | ✅ 完成 —— `analysis/shanten.py`,整條管線已跑通 |
 | M5 | **功能 2**:engine 子程序 + Mortal 接入 | ✅ 完成 —— 已用真實對局驗證,見下方「M5 實測」 |
 | M6 | UI 側邊視窗 | |
@@ -396,6 +397,29 @@ JSONL。liqi 解析全在離線階段。這樣解析程式有 bug 或協定改�
 ```bash
 python tools/advise.py data/gt/ws.jsonl --mortal models/mortal_298k.pth
 ```
+
+### 準確率評測：拿封包當標準答案
+
+純 CV 沒辦法宣稱 100%，但**可以讓錯誤變成一個可量測、可追蹤的數字**，
+並指出錯在哪幾種牌上。混淆對照表通常比總體準確率有用得多 ——
+「9s 被認成 4s」是可以修的，「準確率 93%」不是。
+
+同時錄下的畫面與封包靠**牆上時鐘**配對（session manifest 存了第一幀的
+`time.time()`，錄影檔每一行也有 `wall`）。
+
+**只取穩定區間。** 封包在動作發生時就到了，畫面要等動畫演完才變 ——
+轉場的那半秒裡兩者必然不一致，那不是 CV 認錯。所以一個狀態前後都安靜夠久，
+落在中間的幀才拿來評分。代價是可用的幀變少，好處是剩下的每一幀都有明確的
+標準答案。反過來用一個容忍度去湊，準確率就變成由容忍度決定的數字了。
+
+```bash
+# 先確認兩份錄影對得上（不跑 CV，幾秒就有結果）
+python tools/evaluate.py data/recordings/<id> data/gt/ws.jsonl --dry-run
+python tools/evaluate.py data/recordings/<id> data/gt/ws.jsonl
+```
+
+工具鏈已完成並測過，**還缺一份成對素材** —— 錄製步驟見
+[docs/recording.md](docs/recording.md)。
 
 ---
 
