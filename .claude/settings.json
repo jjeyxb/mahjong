@@ -3,8 +3,23 @@
     "專案層級的 Claude Code 設定。permissions.deny 是真正會擋住 Read 工具的那一層,",
     "內容與根目錄的 .ignore 保持一致 —— 修改其中一份時請同步另一份。",
     "分工:.ignore 管搜尋(ripgrep/fd 不掃進去),這裡管讀取(Read 直接被拒絕)。",
-    "注意 deny 不影響 Bash,所以真的需要時仍可用 wc/jq/head 有節制地檢視這些檔案。"
+    "注意 deny 不影響 Bash,所以真的需要時仍可用 wc/jq/head 有節制地檢視這些檔案。",
+    "",
+    "hooks.Stop 在每個回合結束時發一則 macOS 通知。腳本在 .claude/hooks/notify.sh。"
   ],
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/notify.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
   "permissions": {
     "deny": [
       "Read(./.venv/**)",
