@@ -67,8 +67,8 @@ MJAI 本來就是 JSON-lines over stdio 的協定，子程序化是它的原生�
 ### 兩條資料流
 
 ```
-功能 1   Frame ──vision──▶ 手牌張數 ──mahjong 套件──▶ 向聽數 / 進張
-         (ndarray)         (單幀,無狀態)
+功能 1   Frame ──read_hand──▶ 牌框 ──classify──▶ 牌名 ──analyse──▶ 向聽 / 進張 / 該切哪張
+         (ndarray)   固定槽位      模板比對       雀魂記法      mahjong 套件
 
 功能 2   WebSocket frame ──liqi──▶ MjaiEvent ──▶ engine × N ──▶ Advice
          (base64 .jsonl)           (JSON)
@@ -87,7 +87,8 @@ src/majsoul_copilot/
 ├── config/        設定模型 (pydantic)、YAML 載入、skin profile
 ├── capture/       平台擷取抽象:macos(Quartz) / windows(PrintWindow) / mss fallback
 ├── calibration/   牌桌矩形偵測、DPI 與 Retina 縮放、ROI 正規化
-├── vision/        純 CV,無狀態:roi + tiles/hand(只處理自己的手牌)
+├── vision/        純 CV,無狀態:roi + tiles/(手牌定位 hand + 牌面分類 classify)
+├── analysis/      向聽數、進張、打牌建議(mahjong 套件)
 ├── mjai/          events / tiles(牌表示轉換)
 ├── engine/        base / subprocess_engine / mortal / dummy / multiplex
 ├── ui/            viewmodel + panel/ overlay/ widgets/
@@ -228,7 +229,7 @@ python tools/gt.py inspect data/ws.jsonl --actions --mjai-out data/g1.mjai.jsonl
 | M1 | 擷取層雙平台 + 校正 | ✅ macOS 完成並實機驗證;Windows 待驗證 |
 | M2 | 封包擷取 → MJAI 事件流 + recorder | ✅ 已用真實對局驗證;MITM 兩模式已實作但未實測 |
 | M3 | **功能 1**:手牌 CV | ✅ 校正穩定化、手牌定位、牌面分類皆完成;準確率報告待錄影 |
-| M4 | **功能 1**:向聽 / 進張計算 | |
+| M4 | **功能 1**:向聽 / 進張計算 | ✅ 完成 —— `analysis/shanten.py`,整條管線已跑通 |
 | M5 | **功能 2**:engine 子程序 + Mortal 接入 | |
 | M6 | UI 側邊視窗 | |
 | M7 | Overlay 模式 | |
