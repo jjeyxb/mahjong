@@ -7,6 +7,8 @@ name = "majsoul-copilot"
 version = "0.1.0"
 description = "雀魂麻將輔助系統 — 螢幕擷取 + 電腦視覺 + Mortal AI"
 requires-python = ">=3.14"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE", "NOTICE"]
 dynamic = ["dependencies"]
 
 [tool.setuptools.dynamic]
