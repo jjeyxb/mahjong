@@ -1,0 +1,76 @@
+# ripgrep / fd 的忽略清單 —— 語法同 .gitignore。
+#
+# 為什麼不是 .gitignore?
+#   ripgrep 預設只在「目錄是 git repo」時才遵守 .gitignore。本專案刻意延後
+#   git init(等大部分功能完成後再上 GitHub),所以現在那份 .gitignore 對搜尋
+#   工具完全沒有作用。.ignore 則不管有沒有 git 都會被遵守。
+#
+# 為什麼不是 .claudeignore?
+#   Claude Code 並沒有這個機制。真正會擋住檔案讀取的是
+#   .claude/settings.json 裡的 permissions.deny —— 那份檔案的內容與本檔一致,
+#   兩者請一起維護。
+
+# ---- 虛擬環境 ----
+# 1.9 GB。搜尋時掃進來會拖慢一切,而且第三方套件原始碼不是本專案的內容。
+.venv/
+venv/
+env/
+engines/*/.venv/
+
+# ---- 工具快取 ----
+# .mypy_cache 有 23 MB,裡面全是機器產生的 .json / .data.json。
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+
+# ---- 版本控制 ----
+.git/
+
+# ---- 建置產物 ----
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ---- 執行期產物 ----
+logs/
+*.log
+out/
+reports/
+htmlcov/
+.coverage
+coverage.xml
+
+# ---- 專案特有的大檔 ----
+
+# Majsoul 的 protobuf.js 描述子。287 KB 且**整份擠在同一行**,任何以行為單位
+# 的工具碰到它都會一次吐出整個檔案。它的用途是被 groundtruth/schema.py 在
+# 執行期轉成 DescriptorPool,不需要人(或模型)閱讀。
+# 註:同目錄的 liqi.version.json 只有 271 B 且記錄了資源版本,刻意不忽略。
+assets/proto/liqi.json
+
+# 模型權重。二進位,讀了也沒有意義。
+models/*.pth
+models/*.pt
+models/*.onnx
+*.pth
+*.pt
+*.onnx
+
+# ---- 作業系統 ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- 刻意「不」忽略的東西(別手癢加進來)----
+#   README.md                            架構決策的長期記憶,經常需要查
+#   tests/fixtures/real_game_excerpt.jsonl  真實流量迴歸測試的基準,偶爾要看幾行
+#   config/default.yaml                  ROI 與後端設定的單一事實來源
+#   data/recordings/                     目前才 132 KB;等 M2 成對資料集錄到
+#                                        GB 級之後再考慮,屆時兩份檔案一起改
+#   assets/tiles/**/*.png                M3 除錯時可能真的需要目視某張模板

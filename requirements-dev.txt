@@ -1,0 +1,17 @@
+# 開發工具 — 安裝於主環境 (Python 3.14)
+#   .venv/bin/pip install -r requirements-dev.txt
+
+-r requirements.txt
+
+# --- 測試 ---
+pytest>=9.0
+pytest-qt>=4.4              # PySide6 元件測試
+pytest-cov>=6.0
+
+# --- 靜態檢查 ---
+ruff>=0.9
+mypy>=1.14
+
+# --- CV 開發輔助 ---
+scikit-image>=0.26          # 影像相似度指標 (SSIM),模板品質評估用
+matplotlib>=3.10            # eval 報告的混淆矩陣 / 準確率圖表

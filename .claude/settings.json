@@ -1,0 +1,43 @@
+{
+  "$comment": [
+    "專案層級的 Claude Code 設定。permissions.deny 是真正會擋住 Read 工具的那一層,",
+    "內容與根目錄的 .ignore 保持一致 —— 修改其中一份時請同步另一份。",
+    "分工:.ignore 管搜尋(ripgrep/fd 不掃進去),這裡管讀取(Read 直接被拒絕)。",
+    "注意 deny 不影響 Bash,所以真的需要時仍可用 wc/jq/head 有節制地檢視這些檔案。"
+  ],
+  "permissions": {
+    "deny": [
+      "Read(./.venv/**)",
+      "Read(./venv/**)",
+      "Read(./engines/*/.venv/**)",
+
+      "Read(./.mypy_cache/**)",
+      "Read(./.pytest_cache/**)",
+      "Read(./.ruff_cache/**)",
+      "Read(./**/__pycache__/**)",
+      "Read(./**/*.pyc)",
+      "Read(./**/*.pyo)",
+      "Read(./**/*.so)",
+
+      "Read(./.git/**)",
+
+      "Read(./build/**)",
+      "Read(./dist/**)",
+      "Read(./**/*.egg-info/**)",
+
+      "Read(./logs/**)",
+      "Read(./**/*.log)",
+      "Read(./out/**)",
+      "Read(./reports/**)",
+      "Read(./htmlcov/**)",
+
+      "Read(./assets/proto/liqi.json)",
+      "Read(./models/**)",
+      "Read(./**/*.pth)",
+      "Read(./**/*.pt)",
+      "Read(./**/*.onnx)",
+
+      "Read(./**/.DS_Store)"
+    ]
+  }
+}

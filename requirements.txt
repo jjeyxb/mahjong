@@ -1,0 +1,52 @@
+# 主程式環境 — Python 3.14
+#   .venv/bin/pip install -r requirements.txt
+#
+# 注意:此環境刻意「不含 torch / libriichi」。
+# AI 引擎跑在獨立子程序 (engines/mortal/, Python 3.12),原因見 README。
+
+# --- 影像與擷取 ---
+opencv-python>=5.0.0        # abi3 wheel,支援 3.14
+numpy>=2.5
+mss>=10.2                   # 全螢幕擷取 fallback
+pillow>=12.0
+
+# --- GUI (LGPL,見 README 授權說明) ---
+PySide6>=6.11               # abi3 wheel,支援 3.14
+
+# --- 設定與日誌 ---
+pydantic>=2.13
+PyYAML>=6.0.3
+loguru>=0.7.3
+
+# --- 麻將規則 ---
+# 向聽數 / 點數計算。同時用於 tracker 的合法性校驗與規則式 baseline engine。
+mahjong>=2.0.0
+
+# --- 平台相依:單視窗擷取 ---
+# 全螢幕擷取會把自己的 Overlay 一起拍進去,故主路徑走「指定視窗擷取」。
+pyobjc-framework-Quartz>=12.2 ; sys_platform == "darwin"   # CGWindowListCreateImage
+pywin32>=312 ; sys_platform == "win32"                      # PrintWindow / DPI awareness
+dxcam>=0.3.0 ; sys_platform == "win32"                      # 高幀率備援
+
+# --- 協定解析 ---
+protobuf>=7.0
+
+# --- Ground Truth 擷取 ---
+# 只用於離線產生標註資料與量化 CV 準確率,不參與線上決策。
+#
+# 有兩種擷取後端,寫出的錄影檔格式完全相同:
+#
+#   playwright — Chrome DevTools Protocol(預設,推薦)
+#       讀取瀏覽器已解密好的 WebSocket frame,不是 MITM。
+#       不需要憑證、不需要流量導向、不怕憑證固定。
+#       首次使用需另外下載瀏覽器:playwright install chromium
+#       僅能錄網頁版雀魂。
+#
+#   mitmproxy  — MITM 攔截(proxy / local 兩種模式)
+#       能錄 Steam 桌面版,但需安裝並信任 CA 憑證。
+#       local 模式的行程重導是內建的(macOS 用 Network Extension、
+#       Windows 用 WinDivert),不需要額外裝 Proxifier,
+#       但首次啟用需使用者手動核准系統延伸模組。
+#       實測 12.2.3 在 Python 3.14 下可用。
+playwright>=1.61
+mitmproxy>=12.2

@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "majsoul-copilot"
+version = "0.1.0"
+description = "雀魂麻將輔助系統 — 螢幕擷取 + 電腦視覺 + Mortal AI"
+requires-python = ">=3.14"
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+# 開發相依刻意不列在這裡:requirements-dev.txt 用了 pip 的 `-r` 語法,
+# setuptools 的 dynamic 讀取器不支援。開發環境請直接
+#   pip install -r requirements-dev.txt
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "platform_macos: 只在 macOS 上執行",
+    "platform_windows: 只在 Windows 上執行",
+    "live: 需要實際螢幕擷取權限與真實視窗",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+src = ["src", "tests", "tools"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "ARG", "BLE", "SLF"]
+ignore = ["RUF001", "RUF002", "RUF003"]  # 允許註解中的全形標點
+
+[tool.ruff.lint.per-file-ignores]
+# 工具腳本要先動 sys.path 才能 import 專案套件,import 必然不在檔案開頭
+"tools/*.py" = ["E402"]
+
+[tool.mypy]
+python_version = "3.14"
+packages = ["majsoul_copilot"]
+mypy_path = "src"
+plugins = ["pydantic.mypy"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+disallow_untyped_defs = true
+
+[[tool.mypy.overrides]]
+# 這些第三方套件沒有型別存根
+module = [
+    "cv2.*",
+    "mss.*",
+    "Quartz.*",
+    "win32api",
+    "win32con",
+    "win32gui",
+    "win32process",
+    "win32ui",
+    "mahjong.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# ctypes.windll 只存在於 Windows 的 typeshed,在 macOS 上檢查這個模組必然報錯。
+# 這個模組的型別正確性只能在 Windows 上跑 mypy 才有意義。
+module = ["majsoul_copilot.capture.windows"]
+disable_error_code = ["attr-defined", "import-untyped"]
