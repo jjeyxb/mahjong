@@ -121,10 +121,14 @@ python3.14 -m venv .venv
 
 ### 2. AI 引擎環境（Python 3.12，獨立）
 
-見 [`engines/mortal/requirements.txt`](engines/mortal/requirements.txt) 內的建置說明。
-需要自行從 [Mortal repo](https://github.com/Equim-chan/Mortal) 編譯 `libriichi`：
-`cargo build -p libriichi --lib --release`，再把產物複製成 `mortal/libriichi.pyd`（Windows）
-或 `libriichi.so`（Linux）。權重 `.pth` 放到 `models/`（已 gitignore）。
+完整步驟見 [`engines/mortal/requirements.txt`](engines/mortal/requirements.txt)。
+需要 Rust 與 Python 3.12，自行從 [Mortal repo](https://github.com/Equim-chan/Mortal)
+編譯 `libriichi`（`cargo build -p libriichi --lib --release`，**不需要 maturin**），
+權重 `.pth` 放到 `models/`（已 gitignore）。
+
+> **macOS 注意**：官方文件只寫了 Linux 與 Windows。在 macOS 上產物是
+> `libriichi.dylib`，但 CPython 只認 `.so` —— 要改名複製成 `mortal/libriichi.so`，
+> 否則 ImportError。已在 Apple Silicon 實測通過（編譯 32.5 秒，推論 14 ms/決策）。
 
 ### 3. 平台權限
 
@@ -230,7 +234,7 @@ python tools/gt.py inspect data/ws.jsonl --actions --mjai-out data/g1.mjai.jsonl
 | M2 | 封包擷取 → MJAI 事件流 + recorder | ✅ 已用真實對局驗證;MITM 兩模式已實作但未實測 |
 | M3 | **功能 1**:手牌 CV | ✅ 校正穩定化、手牌定位、牌面分類皆完成;準確率報告待錄影 |
 | M4 | **功能 1**:向聽 / 進張計算 | ✅ 完成 —— `analysis/shanten.py`,整條管線已跑通 |
-| M5 | **功能 2**:engine 子程序 + Mortal 接入 | |
+| M5 | **功能 2**:engine 子程序 + Mortal 接入 | 進行中 —— libriichi 與權重已在 macOS 實測跑通,剩子程序層 |
 | M6 | UI 側邊視窗 | |
 | M7 | Overlay 模式 | |
 | M8 | **功能 3**:風格微調(見下節) | |

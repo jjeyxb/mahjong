@@ -8,21 +8,49 @@
 #   3. AGPL 隔離:透過子程序 + MJAI stdio 協定通訊,
 #      通常視為獨立程式,避免授權傳染到主程式。
 #
-# 建置步驟:
+# ---------------------------------------------------------------------------
+# 建置步驟(macOS Apple Silicon 已實測,2026-07-29)
+# ---------------------------------------------------------------------------
+#   brew install python@3.12
+#   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+#
 #   python3.12 -m venv engines/mortal/.venv
 #   engines/mortal/.venv/bin/pip install -r engines/mortal/requirements.txt
-#   # 編譯 libriichi(**不需要 maturin**,Mortal 是直接用 cargo 建 cdylib):
-#   #   git clone https://github.com/Equim-chan/Mortal && cd Mortal
-#   #   cargo build -p libriichi --lib --release
-#   #   # Linux : cp target/release/libriichi.so  mortal/libriichi.so
-#   #   # Windows: cp target/release/riichi.dll   mortal/libriichi.pyd  (需 MSYS2)
-#   # 權重 .pth 放到專案根目錄的 models/(已 gitignore)
 #
-# 若日後要做風格微調(見 README「候選延伸」一節),還需要 Mortal 自己的
-# environment.yml 依賴:tqdm / toml / tensorboard。
+#   git clone --depth 1 https://github.com/Equim-chan/Mortal.git engines/mortal/Mortal
+#   cd engines/mortal/Mortal
+#   PYO3_PYTHON=$(which python3.12) cargo build -p libriichi --lib --release
+#
+#   # 產物名稱依平台而異(libriichi 的 [lib] name 是 "riichi"):
+#   #   macOS  : cp target/release/libriichi.dylib mortal/libriichi.so   ← 見下方註記
+#   #   Linux  : cp target/release/libriichi.so    mortal/libriichi.so
+#   #   Windows: cp target/release/riichi.dll      mortal/libriichi.pyd  (需 MSYS2)
+#
+#   # 權重 .pth 放到專案根目錄的 models/(已 gitignore):
+#   curl -L -o models/mortal_298k.pth \
+#     https://huggingface.co/VoidShine/mortal-298k/resolve/main/mortal_298k.pth
+#
+# **不需要 maturin。** Mortal 直接用 cargo 建 cdylib,先前文件寫錯了。
+#
+# **macOS 的副檔名要改。** 官方建置文件只寫了 Linux 與 Windows。在 macOS 上
+# cargo 產出的是 `libriichi.dylib`,但 CPython 的擴充模組載入器只認 `.so`,
+# 直接放 .dylib 會 ImportError。改名複製即可,不需要重編。
+#
+# 實測數據(M5 Pro / 15 核):
+#   cargo build --release  32.5 秒(release profile 有 lto=true + codegen-units=1)
+#   推論                   14 ms/決策(CPU;torch 的 MPS 後端可用但未實測)
+#   權重                   130 MB,mortal 主幹 10.8M 參數,version=4,resnet 192x40
+#
+# 若要做風格微調(見 README「功能 3」),還需要 Mortal 自己 environment.yml
+# 的依賴:tqdm / toml / tensorboard。
 
 torch>=2.13
 numpy>=2.5
 
+# 微調時才需要(train.py / train_grp.py 會 import)
+tqdm
+toml
+# tensorboard              # 只有要看訓練曲線時才裝
+
 # libriichi — 不在 PyPI,見上方建置步驟
-# mjai>=0.2.1               # 選用:離線牌譜模擬與三方比較評測
+# mjai>=0.2.1              # 選用:離線牌譜模擬與多模型比較評測
