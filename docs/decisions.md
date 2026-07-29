@@ -296,6 +296,30 @@ Akagi = 封包攔截 + 掛上 Mortal 公開權重。如果本專題也只是這�
 打牌建議只看**向聽與進張**,不看打點、安全度、場況 —— 那些是功能 2
 (Mortal)的工作。
 
+### M5 前置:Mortal 引擎在 Apple Silicon 上跑起來了(2026-07-29)
+
+先前列為「最大風險」的一項:Mortal 的建置文件只寫 Linux 與 Windows/MSYS2,
+**macOS ARM 沒有支援聲明**。實測結果是**可以**,而且比預期順利得多。
+
+| 項目 | 結果 |
+|---|---|
+| `cargo build -p libriichi --lib --release` | **32.5 秒**(M5 Pro / 15 核) |
+| `import libriichi` | 成功 |
+| 權重 `mortal_298k.pth` | 130 MB,`version=4`、resnet 192x40、298000 steps、主幹 10.8M 參數 |
+| 對真實錄影跑推論 | 249 個 MJAI 事件,**14 ms/決策**(CPU) |
+| 與真人打法一致率 | **80%**(30 次切牌決策中 24 次相同) |
+
+**官方文件漏掉的一步**:macOS 上 cargo 產出的是 `libriichi.dylib`,但 CPython
+的擴充模組載入器只認 `.so`,直接放會 ImportError。改名複製即可,不需重編。
+(libriichi 的 `[lib] name` 是 `"riichi"`,所以 Linux 產物才叫 `libriichi.so`。)
+
+**同時證實了微調可行**:權重檔裡確實有 `optimizer` / `scheduler` / `scaler`,
+與先前讀 `train.py` 得到的結論一致 —— 指向 `state_file` 就能續訓。
+
+那 80% 的一致率也順帶驗證了事件流餵得正確(隨機猜約 7%)。不一致的地方看起來
+很合理:Mortal 傾向留紅寶牌 `5sr`、切么九 `1p`,玩家反之 —— 是風格差異,
+不是雜訊。**這正好是功能 3 想量化的東西。**
+
 ### 牌面模板為什麼從官方資源取,不從畫面裁
 
 從畫面裁需要有人先說「這張是幾萬」。人工標 37 類容易錯,而**一張標錯的模板是
