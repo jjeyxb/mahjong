@@ -87,7 +87,7 @@ src/majsoul_copilot/
 ├── config/        設定模型 (pydantic)、YAML 載入、skin profile
 ├── capture/       平台擷取抽象:macos(Quartz) / windows(PrintWindow) / mss fallback
 ├── calibration/   牌桌矩形偵測、DPI 與 Retina 縮放、ROI 正規化
-├── vision/        純 CV,無狀態:roi + tiles/segment(只處理自己的手牌)
+├── vision/        純 CV,無狀態:roi + tiles/hand(只處理自己的手牌)
 ├── mjai/          events / tiles(牌表示轉換)
 ├── engine/        base / subprocess_engine / mortal / dummy / multiplex
 ├── ui/            viewmodel + panel/ overlay/ widgets/
@@ -215,7 +215,7 @@ python tools/gt.py inspect data/ws.jsonl --actions --mjai-out data/g1.mjai.jsonl
 | M0 | 專案骨架、設定載入、日誌 | ✅ 完成 |
 | M1 | 擷取層雙平台 + 校正 | ✅ macOS 完成並實機驗證;Windows 待驗證 |
 | M2 | 封包擷取 → MJAI 事件流 + recorder | ✅ 已用真實對局驗證;MITM 兩模式已實作但未實測 |
-| M3 | **功能 1**:手牌 CV | 進行中 —— ROI 解析與斜面切牌已完成 |
+| M3 | **功能 1**:手牌 CV | 進行中 —— 校正穩定化與手牌定位已完成,剩牌面分類 |
 | M4 | **功能 1**:向聽 / 進張計算 | |
 | M5 | **功能 2**:engine 子程序 + Mortal 接入 | |
 | M6 | UI 側邊視窗 | |
@@ -228,9 +228,9 @@ python tools/gt.py inspect data/ws.jsonl --actions --mjai-out data/g1.mjai.jsonl
    丟掉離譜候選 → 逐分量中位數。用實測分布做蒙地卡羅，「誤差 > 1%」的機率
    從 **13.4% 降到 0%**，最差情況從 287 px 降到 11 px。
    尚未對真實錄影端對端複驗（原始錄影已刪除）。
-2. **斜面色相改為開局就地量測** —— 目前寫死 `H≈16`，而那個色相來自可自訂的
-   牌背材質。牌背由主視角玩家決定、同一場對局內四家統一，所以開局時從對面的
-   暗手牌量一次即可。
+2. ~~**擺脫可自訂牌背的色相依賴**~~ —— ✅ 已完成（`vision/tiles/hand.py`）。
+   改用**固定槽位模型** `x_k = origin + k*pitch`（實測殘差 < 1 px），佔用以
+   標準差判斷，完全不看顏色。原本要做的「開局就地量測色相」整項取消。
 3. **牌面模板庫 + 分類器** —— 用封包當 GT 自動標註，建 `assets/tiles/`，
    再量 per-tile 準確率。
 
@@ -301,7 +301,7 @@ Mortal 的 GitHub 也**沒有任何 release** —— 兩處都沒有 `grp.pth`�
 | 2 | macOS Retina 邏輯座標 ≠ 像素座標 | ROI 一律存成相對牌桌矩形的 0~1 正規化座標，執行期再乘實際像素尺寸 | ✅ 已實作 |
 | 3 | 視窗擷取含 OS 標題列 / 瀏覽器工具列 | 多輪邊緣剝除：從四邊往內剝「整條顏色一致」的帶狀區域 | ✅ 已實作，Chromium 上也正確 |
 | 4 | 單幀校正是啟發式，會被動畫與立繪干擾（216 幀產生 21 種 `table_rect`，16% 明顯錯誤） | `StableCalibrator`：多幀取樣 → 丟掉離譜候選 → 逐分量中位數 | ✅ 已修，尚未對真實錄影複驗 |
-| 5 | 玩家自訂牌背改變切牌的色相基準 | 開局時從對面的暗手牌就地量測，不寫死 | ❌ 未修，M3 第二項 |
+| 5 | 玩家自訂牌背改變切牌的色相基準 | 改用固定槽位 + 標準差判斷佔用，不看顏色 | ✅ 已解決，色相依賴整個移除 |
 | 6 | 雀魂 3D 傾斜視角 | 手牌接近正面平視，可直接處理 | ✅ 牌河已移出範圍，不再是問題 |
 
 ### M1 實機實測（macOS 26.5.2 · M 系列 · Retina 2×）
