@@ -32,15 +32,41 @@ python tools/capture_probe.py --list
 
 ## 錄的時候
 
-開兩個終端機。**順序無所謂,重疊的那一段才算數**,所以兩邊都早點開、晚點關。
+開兩個終端機。**兩個都在登入之前就開,不要等進了牌桌才開畫面錄製。**
+
+`record.py` 只存有變化的幀,大廳那段靜止畫面 654 幀只會存下 1 張,幾乎不佔空間。
+反過來「等進對局再開」看似省事,實際上多了一個要人記得的同步點 ——
+2026-07-29 第一次嘗試就是漏掉那一步,結果整場只錄到封包。
 
 ```bash
-# 終端機 A —— 封包。會開一個 Chromium,在裡面登入並進對局
-python tools/gt.py cdp --out data/gt/ws.jsonl
+# 終端機 A —— 封包。會開一個 Chromium
+python tools/gt.py cdp --out data/gt/ws.jsonl --user-data-dir data/gt/browser-profile
 
-# 終端機 B —— 畫面。等 A 的瀏覽器開好、進到牌桌之後再開
-python tools/record.py --notes "評測用 東風戰"
+# 終端機 B —— 畫面。瀏覽器一開好就下,不用等進牌桌
+python tools/record.py --window "#<handle>" --notes "評測用 東風戰"
 ```
+
+`--user-data-dir` 會保留登入狀態,重錄時不用再登一次。
+
+### 一定要用 `--window` 指定
+
+自動偵測靠標題比對,而**開著這個專案的編輯器標題也含「雀魂」**,而且視窗更大:
+
+```
+[9594] Google Chrome for Testing — 雀魂麻將 1113x813     ← 要這個
+[8072] Code — 雀魂麻將輔助軟體架構設計 — mahjong 1512x865   ← 會被誤選
+```
+
+先用 `python tools/capture_probe.py --list` 拿到 handle,再 `--window "#9594"`。
+
+### 兩種視窗大小要錄成兩個 session
+
+session manifest 只存**一個** `table_rect`,錄製中途縮放視窗的話,`StableCalibrator`
+會重新校正(尺寸變了就重置),但 manifest 留著的仍是第一次鎖定的那個,
+`tools/evaluate.py` 因此會拿舊座標去切後半段的 ROI。
+
+所以流程是:錄一段 → 停掉 `record.py` → 縮放視窗 → 重新 `record.py`(新的 handle 要重查)。
+**封包那邊不用停**,一份 `ws.jsonl` 可以同時對應兩個 session。
 
 錄製中要做到的事:
 
