@@ -17,6 +17,9 @@
 > 對局狀態，封包只當 Ground Truth。調整的原因、被放棄的東西、以及已經量測完成
 > 但不再使用的座標，完整記在 **[docs/decisions.md](docs/decisions.md)**。
 
+> **接手這個專案？** 先看 **[docs/handoff.md](docs/handoff.md)** —— 現況、
+> 跑法、已經決定過不要再討論的事、以及踩過的坑，一份講完。
+
 ---
 
 ## 專題定位
