@@ -18,7 +18,7 @@
 (把 stdin 設成 utf-8、關掉警告)在這裡沒有必要:父程序開子程序時就指定了
 utf-8,警告本來就走 stderr,不會污染 stdout 上的協定。
 
-與上游 ``mortal.py`` 的三個差異
+與上游 ``mortal.py`` 的四個差異
 -------------------------------
 1. **握手**:載入權重要好幾秒,先送一行 ``hello`` 父程序才分得出「還在載入」
    與「已經死了」。
@@ -27,6 +27,8 @@ utf-8,警告本來就走 stderr,不會污染 stdout 上的協定。
 3. **例外轉成 JSON**:上游讓例外往上拋,父程序只會看到 stderr 上的 traceback
    與一個 returncode。這裡把它變成 ``{"type":"error","message":...}``,
    父程序可以指名道姓地報出是哪個引擎、在哪一手壞掉。
+4. **座位由 ``start_game`` 決定**,``--seat`` 只是它到達之前的預設值。
+   見下方 :func:`main` 的說明。
 
 推論本身完全沒有改 —— 用的是上游的 ``MortalEngine`` 與 ``libriichi.mjai.Bot``。
 """
@@ -56,8 +58,28 @@ def _emit(payload: dict) -> None:
     sys.stdout.flush()
 
 
+def _seat_of(line: str) -> int | None:
+    """若這一行是 ``start_game``,回傳它宣告的座位;否則 ``None``。
+
+    刻意只認 ``start_game``:MJAI 事件的 ``actor`` 講的是「誰做了這件事」,
+    不是「我是誰」,拿它當座位會每一手都換人。
+    """
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(event, dict) or event.get("type") != "start_game":
+        return None
+    value = event.get("id")
+    return value if isinstance(value, int) and 0 <= value <= 3 else None
+
+
 def _load(weights: str, seat: int, upstream: Path):
-    """載入權重、組出 libriichi 的 Bot。回傳 ``(bot, 模型標籤)``。
+    """載入權重、組出 libriichi 的 Bot。回傳 ``(bot, 換座位用的工廠, 模型標籤)``。
+
+    工廠一起回傳是為了讓 ``main`` 能在收到 ``start_game`` 時換座位而**不重載
+    權重** —— ``Bot`` 的座位是建構參數,但 ``MortalEngine`` 與那 130MB 的權重
+    與座位無關,重載一次要 10 秒。
 
     import 寫在函式內而非檔案開頭:torch 載入要好幾秒,失敗訊息也長,放在這裡
     才能被 :func:`main` 的 try 包住、轉成一行 JSON 送回父程序。開頭 import 的話
@@ -101,12 +123,21 @@ def _load(weights: str, seat: int, upstream: Path):
         enable_rule_based_agari_guard=True,
         name=BOT_NAME,
     )
-    return Bot(engine, seat), tag
+    def make_bot(for_seat: int):
+        return Bot(engine, for_seat)
+
+    return make_bot(seat), make_bot, tag
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Mortal MJAI bot(子程序端)")
-    parser.add_argument("--seat", type=int, required=True, choices=range(4), help="自己的座位 0~3")
+    parser.add_argument(
+        "--seat",
+        type=int,
+        default=0,
+        choices=range(4),
+        help="start_game 到達前的預設座位 0~3(即時模式下事件會覆蓋它)",
+    )
     parser.add_argument("--weights", required=True, help="權重 .pth 的路徑")
     parser.add_argument(
         "--upstream",
@@ -117,7 +148,7 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        bot, tag = _load(args.weights, args.seat, args.upstream)
+        bot, make_bot, tag = _load(args.weights, args.seat, args.upstream)
     except Exception as exc:  # noqa: BLE001 - 任何載入失敗都要讓父程序看得懂
         _emit({"type": "error", "message": f"載入失敗: {exc}", "traceback": traceback.format_exc()})
         return 1
@@ -128,6 +159,18 @@ def main() -> int:
         line = raw.strip()
         if not line:
             continue
+
+        # 座位跟著 start_game 走,而不是只信 --seat。即時模式下父程序在事件流
+        # 開始之前就得把引擎起好(載權重要 10 秒,不能等到發牌才開始載),
+        # 那時還不知道自己坐哪;而連打兩場時座位幾乎一定會變。
+        #
+        # 每個 start_game 都重建,即使座位相同 —— libriichi 的 Bot 會不會在
+        # 收到第二個 start_game 時自己歸零並未證實,而重建的成本只有一個
+        # Python 物件(權重與 MortalEngine 原封不動留著),不值得去賭。
+        new_seat = _seat_of(line)
+        if new_seat is not None:
+            bot = make_bot(new_seat)
+
         try:
             reaction = bot.react(line)
         except Exception as exc:  # noqa: BLE001 - 同上,一手算壞不該讓整場沒有訊息地結束

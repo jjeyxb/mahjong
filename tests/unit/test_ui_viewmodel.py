@@ -289,3 +289,51 @@ class TestPrimaryEngine:
         m.update_advices([self._advice("baseline", "1m"), self._advice("mortal", "9p")])
         assert m.state.primary is not None
         assert m.state.primary.name == "baseline"
+
+
+class TestStaleAdvice:
+    """建議的牌已經不在手上。
+
+    手牌與建議是兩個獨立的更新槽,即時模式下最多差一個事件 —— 打牌的事件到了、
+    手牌變成 13 張,但建議還是上一巡的。標出來比藏起來好:使用者要能分辨
+    「剛剛打掉了」與「程式算錯了」。
+    """
+
+    def _advice(self, tile: str) -> Advice:
+        return Advice("mortal", Dahai(actor=0, pai=tile, tsumogiri=False), None, 12.0)
+
+    def test_fresh_advice_is_not_stale(self) -> None:
+        model = ViewModel()
+        model.update_packet_hand(("1m", "2m", "3s"))
+        model.update_advices([self._advice("3s")])
+        assert not model.state.advice_is_stale
+
+    def test_advice_for_a_tile_no_longer_held_is_stale(self) -> None:
+        model = ViewModel()
+        model.update_advices([self._advice("3s")])
+        model.update_packet_hand(("1m", "2m"))  # 3s 打掉了
+        assert model.state.advice_is_stale
+
+    def test_no_hand_means_nothing_to_compare(self) -> None:
+        model = ViewModel()
+        model.update_advices([self._advice("3s")])
+        assert not model.state.advice_is_stale
+
+    def test_no_advice_means_nothing_to_compare(self) -> None:
+        model = ViewModel()
+        model.update_packet_hand(("1m", "2m"))
+        assert not model.state.advice_is_stale
+
+    def test_a_non_discard_advice_is_never_stale(self) -> None:
+        """立直、吃碰沒有對應的單張牌可比。"""
+        model = ViewModel()
+        model.update_packet_hand(("1m", "2m"))
+        model.update_advices([Advice("mortal", Reach(actor=0), None, 5.0)])
+        assert not model.state.advice_is_stale
+
+    def test_a_red_five_is_not_confused_with_the_plain_one(self) -> None:
+        """切赤五與切普通五是兩件事,不能互相當成「還在手上」。"""
+        model = ViewModel()
+        model.update_advices([self._advice("5mr")])
+        model.update_packet_hand(("5m", "1p"))
+        assert model.state.advice_is_stale

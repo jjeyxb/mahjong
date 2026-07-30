@@ -39,7 +39,7 @@ _UPSTREAM = "Mortal/mortal"
 def mortal_engine(
     weights: Path | str,
     *,
-    seat: int,
+    seat: int = 0,
     name: str = "mortal",
     root: Path | None = None,
     react_timeout: float = 5.0,
@@ -48,8 +48,11 @@ def mortal_engine(
 
     Args:
         weights: 權重 ``.pth`` 的路徑。
-        seat: 自己的座位 0~3。libriichi 的 ``Bot`` 在建構時就要知道,不能等
-            ``start_game`` —— 所以換座位必須換一個引擎實例。
+        seat: ``start_game`` 到達之前的座位。libriichi 的 ``Bot`` 在建構時就要
+            知道座位,所以子程序啟動時得先給一個值;但 ``bot.py`` 收到
+            ``start_game`` 會照它的 ``id`` 重建 ``Bot``(權重不重載),
+            **實際座位由事件流決定**。即時模式因此可以在還不知道自己坐哪的
+            時候就先把引擎起好 —— 載權重要 10 秒,不能等到發牌才開始載。
         name: 引擎名稱。同時跑多份權重比較時,這是唯一分得出誰是誰的東西。
         root: 專案根目錄,預設自動推導。測試會覆寫它。
         react_timeout: 每一手的逾時秒數。
