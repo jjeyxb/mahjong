@@ -56,7 +56,15 @@ from typing import Any
 from mia.mjai.events import MjaiEvent
 from mia.mjai.tiles import HONOR_ORDER
 
-__all__ = ["ACTION_SPACE", "TILE_ACTIONS", "Candidate", "action_label", "decode_candidates"]
+__all__ = [
+    "ACTION_SPACE",
+    "TILE_ACTIONS",
+    "Candidate",
+    "action_label",
+    "decode_candidates",
+    "is_decision",
+    "legal_count",
+]
 
 #: libriichi 的動作空間大小。
 ACTION_SPACE = 46
@@ -92,7 +100,9 @@ _DISPLAY = {
     "kan": "槓",
     "hora": "和了",
     "ryukyoku": "流局",
-    "none": "不動作",
+    # 「跳過」而不是「不動作」:這個標籤只會出現在候選清單裡,而那時它代表的是
+    # 遊戲上那個「跳過」按鈕 —— 用同一個詞使用者才對得起來。
+    "none": "跳過",
 }
 
 
@@ -157,6 +167,39 @@ class Candidate:
     def __str__(self) -> str:
         mark = " ←" if self.chosen else ""
         return f"{self.display} {self.q:+.3f}{mark}"
+
+
+def legal_count(meta: Mapping[str, Any] | None) -> int:
+    """這一手有幾個合法動作。沒有 ``mask_bits`` 就回 0。"""
+    if not meta:
+        return 0
+    mask = meta.get("mask_bits")
+    if not isinstance(mask, int) or mask < 0:
+        return 0
+    return bin(mask).count("1")
+
+
+def is_decision(meta: Mapping[str, Any] | None) -> bool:
+    """引擎是不是**真的被要求做選擇**。
+
+    這個判斷是必要的,因為「引擎回 none」有兩種完全不同的意思:
+
+    ========================  ==============  ================================
+    情況                       合法動作數      該怎麼顯示
+    ========================  ==============  ================================
+    沒有人在問(別人在摸打)    0               什麼都不要動,保持上一手的建議
+    遊戲在問,引擎說不鳴       > 1             **「跳過」** —— 這是一個答案
+    ========================  ==============  ================================
+
+    兩者都是 ``action is None``,分不出來的話就會出現實測到的這個 bug:遊戲跳出
+    「碰 / 槓 / 跳過」三個按鈕,而畫面上還掛著上一巡那個已經打掉的切牌建議。
+    使用者要的答案(該不該鳴)恰好就是被丟掉的那一個。
+
+    實測(完整一場東風戰):合法動作數為 0 的事件 469 個、大於 1 的 8 個。
+    那 8 個就是原本被丟掉的「跳過」決策,其中一個的 Q 值是
+    ``碰 -0.11`` 對 ``跳過 +0.10`` —— 只差 0.21,正是最值得看到的那種。
+    """
+    return legal_count(meta) > 1
 
 
 def decode_candidates(meta: Mapping[str, Any] | None) -> tuple[Candidate, ...]:

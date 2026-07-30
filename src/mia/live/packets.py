@@ -117,7 +117,7 @@ class PacketWorker(threading.Thread):
         dump: 要跟著走的錄影檔。
         engines: 要用的引擎。**座位不需要事先知道** —— ``bot.py`` 會照
             ``start_game`` 的 ``id`` 換座位,所以引擎可以在對局開始前就先起好
-            (載權重要 10 秒,等到發牌才載就來不及了)。
+            (載權重實測 0.5~0.6 秒,不長,但發牌那一刻才開始載仍然來不及)。
         from_start: 見 :class:`DumpTail`。
     """
 
@@ -216,7 +216,10 @@ class PacketWorker(threading.Thread):
         if not self._group.failed:
             self.status.say("")
 
-        if result.actions:
+        # 用 decisions 而不是 actions:「跳過」也是答案。只看 actions 的話,
+        # 遊戲跳出「碰 / 槓 / 跳過」而引擎說不鳴時,畫面上會留著上一巡那個
+        # 已經打掉的切牌建議 —— 使用者要的答案恰好就是被丟掉的那一個。
+        if result.decisions:
             self.decisions += 1
             self._bus.post(Advices(result.advices))
 

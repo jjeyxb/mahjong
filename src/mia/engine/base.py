@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+from mia.engine.actions import is_decision
 from mia.mjai import MjaiEvent
 
 __all__ = ["AIEngine", "Advice", "EngineError", "EngineTimeout"]
@@ -56,8 +57,31 @@ class Advice:
     def is_action(self) -> bool:
         return self.action is not None
 
+    @property
+    def is_decision(self) -> bool:
+        """這一手是不是一個**決策點** —— 即使結論是「跳過」。
+
+        有動作時當然是。沒有動作時要看引擎是不是本來就有得選:遊戲跳出
+        「碰 / 槓 / 跳過」時引擎回 ``none``,那個 ``none`` 的意思是「跳過」,
+        是使用者要的答案;而別人在摸打時的 ``none`` 只是「沒人在問」。
+        兩者都是 ``action is None``,靠 ``meta`` 裡的合法動作數才分得開。
+
+        規則式引擎沒有 ``meta``,所以它的「不動作」一律不算決策點 ——
+        它本來就不鳴牌(見 :class:`~mia.engine.dummy.DummyEngine`),
+        把它算進來只會讓畫面在「跳過」與切牌建議之間閃。
+        """
+        return self.is_action or is_decision(self.meta)
+
+    @property
+    def declined(self) -> bool:
+        """被問了,但選擇不動作 —— 也就是「跳過」。"""
+        return not self.is_action and is_decision(self.meta)
+
     def __str__(self) -> str:
-        body = str(self.action) if self.action is not None else "不動作"
+        if self.action is not None:
+            body = str(self.action)
+        else:
+            body = "跳過" if self.declined else "不動作"
         return f"[{self.engine}] {body} ({self.latency_ms:.0f} ms)"
 
 
