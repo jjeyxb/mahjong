@@ -12,6 +12,8 @@ from mia.engine.actions import (
     ACTION_SPACE,
     TILE_ACTIONS,
     decode_candidates,
+    is_decision,
+    legal_count,
 )
 
 #: 2026-07-30 實測:手牌 123456789m 123p 5p 摸 9s,引擎回 reach。
@@ -79,7 +81,7 @@ class TestDecodeReach:
 
 class TestDecodeCalls:
     def test_chi_pon_and_none_are_labelled(self) -> None:
-        """38/39/40 是吃的三種、41 是碰、45 是不動作 —— 全部實測確認過。"""
+        """38/39/40 是吃的三種、41 是碰、45 是跳過 —— 全部實測確認過。"""
         candidates = decode_candidates(CALL_META)
         labels = [c.label for c in candidates]
         assert labels.count("chi") == 3
@@ -92,7 +94,7 @@ class TestDecodeCalls:
 
     def test_calls_display_in_chinese(self) -> None:
         displays = {c.display for c in decode_candidates(CALL_META)}
-        assert {"吃", "碰", "不動作"} <= displays
+        assert {"吃", "碰", "跳過"} <= displays
 
 
 class TestRejection:
@@ -118,3 +120,50 @@ class TestRejection:
     def test_bits_beyond_the_action_space_are_ignored(self) -> None:
         """遮罩若出現不該有的高位元,那是理解錯了 —— 長度就會對不上而被擋掉。"""
         assert decode_candidates({"mask_bits": 1 << 60, "q_values": [1.0]}) == ()
+
+
+class TestDecisionPoints:
+    """「引擎回 none」有兩種完全不同的意思,靠合法動作數才分得開。
+
+    這一段釘住一個實測到的 bug:遊戲跳出「碰 / 槓 / 跳過」三個按鈕,而畫面上
+    還掛著上一巡那個已經打掉的切牌建議 —— 使用者要的答案(該不該鳴)恰好就是
+    被丟掉的那一個。
+    """
+
+    def test_no_meta_means_no_decision(self) -> None:
+        """規則式 baseline 沒有 meta。它本來就不鳴牌,不該被算成決策點。"""
+        assert not is_decision(None)
+        assert not is_decision({})
+        assert legal_count(None) == 0
+
+    def test_a_single_legal_action_is_not_a_decision(self) -> None:
+        """立直之後強制摸切:只有一個選擇,沒有什麼要決定的。"""
+        assert legal_count({"mask_bits": 1 << 5}) == 1
+        assert not is_decision({"mask_bits": 1 << 5})
+
+    def test_more_than_one_legal_action_is_a_decision(self) -> None:
+        """上家打牌、手上有一對可以碰 —— 遮罩含碰(41)與跳過(45)。"""
+        meta = {"mask_bits": (1 << 41) | (1 << 45)}
+        assert legal_count(meta) == 2
+        assert is_decision(meta)
+
+    def test_the_pon_kan_skip_case_from_the_screenshot(self) -> None:
+        """實測的那一手:碰 -6.30、槓 -6.55、跳過 -0.15。"""
+        meta = {"mask_bits": (1 << 41) | (1 << 42) | (1 << 45)}
+        assert legal_count(meta) == 3
+        assert is_decision(meta)
+
+    def test_a_zero_mask_is_not_a_decision(self) -> None:
+        """別人在摸打,輪不到我 —— 一場東風戰裡有 469 個這種事件。"""
+        assert not is_decision({"mask_bits": 0})
+
+    def test_a_garbage_mask_does_not_raise(self) -> None:
+        """解錯了要安靜地當成「沒有決策」,不要讓 UI 崩掉。"""
+        for mask in ("八", None, -1, 3.5, [1]):
+            assert legal_count({"mask_bits": mask}) == 0
+
+    def test_the_skip_option_is_labelled_like_the_game_button(self) -> None:
+        """候選清單裡的那一列要與遊戲上「跳過」那顆按鈕用同一個詞。"""
+        meta = {"mask_bits": (1 << 41) | (1 << 45), "q_values": [-4.22, -0.13]}
+        labels = [c.display for c in decode_candidates(meta)]
+        assert labels == ["跳過", "碰"]

@@ -43,6 +43,15 @@ class GroupResult:
         return tuple(a for a in self.advices if a.is_action)
 
     @property
+    def decisions(self) -> tuple[Advice, ...]:
+        """這一手構成決策點的建議 —— **含結論是「跳過」的**。
+
+        與 :attr:`actions` 分開,是因為「跳過」也是答案。只看 actions 的話,
+        遊戲跳出「碰 / 槓 / 跳過」而引擎說不鳴時,呼叫端會以為這一手沒事發生。
+        """
+        return tuple(a for a in self.advices if a.is_decision)
+
+    @property
     def is_unanimous(self) -> bool:
         """所有有動作的引擎是否給了同一個答案。
 

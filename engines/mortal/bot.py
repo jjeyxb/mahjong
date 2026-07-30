@@ -79,7 +79,7 @@ def _load(weights: str, seat: int, upstream: Path):
 
     工廠一起回傳是為了讓 ``main`` 能在收到 ``start_game`` 時換座位而**不重載
     權重** —— ``Bot`` 的座位是建構參數,但 ``MortalEngine`` 與那 130MB 的權重
-    與座位無關,重載一次要 10 秒。
+    與座位無關,沒有理由為了換座位再載一次。
 
     import 寫在函式內而非檔案開頭:torch 載入要好幾秒,失敗訊息也長,放在這裡
     才能被 :func:`main` 的 try 包住、轉成一行 JSON 送回父程序。開頭 import 的話
@@ -161,7 +161,7 @@ def main() -> int:
             continue
 
         # 座位跟著 start_game 走,而不是只信 --seat。即時模式下父程序在事件流
-        # 開始之前就得把引擎起好(載權重要 10 秒,不能等到發牌才開始載),
+        # 開始之前就得把引擎起好(載權重要時間,不能等到發牌那一刻才開始),
         # 那時還不知道自己坐哪;而連打兩場時座位幾乎一定會變。
         #
         # 每個 start_game 都重建,即使座位相同 —— libriichi 的 Bot 會不會在

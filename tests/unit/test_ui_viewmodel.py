@@ -337,3 +337,73 @@ class TestStaleAdvice:
         model.update_advices([self._advice("5mr")])
         model.update_packet_hand(("5m", "1p"))
         assert model.state.advice_is_stale
+
+
+#: 實測的那一手:碰 -6.30、槓 -6.55、跳過 -0.15,引擎選跳過。
+#: 就是使用者截圖裡那個「碰 / 槓 / 跳過」的局面。
+_SKIP_META = {
+    "mask_bits": (1 << 41) | (1 << 42) | (1 << 45),
+    "q_values": [-6.30, -6.55, -0.15],
+}
+
+
+class TestSkipDecisions:
+    """遊戲跳出「碰 / 槓 / 跳過」而引擎說不鳴 —— 那是一個答案,不是沒事發生。
+
+    釘住實測到的 bug:那一手畫面上還掛著上一巡已經打掉的切牌建議,
+    而使用者要的答案恰好就是被丟掉的那一個。
+    """
+
+    SKIP_META = _SKIP_META
+
+    def test_a_declined_call_is_marked_declined(self) -> None:
+        model = ViewModel()
+        model.update_advices([Advice("mortal", None, self.SKIP_META, 10.0)])
+        assert model.state.engines[0].declined
+
+    def test_the_headline_says_skip_not_no_action_needed(self) -> None:
+        model = ViewModel()
+        model.update_advices([Advice("mortal", None, self.SKIP_META, 10.0)])
+        assert model.state.engines[0].headline == "跳過"
+
+    def test_nothing_being_asked_still_says_no_action_needed(self) -> None:
+        """一場東風戰裡有 469 個這種事件 —— 它們不該說「跳過」。"""
+        model = ViewModel()
+        model.update_advices([Advice("mortal", None, {"mask_bits": 0}, 1.0)])
+        view = model.state.engines[0]
+        assert not view.declined
+        assert view.headline == "不需要動作"
+
+    def test_a_rule_based_engine_is_never_declining(self) -> None:
+        """baseline 沒有 meta,而且本來就不鳴牌。"""
+        model = ViewModel()
+        model.update_advices([Advice("baseline", None, None, 0.4)])
+        assert not model.state.engines[0].declined
+
+    def test_the_candidates_are_kept_so_the_user_sees_the_margin(self) -> None:
+        """最需要看到的正是「碰 -6.30 對 跳過 -0.15」這個對比。"""
+        model = ViewModel()
+        model.update_advices([Advice("mortal", None, self.SKIP_META, 10.0)])
+        labels = [c.display for c in model.state.engines[0].candidates]
+        assert labels == ["跳過", "碰", "槓"]
+
+    def test_a_declining_engine_becomes_primary(self) -> None:
+        """「跳過」也算有答案 —— 主角不該被讓給一個什麼都沒說的引擎。"""
+        model = ViewModel()
+        model.update_advices(
+            [
+                Advice("mortal", None, self.SKIP_META, 10.0),
+                Advice("baseline", None, None, 0.4),
+            ]
+        )
+        primary = model.state.primary
+        assert primary is not None
+        assert primary.name == "mortal"
+        assert primary.headline == "跳過"
+
+    def test_a_skip_is_not_marked_stale(self) -> None:
+        """``advice_is_stale`` 是比對「建議的牌還在不在手上」。跳過沒有牌可比。"""
+        model = ViewModel()
+        model.update_packet_hand(("1m", "2m", "3m"))
+        model.update_advices([Advice("mortal", None, self.SKIP_META, 10.0)])
+        assert not model.state.advice_is_stale

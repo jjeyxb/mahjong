@@ -60,11 +60,23 @@ class EngineView:
     tile: str | None = None
     candidates: tuple[Candidate, ...] = ()
     latency_ms: float = 0.0
+    declined: bool = False
 
     @property
     def has_reasoning(self) -> bool:
         """有沒有 Q 值可以解釋「為什麼」。"""
         return bool(self.candidates)
+
+    @property
+    def headline(self) -> str:
+        """要放在最上面那行的字。
+
+        三種狀態,而不是兩種:有動作、**跳過**、沒人在問。中間那個原本被歸到
+        「不需要動作」,於是遊戲跳出「碰 / 槓 / 跳過」時畫面上什麼都不說。
+        """
+        if self.action is not None:
+            return self.action
+        return "跳過" if self.declined else "不需要動作"
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,8 +145,10 @@ class ViewState:
             for engine in self.engines:
                 if engine.name == self.preferred_engine:
                     return engine
+        # 「跳過」也算有答案 —— 不然遊戲在問要不要鳴牌時,主角會被讓給一個
+        # 什麼都沒說的引擎
         for engine in self.engines:
-            if engine.action is not None:
+            if engine.action is not None or engine.declined:
                 return engine
         return self.engines[0] if self.engines else None
 
@@ -361,7 +375,16 @@ def _analyse(hand: tuple[str, ...]) -> tuple[HandAnalysis | None, tuple[DiscardO
 def _to_view(advice: Advice) -> EngineView:
     action = advice.action
     if action is None:
-        return EngineView(advice.engine, None, None, (), advice.latency_ms)
+        # 跳過的那一手要保留 candidates —— 使用者最需要看到的正是「碰 -0.11
+        # 對 跳過 +0.10」這個對比,那才回答得了「為什麼不鳴」
+        return EngineView(
+            advice.engine,
+            None,
+            None,
+            decode_candidates(advice.meta),
+            advice.latency_ms,
+            declined=advice.declined,
+        )
 
     tile = getattr(action, "pai", None)
     # 立直與吃碰的 Q 值也要看得到,所以 candidates 不因為「不是切牌」而省略

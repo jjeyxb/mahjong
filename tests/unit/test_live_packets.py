@@ -320,3 +320,63 @@ def _mjai_events_of(raw_lines: list[str]) -> list[dict]:
         if decoded is not None:
             events.extend(e.to_dict() for e in decoded.events)
     return events
+
+
+#: 上家打牌、手上有一對可以碰 —— 遮罩含碰(41)與跳過(45)。
+_DECLINE_META = {"mask_bits": (1 << 41) | (1 << 45), "q_values": [-4.22, -0.13]}
+
+
+class TestSkipIsPosted:
+    """「跳過」也要投進郵箱。
+
+    釘住實測到的 bug:``PacketWorker`` 原本只在 ``result.actions`` 非空時才投,
+    於是遊戲跳出「碰 / 槓 / 跳過」而引擎說不鳴的那一手什麼都不投 —— 畫面上留著
+    上一巡那個已經打掉的切牌建議,而使用者要的答案恰好就是被丟掉的那一個。
+    """
+
+    class DecliningEngine:
+        """一律回「跳過」(有 meta,所以算決策點)的假引擎。"""
+
+        name = "decliner"
+
+        def start(self) -> None: ...
+        def close(self) -> None: ...
+
+        def react(self, event: object) -> object:  # noqa: ARG002
+            from mia.engine.base import Advice
+
+            return Advice(self.name, None, dict(_DECLINE_META), 1.0)
+
+    class SilentEngine:
+        """一律回「沒人在問」(沒有 meta)的假引擎。"""
+
+        name = "silent"
+
+        def start(self) -> None: ...
+        def close(self) -> None: ...
+
+        def react(self, event: object) -> object:  # noqa: ARG002
+            from mia.engine.base import Advice
+
+            return Advice(self.name, None, None, 1.0)
+
+    def _feed(self, tmp_path: Path, raw_lines: list[str], engine: object) -> UpdateBus:
+        from mia.mjai import parse_event
+
+        bus = UpdateBus()
+        worker = PacketWorker(bus, dump=tmp_path / "unused.jsonl", engines=[engine])
+        worker._group.start()  # noqa: SLF001
+        for event in _mjai_events_of(raw_lines)[:40]:
+            worker._handle(parse_event(event))  # noqa: SLF001
+        return bus
+
+    def test_a_declined_call_reaches_the_bus(self, tmp_path: Path, raw_lines) -> None:
+        bus = self._feed(tmp_path, raw_lines, self.DecliningEngine())
+        assert any(isinstance(u, Advices) for u in bus.drain())
+
+    def test_nothing_being_asked_does_not_reach_the_bus(
+        self, tmp_path: Path, raw_lines
+    ) -> None:
+        """九成的事件是這種。每一步都覆蓋會讓畫面一直閃。"""
+        bus = self._feed(tmp_path, raw_lines, self.SilentEngine())
+        assert not any(isinstance(u, Advices) for u in bus.drain())

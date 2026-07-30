@@ -6,9 +6,12 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 
 from mia.engine import Advice, EngineError, EngineGroup
+from mia.engine.multiplex import GroupResult
 from mia.mjai import Dahai, MjaiEvent, Reach, Tsumo
 
 TSUMO = Tsumo(actor=0, pai="3s")
@@ -138,3 +141,27 @@ class TestFailure:
 
     def test_reacting_with_an_empty_group_is_harmless(self) -> None:
         assert EngineGroup([]).react(TSUMO).advices == ()
+
+
+class TestDecisions:
+    """``decisions`` 與 ``actions`` 分開:「跳過」也是答案。"""
+
+    SKIP_META: ClassVar[dict[str, object]] = {
+        "mask_bits": (1 << 41) | (1 << 45),
+        "q_values": [-4.22, -0.13],
+    }
+
+    def test_a_declined_call_counts_as_a_decision(self) -> None:
+        result = GroupResult((Advice("mortal", None, self.SKIP_META, 1.0),))
+        assert result.actions == ()
+        assert len(result.decisions) == 1
+
+    def test_nothing_being_asked_is_not_a_decision(self) -> None:
+        result = GroupResult((Advice("mortal", None, {"mask_bits": 0}, 1.0),))
+        assert result.decisions == ()
+
+    def test_a_real_action_is_also_a_decision(self) -> None:
+        result = GroupResult(
+            (Advice("mortal", Dahai(actor=0, pai="1m", tsumogiri=False), None, 1.0),)
+        )
+        assert len(result.decisions) == 1

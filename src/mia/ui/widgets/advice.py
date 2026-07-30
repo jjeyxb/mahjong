@@ -73,20 +73,36 @@ class _Headline(QWidget):
             self._tile.setVisible(False)
             self._detail.setText("")
             return
-        if engine.action is None:
+        top = engine.candidates[0] if engine.candidates else None
+
+        if engine.action is None and not engine.declined:
+            # 真的沒人在問。這是九成的事件,保持安靜。
             self._verb.setText("不需要動作")
             self._tile.setVisible(False)
             self._detail.setText(f"{engine.name}")
+            self._verb.setStyleSheet("font-size: 26px; font-weight: 600; color: palette(mid);")
             return
 
-        top = engine.candidates[0] if engine.candidates else None
+        if engine.action is None:
+            # 遊戲在問「碰 / 槓 / 跳過」,引擎說不鳴。**這是一個答案**,
+            # 底下的候選清單會列出鳴牌各要多少 Q,使用者才看得出差多少。
+            self._verb.setText("跳過")
+            self._tile.setVisible(False)
+            detail = f"{engine.name}"
+            if top is not None:
+                detail += f"   Q={top.q:+.2f}"
+            detail += f"   {engine.latency_ms:.0f} ms"
+            self._detail.setText(detail)
+            self._verb.setStyleSheet("font-size: 26px; font-weight: 600;")
+            return
+
         if engine.tile:
             self._verb.setText("切")
             self._tile.set_tile(engine.tile)
             self._tile.setVisible(True)
         else:
             # 立直、吃碰這種沒有對應的單張牌,直接把動作寫成大字
-            self._verb.setText(top.display if top else engine.action)
+            self._verb.setText(engine.action)
             self._tile.setVisible(False)
 
         detail = f"{engine.name}"
@@ -227,7 +243,7 @@ class AdviceTab(QWidget):
 
         for (name, value), engine in zip(self._other_labels, others, strict=False):
             name.setText(engine.name)
-            text = engine.action or "不需要動作"
+            text = engine.headline
             if not state.is_unanimous and engine.action is not None:
                 text += "   ⚠ 分歧"
             value.setText(text)
