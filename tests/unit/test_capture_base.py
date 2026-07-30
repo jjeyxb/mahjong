@@ -7,13 +7,13 @@ from typing import ClassVar
 import numpy as np
 import pytest
 
-from majsoul_copilot.capture.base import (
+from mia.capture.base import (
     CaptureBackend,
     Frame,
     WindowInfo,
     WindowNotFoundError,
 )
-from majsoul_copilot.utils.geometry import Rect, Size
+from mia.utils.geometry import Rect, Size
 
 
 class FakeBackend(CaptureBackend):

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from majsoul_copilot.engine.actions import (
+from mia.engine.actions import (
     ACTION_SPACE,
     TILE_ACTIONS,
     decode_candidates,
@@ -34,7 +34,7 @@ CALL_META = {
 
 class TestActionSpace:
     def test_the_label_table_covers_the_whole_space(self) -> None:
-        from majsoul_copilot.engine.actions import _LABELS
+        from mia.engine.actions import _LABELS
 
         assert len(_LABELS) == ACTION_SPACE == 46
 

@@ -12,9 +12,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from majsoul_copilot.capture.base import Frame, WindowInfo
-from majsoul_copilot.eval.align import HandState, HandTimeline, align, build_timeline
-from majsoul_copilot.recorder import SessionReader, SessionWriter
+from mia.capture.base import Frame, WindowInfo
+from mia.eval.align import HandState, HandTimeline, align, build_timeline
+from mia.recorder import SessionReader, SessionWriter
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "real_game_excerpt.jsonl"
 

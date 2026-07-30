@@ -14,7 +14,7 @@ import cv2
 import numpy as np
 import pytest
 
-from majsoul_copilot.vision.tiles.hand import (
+from mia.vision.tiles.hand import (
     DEFAULT_LAYOUT,
     MAX_CONCEALED,
     Hand,

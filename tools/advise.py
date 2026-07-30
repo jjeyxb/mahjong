@@ -29,12 +29,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from majsoul_copilot.engine import AIEngine, DummyEngine, EngineGroup
-from majsoul_copilot.groundtruth.liqi import LiqiParser
-from majsoul_copilot.groundtruth.schema import LiqiSchema
-from majsoul_copilot.groundtruth.to_mjai import MajsoulToMjai
-from majsoul_copilot.mjai import MjaiEvent, MjaiFormatError, parse_event
-from majsoul_copilot.utils.logging import setup_logging
+from mia.engine import AIEngine, DummyEngine, EngineGroup
+from mia.groundtruth.liqi import LiqiParser
+from mia.groundtruth.schema import LiqiSchema
+from mia.groundtruth.to_mjai import MajsoulToMjai
+from mia.mjai import MjaiEvent, MjaiFormatError, parse_event
+from mia.utils.logging import setup_logging
 
 #: 這些是「輪到自己時可以做的事」。比對引擎建議與真人實際動作時,只看這些。
 DECISIONS = frozenset(
@@ -75,7 +75,7 @@ def load_events(path: Path) -> tuple[list[MjaiEvent], str]:
 
 
 def _from_dump(path: Path) -> list[MjaiEvent]:
-    from majsoul_copilot.groundtruth.dump import parse_dump
+    from mia.groundtruth.dump import parse_dump
 
     schema = LiqiSchema.load()
     converters: dict[str, MajsoulToMjai] = {}
@@ -114,7 +114,7 @@ def build_engines(args: argparse.Namespace) -> list[AIEngine]:
     if not args.no_baseline:
         engines.append(DummyEngine())
     for weights in args.mortal or []:
-        from majsoul_copilot.engine.mortal import mortal_engine
+        from mia.engine.mortal import mortal_engine
 
         engines.append(mortal_engine(weights, seat=args.seat, name=Path(weights).stem))
     if not engines:

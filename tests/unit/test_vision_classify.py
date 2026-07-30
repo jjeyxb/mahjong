@@ -17,15 +17,15 @@ import cv2
 import numpy as np
 import pytest
 
-from majsoul_copilot.mjai.tiles import ms_to_mjai
-from majsoul_copilot.vision.tiles.classify import (
+from mia.mjai.tiles import ms_to_mjai
+from mia.vision.tiles.classify import (
     FACE_RATIO,
     Match,
     TemplateSet,
     classify,
     classify_hand,
 )
-from majsoul_copilot.vision.tiles.hand import read_hand
+from mia.vision.tiles.hand import read_hand
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 

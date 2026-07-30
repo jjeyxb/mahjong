@@ -13,14 +13,14 @@ from pathlib import Path
 
 import pytest
 
-from majsoul_copilot.engine import (
+from mia.engine import (
     Advice,
     EngineError,
     EngineTimeout,
     SubprocessEngine,
     SubprocessSpec,
 )
-from majsoul_copilot.mjai import Dahai, StartGame, Tsumo
+from mia.mjai import Dahai, StartGame, Tsumo
 
 FAKE_BOT = Path(__file__).resolve().parents[1] / "fixtures" / "fake_bot.py"
 

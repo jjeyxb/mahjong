@@ -11,10 +11,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from majsoul_copilot.capture.base import Frame, WindowInfo
-from majsoul_copilot.groundtruth.dump import DumpStats, iter_frames, parse_dump
-from majsoul_copilot.recorder import SessionReader, SessionWriter
-from majsoul_copilot.utils.geometry import Rect
+from mia.capture.base import Frame, WindowInfo
+from mia.groundtruth.dump import DumpStats, iter_frames, parse_dump
+from mia.recorder import SessionReader, SessionWriter
+from mia.utils.geometry import Rect
 
 
 def _frame(window: WindowInfo, value: int, t: float, *, size: tuple[int, int] = (120, 80)) -> Frame:
@@ -301,7 +301,7 @@ class TestDumpReading:
         assert len(list(iter_frames(path))) == 1
 
     def test_parse_failures_are_counted_not_raised(self, tmp_path: Path) -> None:
-        from majsoul_copilot.groundtruth.schema import DEFAULT_LIQI_PATH
+        from mia.groundtruth.schema import DEFAULT_LIQI_PATH
 
         if not DEFAULT_LIQI_PATH.is_file():
             pytest.skip("需要 assets/proto/liqi.json")

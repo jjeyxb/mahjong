@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import pytest
 
-from majsoul_copilot.engine.base import EngineError
-from majsoul_copilot.engine.mortal import mortal_engine
-from majsoul_copilot.mjai import Dahai, Reach, StartGame, StartKyoku, Tsumo
-from majsoul_copilot.utils.paths import MODELS_DIR
+from mia.engine.base import EngineError
+from mia.engine.mortal import mortal_engine
+from mia.mjai import Dahai, Reach, StartGame, StartKyoku, Tsumo
+from mia.utils.paths import MODELS_DIR
 
 WEIGHTS = MODELS_DIR / "mortal_298k.pth"
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from majsoul_copilot.mjai import (
+from mia.mjai import (
     Ankan,
     Chi,
     Dahai,
@@ -20,7 +20,7 @@ from majsoul_copilot.mjai import (
     StartKyoku,
     Tsumo,
 )
-from majsoul_copilot.mjai.handstate import HandTracker, UnknownSeatError
+from mia.mjai.handstate import HandTracker, UnknownSeatError
 
 TENPAI = ["1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "1p", "2p", "3p"]
 

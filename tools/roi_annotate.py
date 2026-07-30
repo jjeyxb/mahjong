@@ -52,7 +52,7 @@ import cv2
 import numpy as np
 import yaml
 
-from majsoul_copilot.config.loader import load_config
+from mia.config.loader import load_config
 
 WINDOW = "ROI annotate"
 

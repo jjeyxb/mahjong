@@ -34,18 +34,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import cv2
 
-from majsoul_copilot.calibration import StableCalibrator
-from majsoul_copilot.calibration.debug import annotate_calibration
-from majsoul_copilot.capture import (
+from mia.calibration import StableCalibrator
+from mia.calibration.debug import annotate_calibration
+from mia.capture import (
     CaptureBackend,
     CaptureError,
     WindowInfo,
     available_backends,
     create_backend,
 )
-from majsoul_copilot.config.loader import load_config
-from majsoul_copilot.config.models import AppConfig
-from majsoul_copilot.utils.logging import setup_logging
+from mia.config.loader import load_config
+from mia.config.models import AppConfig
+from mia.utils.logging import setup_logging
 
 
 def _resolve_window(

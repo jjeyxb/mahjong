@@ -30,14 +30,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import cv2
 
-from majsoul_copilot.calibration import StableCalibrator
-from majsoul_copilot.capture import CaptureError, WindowInfo, create_backend
-from majsoul_copilot.capture.base import CaptureBackend
-from majsoul_copilot.config.loader import load_config
-from majsoul_copilot.config.models import AppConfig
-from majsoul_copilot.recorder import SessionReader, SessionWriter, record_session
-from majsoul_copilot.utils.logging import setup_logging
-from majsoul_copilot.utils.paths import DATA_DIR
+from mia.calibration import StableCalibrator
+from mia.capture import CaptureError, WindowInfo, create_backend
+from mia.capture.base import CaptureBackend
+from mia.config.loader import load_config
+from mia.config.models import AppConfig
+from mia.recorder import SessionReader, SessionWriter, record_session
+from mia.utils.logging import setup_logging
+from mia.utils.paths import DATA_DIR
 
 DEFAULT_ROOT = DATA_DIR / "recordings"
 

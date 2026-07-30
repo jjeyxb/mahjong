@@ -34,8 +34,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from majsoul_copilot.groundtruth.schema import DEFAULT_LIQI_PATH, LiqiSchema
-from majsoul_copilot.utils.logging import setup_logging
+from mia.groundtruth.schema import DEFAULT_LIQI_PATH, LiqiSchema
+from mia.utils.logging import setup_logging
 
 BASE_URL = "https://game.maj-soul.com/1"
 VERSION_PATH = DEFAULT_LIQI_PATH.with_name("liqi.version.json")

@@ -14,9 +14,9 @@ from pathlib import Path
 import cv2
 import pytest
 
-from majsoul_copilot.eval.align import AlignedFrame, HandState
-from majsoul_copilot.eval.report import FrameResult, evaluate_frame, summarize
-from majsoul_copilot.vision.tiles.classify import TemplateSet
+from mia.eval.align import AlignedFrame, HandState
+from mia.eval.report import FrameResult, evaluate_frame, summarize
+from mia.vision.tiles.classify import TemplateSet
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 

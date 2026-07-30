@@ -5,10 +5,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from majsoul_copilot.calibration.table import Calibration, TableCalibrator
-from majsoul_copilot.capture.base import Frame, WindowInfo
-from majsoul_copilot.config.models import CalibrationConfig
-from majsoul_copilot.utils.geometry import NormRect, Rect, Size
+from mia.calibration.table import Calibration, TableCalibrator
+from mia.capture.base import Frame, WindowInfo
+from mia.config.models import CalibrationConfig
+from mia.utils.geometry import NormRect, Rect, Size
 from tests.conftest import make_letterboxed
 
 

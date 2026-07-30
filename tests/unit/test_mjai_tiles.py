@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from majsoul_copilot.mjai.tiles import (
+from mia.mjai.tiles import (
     HONOR_ORDER,
     UNKNOWN,
     TileError,

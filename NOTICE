@@ -1,7 +1,7 @@
-Majsoul Copilot
-===============
+Mahjong Intelligence Assistant (MIA)
+=====================================
 
-Copyright (c) 2026 Majsoul Copilot contributors
+Copyright (c) 2026 MIA contributors
 
 本專案採 GNU Affero General Public License v3.0 或更新版本
 (AGPL-3.0-or-later) 授權,全文見同目錄的 LICENSE 檔。
@@ -33,7 +33,7 @@ Copyright (c) 2026 Majsoul Copilot contributors
 授權:Apache License 2.0
 使用方式:**參考其協定說明文件,以 Python 重新實作;未複製其原始碼。**
 
-具體而言,`src/majsoul_copilot/groundtruth/to_mjai.py` 所實作的
+具體而言,`src/mia/groundtruth/to_mjai.py` 所實作的
 「雀魂 liqi 動作 → MJAI 事件」對應關係,參考了 Akagi 專案中
 `src/bridge/majsoul/README.md` 所記載的協定語意,包括:
 

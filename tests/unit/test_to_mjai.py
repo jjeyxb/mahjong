@@ -10,10 +10,10 @@ from typing import Any
 
 import pytest
 
-from majsoul_copilot.groundtruth.liqi import LiqiParser
-from majsoul_copilot.groundtruth.schema import DEFAULT_LIQI_PATH, LiqiSchema
-from majsoul_copilot.groundtruth.to_mjai import DoraTiming, MajsoulToMjai
-from majsoul_copilot.mjai.events import (
+from mia.groundtruth.liqi import LiqiParser
+from mia.groundtruth.schema import DEFAULT_LIQI_PATH, LiqiSchema
+from mia.groundtruth.to_mjai import DoraTiming, MajsoulToMjai
+from mia.mjai.events import (
     Ankan,
     Chi,
     Dahai,

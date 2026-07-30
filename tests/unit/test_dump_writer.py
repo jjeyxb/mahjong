@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from majsoul_copilot.groundtruth.dump import DumpWriter, iter_frames
+from mia.groundtruth.dump import DumpWriter, iter_frames
 
 
 class TestFormat:
@@ -111,7 +111,7 @@ class TestBackendParity:
     """兩種擷取後端必須寫出完全相同的格式。"""
 
     def test_mitmproxy_addon_output_matches_direct_writer(self, tmp_path: Path) -> None:
-        from majsoul_copilot.groundtruth.capture_addon import WebSocketDump
+        from mia.groundtruth.capture_addon import WebSocketDump
 
         payload = b"\x01\xde\xad\xbe\xef"
 
@@ -132,7 +132,7 @@ class TestBackendParity:
             assert direct[key] == addon[key], f"{key} 不一致"
 
     def test_both_backends_readable_by_same_parser(self, tmp_path: Path) -> None:
-        from majsoul_copilot.groundtruth.capture_addon import WebSocketDump
+        from mia.groundtruth.capture_addon import WebSocketDump
 
         dump = WebSocketDump(output=tmp_path / "d.jsonl", url_filter="x")
         dump.writer.write(b"\x01from-addon", from_client=False, flow="A")

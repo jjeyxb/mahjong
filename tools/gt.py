@@ -52,14 +52,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from majsoul_copilot.groundtruth import capture_addon
-from majsoul_copilot.groundtruth.dump import DumpStats, DumpWriter, parse_dump
-from majsoul_copilot.groundtruth.liqi import LiqiParser
-from majsoul_copilot.groundtruth.schema import LiqiSchema
-from majsoul_copilot.groundtruth.to_mjai import MajsoulToMjai, events_to_jsonl
-from majsoul_copilot.mjai.events import MjaiEvent
-from majsoul_copilot.utils.logging import setup_logging
-from majsoul_copilot.utils.paths import DATA_DIR
+from mia.groundtruth import capture_addon
+from mia.groundtruth.dump import DumpStats, DumpWriter, parse_dump
+from mia.groundtruth.liqi import LiqiParser
+from mia.groundtruth.schema import LiqiSchema
+from mia.groundtruth.to_mjai import MajsoulToMjai, events_to_jsonl
+from mia.mjai.events import MjaiEvent
+from mia.utils.logging import setup_logging
+from mia.utils.paths import DATA_DIR
 
 DEFAULT_OUT = DATA_DIR / "recordings" / "ws_dump.jsonl"
 
@@ -68,7 +68,7 @@ DEFAULT_OUT = DATA_DIR / "recordings" / "ws_dump.jsonl"
 
 
 def cmd_cdp(args: argparse.Namespace) -> int:
-    from majsoul_copilot.groundtruth.cdp import (
+    from mia.groundtruth.cdp import (
         DEFAULT_MAJSOUL_URL,
         CdpCapture,
         PlaywrightMissingError,
@@ -220,7 +220,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
 
 
 def _patterns(value: str | None) -> tuple[str, ...]:
-    from majsoul_copilot.groundtruth.cdp import DEFAULT_URL_PATTERNS
+    from mia.groundtruth.cdp import DEFAULT_URL_PATTERNS
 
     if not value:
         return DEFAULT_URL_PATTERNS

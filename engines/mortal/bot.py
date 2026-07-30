@@ -2,7 +2,7 @@
 
 **這個檔案跑在 Python 3.12 的 ``engines/mortal/.venv`` 裡,不是主程式的 3.14。**
 它 import torch 與 libriichi,主環境兩者都沒有,也裝不起來。父程序那一端是
-``src/majsoul_copilot/engine/mortal.py``,那邊只組命令列,完全不碰這些套件。
+``src/mia/engine/mortal.py``,那邊只組命令列,完全不碰這些套件。
 
 執行方式(父程序會自動帶好參數,手動測試時可以直接跑)::
 

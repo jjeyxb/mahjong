@@ -12,8 +12,8 @@ from typing import Any
 
 import pytest
 
-from majsoul_copilot.groundtruth.cdp import DEFAULT_URL_PATTERNS, CdpCapture
-from majsoul_copilot.groundtruth.dump import DumpWriter, iter_frames
+from mia.groundtruth.cdp import DEFAULT_URL_PATTERNS, CdpCapture
+from mia.groundtruth.dump import DumpWriter, iter_frames
 
 GAME_URL = "wss://gateway-hw.maj-soul.com:443/game-gateway"
 OTHER_URL = "wss://analytics.example.com/track"
