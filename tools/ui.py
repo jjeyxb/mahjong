@@ -129,20 +129,24 @@ def run_replay(args: argparse.Namespace, model: ViewModel) -> None:
     model._timer = timer  # type: ignore[attr-defined]  # noqa: SLF001
 
 
-def run_live(args: argparse.Namespace, model: ViewModel) -> LiveRuntime:
-    """接上遊戲。回傳 runtime,呼叫端要負責在結束時 stop 它。
+def build_live_runtime(args: argparse.Namespace, model: ViewModel) -> LiveRuntime:
+    """組出 runtime。**功能都還是關著的** —— 使用者用視窗上的開關打開。
 
-    兩條路各自獨立起停:沒有 ``--mortal`` 也可以只跑畫面辨識,擷取子程序起不來
-    也不影響 CV。這正是三個功能刻意解耦的地方 —— 一邊壞掉另一邊照樣有用。
+    工廠是延遲呼叫的:``PacketWorker`` 一建立就會去組引擎,而 Mortal 要載
+    130MB 權重。使用者沒打開 AI 建議的話,那 10 秒完全不該花。
+
+    兩條路各自獨立:沒有 ``--mortal`` 也可以只用畫面辨識,擷取子程序起不來
+    也不影響 CV。這正是三個功能刻意解耦的地方。
     """
+    from mia import features
     from mia.config.loader import load_config
     from mia.live import CaptureProcess, PacketWorker, UpdateBus, VisionWorker, capture_command
-    from mia.live.runtime import Worker
+    from mia.live.runtime import Feature, Worker
     from mia.utils.paths import DATA_DIR
     from mia.vision.tiles.classify import DEFAULT_SKIN
 
     bus = UpdateBus()
-    workers: list[Worker] = []
+    feature_list: list[Feature] = []
     capture: CaptureProcess | None = None
 
     if not args.no_packets:
@@ -161,24 +165,37 @@ def run_live(args: argparse.Namespace, model: ViewModel) -> LiveRuntime:
                 )
             )
             print(f"封包錄影會寫到 {dump}")
-        workers.append(
-            PacketWorker(bus, dump=dump, engines=build_engines(args), from_start=True)
-        )
+
+        def make_packets() -> Worker:
+            # from_start=True:座位、寶牌、誰立直了全在先前的事件裡,所以
+            # 中途才打開開關也要從頭讀一遍把局面追上來
+            return PacketWorker(bus, dump=dump, engines=build_engines(args), from_start=True)
+
+        feature_list.append(Feature(features.ADVICE, make_packets))
 
     if not args.no_vision:
-        workers.append(VisionWorker(bus, config=load_config(), skin=args.skin or DEFAULT_SKIN))
+        config = load_config()
+        skin = args.skin or DEFAULT_SKIN
 
-    if not workers:
+        def make_vision() -> Worker:
+            return VisionWorker(bus, config=config, skin=skin)
+
+        feature_list.append(Feature(features.VISION, make_vision))
+
+    if not feature_list:
         raise SystemExit("--no-vision 與 --no-packets 同時給了,那就沒有東西可以顯示")
 
-    runtime = LiveRuntime(model, bus, workers=workers, capture=capture)
-    runtime.start()
+    return LiveRuntime(model, bus, features=feature_list, capture=capture)
 
+
+def start_live(runtime: LiveRuntime, model: ViewModel) -> None:
+    """開擷取子程序並讓 pump 開始跑。功能仍然關著。"""
+    runtime.start()
     timer = QTimer()
     timer.timeout.connect(runtime.pump)
     timer.start(PUMP_INTERVAL_MS)
+    # 掛在 model 上避免被 GC —— QTimer 沒有 parent 時會被當成暫時物件回收
     model._timer = timer  # type: ignore[attr-defined]  # noqa: SLF001
-    return runtime
 
 
 def run_session(args: argparse.Namespace, model: ViewModel) -> None:
@@ -321,21 +338,29 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication(sys.argv[:1])
 
     model = ViewModel()
-    window = PanelWindow(model, **({"skin": args.skin} if args.skin else {}))
+
+    # runtime 必須在視窗**之前**建好:視窗上的開關要接到它。反過來的話開關
+    # 只能先畫成停用,之後再想辦法補接 —— 而那正是最容易忘記做的一步。
+    runtime: LiveRuntime | None = build_live_runtime(args, model) if args.live else None
+
+    options: dict[str, object] = {}
+    if args.skin:
+        options["skin"] = args.skin
+    if runtime is not None:
+        options["switchboard"] = runtime
+    window = PanelWindow(model, **options)  # type: ignore[arg-type]
     model.subscribe(window.apply)
 
-    runtime: LiveRuntime | None = None
-    if args.live:
-        runtime = run_live(args, model)
+    if runtime is not None:
+        start_live(runtime, model)
+        _quit_on_signals(app)
+        print("兩個功能預設都是關著的 —— 用視窗上的開關打開。")
     elif args.replay:
         run_replay(args, model)
     elif args.session:
         run_session(args, model)
     else:
         run_demo(model)
-
-    if runtime is not None:
-        _quit_on_signals(app)
 
     present(window)
     try:

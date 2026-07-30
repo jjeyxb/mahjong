@@ -31,15 +31,17 @@ Qt 的 signal 跨執行緒是安全的,而且能自動排到主執行緒。但�
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Protocol
 
+from mia import features
+from mia.features import NAMES
 from mia.live.bus import Advices, CvHand, PacketHand, UpdateBus, WorkerStatus
 from mia.live.source import CaptureProcess
 from mia.ui.viewmodel import ViewModel
 from mia.utils.logging import logger
 
-__all__ = ["LiveRuntime", "Worker"]
+__all__ = ["Feature", "LiveRuntime", "Worker"]
 
 
 class Worker(Protocol):
@@ -53,20 +55,77 @@ class Worker(Protocol):
     def is_alive(self) -> bool: ...
 
 
+class Feature:
+    """一個可以獨立開關的功能。
+
+    Args:
+        key: 識別字,見 :mod:`mia.features`。
+        factory: **每次開啟都造一個新的 worker。** 不重用舊的:worker 的狀態
+            (手牌追蹤、liqi 解析器、引擎子程序)在停掉之後已經沒有意義,
+            而重用一個停掉的執行緒在 Python 裡根本不合法(``Thread`` 不能
+            重新 ``start()``)。
+
+    Note:
+        關掉再開啟會付一次完整的啟動成本 —— AI 建議那條路要重載 130MB 權重
+        (約 10 秒)。這是刻意的:「關掉」如果還讓引擎佔著記憶體,那就不叫關掉。
+        開啟途中狀態列會說「啟動引擎…」。
+    """
+
+    def __init__(self, key: str, factory: Callable[[], Worker]) -> None:
+        self.key = key
+        self.name = NAMES.get(key, key)
+        self._factory = factory
+        self.worker: Worker | None = None
+
+    @property
+    def enabled(self) -> bool:
+        return self.worker is not None
+
+    def enable(self) -> None:
+        if self.worker is not None:
+            return
+        worker = self._factory()
+        self.worker = worker
+        worker.start()
+        logger.info("功能已開啟:{}", self.name)
+
+    def disable(self, *, timeout: float = 3.0) -> None:
+        worker = self.worker
+        if worker is None:
+            return
+        self.worker = None
+        worker.stop()
+        worker.join(timeout)
+        if worker.is_alive():
+            logger.warning("{} 的執行緒沒有在 {} 秒內結束", self.name, timeout)
+        logger.info("功能已關閉:{}", self.name)
+
+    def __repr__(self) -> str:
+        return f"<Feature {self.key} enabled={self.enabled}>"
+
+
 class LiveRuntime:
     """把工作執行緒的產出送進 ViewModel。
 
     Args:
         viewmodel: 要更新的 ViewModel。
         bus: 工作執行緒投遞的郵箱。
-        workers: 要一起啟停的工作執行緒。
+        features: 可以獨立開關的功能。**預設全部關閉。**
         capture: 擷取子程序;沒有(例如只跑畫面辨識)時為 ``None``。
+
+    功能預設**全部關閉**,使用者用側邊視窗上的開關打開。
+
+    擷取子程序**不受開關影響**,跟著 :meth:`start` 一起開、一路開著。綁在開關上
+    的話,關掉再打開會殺掉瀏覽器 —— 整場對局就沒了。留著它還有一個好處:
+    錄影檔從一開始就在寫,所以中途才打開 AI 建議時
+    :class:`~mia.live.packets.PacketWorker` 會從頭讀一遍把局面追上來。
 
     用法::
 
-        runtime = LiveRuntime(model, bus, workers=[vision, packets])
-        runtime.start()
+        runtime = LiveRuntime(model, bus, features=[vision, advice], capture=capture)
+        runtime.start()                      # 只開擷取子程序,功能仍關著
         timer = QTimer(); timer.timeout.connect(runtime.pump); timer.start(100)
+        runtime.set_enabled(features.ADVICE, True)
         ...
         runtime.stop()
     """
@@ -76,12 +135,12 @@ class LiveRuntime:
         viewmodel: ViewModel,
         bus: UpdateBus,
         *,
-        workers: Sequence[Worker] = (),
+        features: Sequence[Feature] = (),
         capture: CaptureProcess | None = None,
     ) -> None:
         self._viewmodel = viewmodel
         self._bus = bus
-        self._workers = list(workers)
+        self._features = {f.key: f for f in features}
         self._capture = capture
         self._running = False
 
@@ -91,38 +150,81 @@ class LiveRuntime:
     def running(self) -> bool:
         return self._running
 
-    def start(self) -> None:
-        """啟動擷取子程序與所有工作執行緒。
+    @property
+    def feature_list(self) -> tuple[Feature, ...]:
+        return tuple(self._features.values())
 
-        擷取子程序先開:它要花好幾秒才會建出錄影檔,而封包執行緒會在那裡等。
+    def start(self) -> None:
+        """啟動擷取子程序。**功能本身不會被啟動** —— 預設全部關著。
+
+        擷取子程序要花好幾秒才會建出錄影檔,所以越早開越好:等使用者按下
+        AI 建議的開關時,錄影檔通常已經在了。
         """
         if self._running:
             return
         self._running = True
         if self._capture is not None:
             self._capture.start()
-        for worker in self._workers:
-            worker.start()
         self.pump()
 
     def stop(self, *, timeout: float = 3.0) -> None:
         """停掉所有東西。可重複呼叫。
 
-        順序:先停封包/擷取(來源),再等執行緒收尾。工作執行緒都是 daemon,
-        所以就算 join 超時也不會擋住程式結束 —— 但還是要 join,引擎子程序
-        要靠 ``PacketWorker`` 的 finally 才會被關掉。
+        順序:先停擷取(來源),再關功能。工作執行緒都是 daemon,所以就算
+        join 超時也不會擋住程式結束 —— 但還是要 join,引擎子程序要靠
+        ``PacketWorker`` 的 finally 才會被關掉。
         """
         if not self._running:
             return
         self._running = False
         if self._capture is not None:
             self._capture.stop()
-        for worker in self._workers:
-            worker.stop()
-        for worker in self._workers:
-            worker.join(timeout)
-            if worker.is_alive():
-                logger.warning("{} 執行緒沒有在 {} 秒內結束", worker.status.name, timeout)
+        for feature in self._features.values():
+            feature.disable(timeout=timeout)
+
+    # ------------------------------------------------------------------ 開關
+
+    def available(self, key: str) -> bool:
+        """這個功能有沒有被建起來。
+
+        ``--no-vision`` / ``--no-packets`` 會讓對應的功能整個不存在 —— 那與
+        「存在但關著」是兩件事,UI 要分得出來才能把開關畫成停用而不是可按。
+        """
+        return key in self._features
+
+    def is_enabled(self, key: str) -> bool:
+        feature = self._features.get(key)
+        return feature is not None and feature.enabled
+
+    def set_enabled(self, key: str, on: bool) -> None:
+        """開啟或關閉一個功能。認不得的 key 會被忽略。
+
+        關閉時**要把它在畫面上的產出一起清掉**。留著的話最後一次的手牌或建議
+        會停在畫面上,看起來像還在運作 —— 那比空白糟得多,因為使用者會照著
+        一個已經不再更新的建議打牌。
+        """
+        feature = self._features.get(key)
+        if feature is None:
+            logger.warning("沒有名為 {!r} 的功能,忽略", key)
+            return
+        if on == feature.enabled:
+            return
+
+        if on:
+            feature.enable()
+        else:
+            feature.disable()
+            self._clear_output(key)
+        self.pump()
+
+    def _clear_output(self, key: str) -> None:
+        """把某個功能在 ViewState 上留下的東西清空。"""
+        with self._viewmodel.batch():
+            if key == features.VISION:
+                self._viewmodel.update_cv_hand(())
+            elif key == features.ADVICE:
+                self._viewmodel.update_packet_hand(())
+                self._viewmodel.update_advices([])
 
     def __enter__(self) -> LiveRuntime:
         self.start()
@@ -180,7 +282,9 @@ class LiveRuntime:
             self._viewmodel.set_notices(notices)
 
     def _sources(self) -> list[WorkerStatus]:
-        statuses = [w.status for w in self._workers]
+        # 關著的功能不佔狀態列 —— 那個位置要留給真的出問題的那個。
+        # 「它是關著的」由開關本身表達,不需要再寫一句話。
+        statuses = [f.worker.status for f in self._features.values() if f.worker is not None]
         if self._capture is not None:
             # 擷取子程序排在最前面:它掛掉的話後面兩個都沒有輸入,
             # 先看到根本原因比先看到症狀有用
@@ -188,5 +292,7 @@ class LiveRuntime:
         return statuses
 
     def __repr__(self) -> str:
-        names = ", ".join(w.status.name for w in self._workers)
-        return f"<LiveRuntime running={self._running} workers=[{names}]>"
+        state = ", ".join(
+            f"{f.key}={'on' if f.enabled else 'off'}" for f in self._features.values()
+        )
+        return f"<LiveRuntime running={self._running} {state}>"

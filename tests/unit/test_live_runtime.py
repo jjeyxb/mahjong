@@ -10,9 +10,10 @@ from pathlib import Path
 
 import pytest
 
+from mia import features
 from mia.engine.base import Advice
 from mia.live.bus import Advices, CvHand, PacketHand, UpdateBus, WorkerStatus
-from mia.live.runtime import LiveRuntime
+from mia.live.runtime import Feature, LiveRuntime
 from mia.live.source import CaptureProcess, capture_command
 from mia.mjai import Dahai
 from mia.ui.viewmodel import ViewModel
@@ -42,6 +43,28 @@ class FakeWorker:
         return self.status.alive and not self.stopped
 
 
+class Spy:
+    """記錄工廠被叫了幾次,並讓測試拿得到造出來的 worker。"""
+
+    def __init__(self, name: str = "畫面") -> None:
+        self.name = name
+        self.made: list[FakeWorker] = []
+
+    def __call__(self) -> FakeWorker:
+        worker = FakeWorker(self.name)
+        self.made.append(worker)
+        return worker
+
+    @property
+    def latest(self) -> FakeWorker:
+        return self.made[-1]
+
+
+def _feature(key: str = features.VISION, spy: Spy | None = None) -> tuple[Feature, Spy]:
+    spy = spy or Spy()
+    return Feature(key, spy), spy
+
+
 @pytest.fixture
 def model() -> ViewModel:
     return ViewModel()
@@ -53,39 +76,140 @@ def bus() -> UpdateBus:
 
 
 class TestLifecycle:
-    def test_start_starts_every_worker(self, model: ViewModel, bus: UpdateBus) -> None:
-        workers = [FakeWorker("畫面"), FakeWorker("封包")]
-        LiveRuntime(model, bus, workers=workers).start()
-        assert all(w.started for w in workers)
+    def test_start_does_not_start_any_feature(self, model: ViewModel, bus: UpdateBus) -> None:
+        """預設全部關著。開視窗不該是「開始擷取螢幕 + 載入 130MB 權重」的副作用。"""
+        feature, spy = _feature()
+        LiveRuntime(model, bus, features=[feature]).start()
+        assert spy.made == []
+        assert not feature.enabled
 
     def test_start_is_idempotent(self, model: ViewModel, bus: UpdateBus) -> None:
-        worker = FakeWorker("畫面")
-        runtime = LiveRuntime(model, bus, workers=[worker])
+        capture = CaptureProcess(["true"])
+        runtime = LiveRuntime(model, bus, capture=capture)
         runtime.start()
-        worker.started = False
+        first = capture.command
         runtime.start()
-        assert not worker.started, "重複 start 又啟動了一次"
+        assert capture.command is first  # 沒有再開第二個子程序
 
-    def test_stop_stops_and_joins(self, model: ViewModel, bus: UpdateBus) -> None:
-        worker = FakeWorker("封包")
-        runtime = LiveRuntime(model, bus, workers=[worker])
+    def test_enabling_creates_and_starts_a_worker(self, model: ViewModel, bus: UpdateBus) -> None:
+        feature, spy = _feature()
+        runtime = LiveRuntime(model, bus, features=[feature])
         runtime.start()
+        runtime.set_enabled(features.VISION, True)
+        assert len(spy.made) == 1
+        assert spy.latest.started
+        assert runtime.is_enabled(features.VISION)
+
+    def test_disabling_stops_and_joins(self, model: ViewModel, bus: UpdateBus) -> None:
+        feature, spy = _feature()
+        runtime = LiveRuntime(model, bus, features=[feature])
+        runtime.start()
+        runtime.set_enabled(features.VISION, True)
+        runtime.set_enabled(features.VISION, False)
+        assert spy.latest.stopped
+        assert spy.latest.joined == 1
+        assert not runtime.is_enabled(features.VISION)
+
+    def test_enabling_twice_does_not_make_a_second_worker(
+        self, model: ViewModel, bus: UpdateBus
+    ) -> None:
+        feature, spy = _feature()
+        runtime = LiveRuntime(model, bus, features=[feature])
+        runtime.set_enabled(features.VISION, True)
+        runtime.set_enabled(features.VISION, True)
+        assert len(spy.made) == 1
+
+    def test_re_enabling_builds_a_fresh_worker(self, model: ViewModel, bus: UpdateBus) -> None:
+        """不重用停掉的 worker —— Python 的 Thread 不能重新 start(),
+        而且它的狀態(手牌追蹤、解析器、引擎子程序)已經沒有意義了。
+        """
+        feature, spy = _feature()
+        runtime = LiveRuntime(model, bus, features=[feature])
+        runtime.set_enabled(features.VISION, True)
+        runtime.set_enabled(features.VISION, False)
+        runtime.set_enabled(features.VISION, True)
+        assert len(spy.made) == 2
+        assert spy.made[0] is not spy.made[1]
+
+    def test_an_unknown_key_is_ignored(self, model: ViewModel, bus: UpdateBus) -> None:
+        runtime = LiveRuntime(model, bus)
+        runtime.set_enabled("telepathy", True)
+        assert not runtime.is_enabled("telepathy")
+
+    def test_stop_disables_everything(self, model: ViewModel, bus: UpdateBus) -> None:
+        vision, vision_spy = _feature(features.VISION)
+        advice, advice_spy = _feature(features.ADVICE, Spy("\u5c01\u5305"))
+        runtime = LiveRuntime(model, bus, features=[vision, advice])
+        runtime.start()
+        runtime.set_enabled(features.VISION, True)
+        runtime.set_enabled(features.ADVICE, True)
         runtime.stop()
-        assert worker.stopped
-        assert worker.joined == 1
+        assert vision_spy.latest.stopped
+        assert advice_spy.latest.stopped
         assert not runtime.running
 
     def test_stop_before_start_does_nothing(self, model: ViewModel, bus: UpdateBus) -> None:
-        worker = FakeWorker("封包")
-        LiveRuntime(model, bus, workers=[worker]).stop()
-        assert not worker.stopped
+        feature, spy = _feature()
+        LiveRuntime(model, bus, features=[feature]).stop()
+        assert spy.made == []
 
     def test_context_manager_starts_and_stops(self, model: ViewModel, bus: UpdateBus) -> None:
-        worker = FakeWorker("封包")
-        with LiveRuntime(model, bus, workers=[worker]) as runtime:
+        feature, spy = _feature()
+        with LiveRuntime(model, bus, features=[feature]) as runtime:
             assert runtime.running
-            assert worker.started
-        assert worker.stopped
+            runtime.set_enabled(features.VISION, True)
+        assert spy.latest.stopped
+
+
+class TestClearingOnDisable:
+    """關掉功能要把它在畫面上的產出一起清掉。
+
+    留著的話最後一次的手牌或建議會停在畫面上,看起來像還在運作 —— 那比空白
+    糟得多,因為使用者會照著一個已經不再更新的建議打牌。
+    """
+
+    def test_disabling_vision_clears_the_cv_hand(self, model: ViewModel, bus: UpdateBus) -> None:
+        feature, _ = _feature(features.VISION)
+        runtime = LiveRuntime(model, bus, features=[feature])
+        runtime.set_enabled(features.VISION, True)
+        bus.post(CvHand(("1m", "2m", "3m")))
+        runtime.pump()
+        assert model.state.cv_hand
+
+        runtime.set_enabled(features.VISION, False)
+        assert model.state.cv_hand == ()
+
+    def test_disabling_advice_clears_the_engines_and_packet_hand(
+        self, model: ViewModel, bus: UpdateBus
+    ) -> None:
+        feature, _ = _feature(features.ADVICE)
+        runtime = LiveRuntime(model, bus, features=[feature])
+        runtime.set_enabled(features.ADVICE, True)
+        bus.post(PacketHand(("1m", "2m")))
+        bus.post(Advices((Advice("m", Dahai(actor=0, pai="2m", tsumogiri=False)),)))
+        runtime.pump()
+        assert model.state.engines and model.state.packet_hand
+
+        runtime.set_enabled(features.ADVICE, False)
+        assert model.state.engines == ()
+        assert model.state.packet_hand == ()
+
+    def test_disabling_one_path_leaves_the_other_alone(
+        self, model: ViewModel, bus: UpdateBus
+    ) -> None:
+        """兩個功能刻意解耦 —— 關掉一邊不該動到另一邊。"""
+        vision, _ = _feature(features.VISION)
+        advice, _ = _feature(features.ADVICE, Spy("\u5c01\u5305"))
+        runtime = LiveRuntime(model, bus, features=[vision, advice])
+        runtime.set_enabled(features.VISION, True)
+        runtime.set_enabled(features.ADVICE, True)
+        bus.post(CvHand(("1m", "2m", "3m")))
+        bus.post(PacketHand(("4p", "5p")))
+        runtime.pump()
+
+        runtime.set_enabled(features.ADVICE, False)
+        assert model.state.cv_hand == ("1m", "2m", "3m")
+        assert model.state.packet_hand == ()
 
 
 class TestPump:
@@ -140,22 +264,35 @@ class TestPump:
 
 
 class TestNotices:
+    def _running(self, model: ViewModel, bus: UpdateBus) -> tuple[LiveRuntime, FakeWorker]:
+        feature, spy = _feature(features.VISION)
+        runtime = LiveRuntime(model, bus, features=[feature])
+        runtime.set_enabled(features.VISION, True)
+        return runtime, spy.latest
+
     def test_worker_messages_become_notices(self, model: ViewModel, bus: UpdateBus) -> None:
-        worker = FakeWorker("畫面")
-        runtime = LiveRuntime(model, bus, workers=[worker])
+        runtime, worker = self._running(model, bus)
         worker.status.say("找不到遊戲視窗")
         runtime.pump()
         assert model.state.notices == ("畫面:找不到遊戲視窗",)
 
     def test_a_silent_worker_takes_no_room(self, model: ViewModel, bus: UpdateBus) -> None:
         """正常運作時不該佔用狀態列 —— 那個位置要留給真的出問題的那個。"""
-        runtime = LiveRuntime(model, bus, workers=[FakeWorker("畫面")])
+        runtime, _ = self._running(model, bus)
+        runtime.pump()
+        assert model.state.notices == ()
+
+    def test_a_disabled_feature_takes_no_room_either(
+        self, model: ViewModel, bus: UpdateBus
+    ) -> None:
+        """「它是關著的」由開關本身表達,不需要在狀態列再寫一句話。"""
+        feature, _ = _feature(features.VISION)
+        runtime = LiveRuntime(model, bus, features=[feature])
         runtime.pump()
         assert model.state.notices == ()
 
     def test_notices_are_replaced_not_accumulated(self, model: ViewModel, bus: UpdateBus) -> None:
-        worker = FakeWorker("畫面")
-        runtime = LiveRuntime(model, bus, workers=[worker])
+        runtime, worker = self._running(model, bus)
         worker.status.say("校正中 3/10")
         runtime.pump()
         worker.status.say("")
@@ -169,7 +306,9 @@ class TestNotices:
 
         即時模式下一幀認錯就會留一句話到程式關掉,所以狀態列由 runtime 獨佔。
         """
-        runtime = LiveRuntime(model, bus, workers=[FakeWorker("畫面")])
+        feature, _ = _feature(features.VISION)
+        runtime = LiveRuntime(model, bus, features=[feature])
+        runtime.set_enabled(features.VISION, True)
         bus.post(CvHand(("99z",)))  # 認不得的牌 → ViewModel 會 _notice 一句
         runtime.pump()
         assert model.state.notices == ()
@@ -178,8 +317,7 @@ class TestNotices:
         """每輪都換一次會讓 UI 每 100 ms 重畫一次,即使什麼都沒發生。"""
         seen: list[int] = []
         model = ViewModel(lambda _s: seen.append(1))
-        worker = FakeWorker("畫面")
-        runtime = LiveRuntime(model, bus, workers=[worker])
+        runtime, worker = self._running(model, bus)
         worker.status.say("校正中 3/10")
         runtime.pump()
         before = len(seen)
@@ -191,9 +329,10 @@ class TestNotices:
         """擷取子程序掛掉的話後面兩個都沒有輸入,先看到根本原因比先看到症狀有用。"""
         capture = CaptureProcess(["true"], name="封包擷取")
         capture.status.say("啟動失敗")
-        worker = FakeWorker("封包")
-        worker.status.say("等待對局開始")
-        runtime = LiveRuntime(model, bus, workers=[worker], capture=capture)
+        feature, spy = _feature(features.ADVICE, Spy("封包"))
+        runtime = LiveRuntime(model, bus, features=[feature], capture=capture)
+        runtime.set_enabled(features.ADVICE, True)
+        spy.latest.status.say("等待對局開始")
         runtime.pump()
         assert model.state.notices[0].startswith("封包擷取:")
 
