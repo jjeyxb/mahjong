@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 
+from mia import features
 from mia.engine.base import Advice
 from mia.mjai import Dahai, Reach
 from mia.ui.viewmodel import ViewModel
@@ -197,10 +198,17 @@ class TestNavigation:
         assert window._stack.currentIndex() == 1  # noqa: SLF001
 
     def test_the_settings_strip_is_hidden_when_empty(self, panel) -> None:
-        """向聽分析頁目前沒有設定 —— 不該留一條空白的橫線。"""
+        """設定頁的內容本身就是設定,頂端不該再留一條空白的橫線。"""
         _, window = panel
-        analysis_page = window._stack.widget(1)  # noqa: SLF001
-        assert not shown(analysis_page._settings)  # noqa: SLF001
+        settings_page = window._stack.widget(2)  # noqa: SLF001
+        assert not shown(settings_page._settings)  # noqa: SLF001
+
+    def test_both_feature_pages_show_their_strip(self, panel) -> None:
+        """兩個功能頁都有開關,所以設定列一定看得到。"""
+        _, window = panel
+        for index in (0, 1):
+            page = window._stack.widget(index)  # noqa: SLF001
+            assert shown(page._settings), f"第 {index} 頁的設定列不見了"  # noqa: SLF001
 
 
 class TestEnginePicker:
@@ -261,3 +269,211 @@ class TestAlwaysOnTopToggle:
         window._on_top.setChecked(True)  # noqa: SLF001
         assert not window.isHidden()
         assert window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+
+
+class FakeSwitchboard:
+    """記下被要求開關什麼。
+
+    ``refuse`` 裡的 key 開不起來 —— 模擬引擎啟動失敗。
+    ``missing`` 裡的 key 根本不存在 —— 模擬 --no-vision / --no-packets。
+    """
+
+    def __init__(
+        self, refuse: set[str] | None = None, missing: set[str] | None = None
+    ) -> None:
+        self.state: dict[str, bool] = {}
+        self.refuse = refuse or set()
+        self.missing = missing or set()
+        self.calls: list[tuple[str, bool]] = []
+
+    def available(self, key: str) -> bool:
+        return key not in self.missing
+
+    def is_enabled(self, key: str) -> bool:
+        return self.state.get(key, False)
+
+    def set_enabled(self, key: str, on: bool) -> None:
+        self.calls.append((key, on))
+        self.state[key] = on and key not in self.refuse
+
+
+class TestFeatureSwitches:
+    """兩個功能的開關。預設關著,打開才會跑。"""
+
+    @pytest.fixture
+    def wired(self, qtbot):
+        board = FakeSwitchboard()
+        model = ViewModel()
+        window = PanelWindow(model, switchboard=board)
+        qtbot.addWidget(window)
+        return board, window
+
+    def test_both_switches_exist(self, wired) -> None:
+        _, window = wired
+        assert set(window._switches) == {features.ADVICE, features.VISION}  # noqa: SLF001
+
+    def test_both_default_to_off(self, wired) -> None:
+        """使用者要求的:預設兩個都不執行。"""
+        _, window = wired
+        for switch in window._switches.values():  # noqa: SLF001
+            assert not switch.isChecked()
+
+    def test_no_feature_is_enabled_just_by_opening_the_window(self, wired) -> None:
+        board, _ = wired
+        assert board.calls == []
+        assert board.state == {}
+
+    def test_flipping_a_switch_enables_that_feature(self, wired) -> None:
+        board, window = wired
+        window._switches[features.ADVICE].click()  # noqa: SLF001
+        assert board.calls == [(features.ADVICE, True)]
+        assert board.is_enabled(features.ADVICE)
+
+    def test_flipping_it_back_disables(self, wired) -> None:
+        board, window = wired
+        switch = window._switches[features.ADVICE]  # noqa: SLF001
+        switch.click()
+        switch.click()
+        assert board.calls[-1] == (features.ADVICE, False)
+        assert not board.is_enabled(features.ADVICE)
+
+    def test_the_two_switches_are_independent(self, wired) -> None:
+        board, window = wired
+        window._switches[features.VISION].click()  # noqa: SLF001
+        assert board.is_enabled(features.VISION)
+        assert not board.is_enabled(features.ADVICE)
+
+    def test_a_switch_springs_back_when_enabling_fails(self, qtbot) -> None:
+        """權重不見了、找不到遊戲視窗 —— 開關不能停在「開」而底下沒東西在跑。"""
+        board = FakeSwitchboard(refuse={features.ADVICE})
+        window = PanelWindow(ViewModel(), switchboard=board)
+        qtbot.addWidget(window)
+        switch = window._switches[features.ADVICE]  # noqa: SLF001
+        switch.click()
+        assert not switch.isChecked(), "開啟失敗了,開關卻還停在開"
+
+    def test_the_spring_back_does_not_re_enter_the_switchboard(self, qtbot) -> None:
+        """彈回去不該再送一次 set_enabled —— 那會變成無窮遞迴。"""
+        board = FakeSwitchboard(refuse={features.ADVICE})
+        window = PanelWindow(ViewModel(), switchboard=board)
+        qtbot.addWidget(window)
+        window._switches[features.ADVICE].click()  # noqa: SLF001
+        assert board.calls == [(features.ADVICE, True)]
+
+    def test_switches_reflect_a_switchboard_that_is_already_on(self, qtbot) -> None:
+        board = FakeSwitchboard()
+        board.state[features.VISION] = True
+        window = PanelWindow(ViewModel(), switchboard=board)
+        qtbot.addWidget(window)
+        assert window._switches[features.VISION].isChecked()  # noqa: SLF001
+        assert not window._switches[features.ADVICE].isChecked()  # noqa: SLF001
+
+
+class TestSwitchesWithoutASwitchboard:
+    """重播與示範模式:命令列已經決定跑哪一條路。"""
+
+    def test_they_are_disabled(self, panel) -> None:
+        _, window = panel
+        for switch in window._switches.values():  # noqa: SLF001
+            assert not switch.isEnabled()
+
+    def test_they_show_as_on(self, panel) -> None:
+        """那條路真的在跑,顯示為關會誤導。"""
+        _, window = panel
+        for switch in window._switches.values():  # noqa: SLF001
+            assert switch.isChecked()
+
+    def test_the_tooltip_explains_why(self, panel) -> None:
+        _, window = panel
+        for switch in window._switches.values():  # noqa: SLF001
+            assert "不適用" in switch.toolTip()
+
+
+class TestOffStateDisplay:
+    """功能關著的時候畫面要說「關著」,不能看起來像在載入。
+
+    「等待引擎…」與「等待手牌…」是為「開著但還沒有資料」寫的。功能關著時
+    沿用那兩句話,使用者會一直等下去 —— 這是渲染出來才看到的。
+    """
+
+    @pytest.fixture
+    def wired(self, qtbot):
+        board = FakeSwitchboard()
+        model = ViewModel()
+        window = PanelWindow(model, switchboard=board)
+        model.subscribe(window.apply)
+        qtbot.addWidget(window)
+        return board, model, window
+
+    def test_advice_says_not_enabled_rather_than_waiting(self, wired) -> None:
+        _, _, window = wired
+        assert window._advice._headline._verb.text() == "未開啟"  # noqa: SLF001
+
+    def test_advice_points_at_the_switch(self, wired) -> None:
+        _, _, window = wired
+        assert "開關" in window._advice._headline._detail.text()  # noqa: SLF001
+
+    def test_analysis_says_not_enabled_rather_than_waiting(self, wired) -> None:
+        _, _, window = wired
+        assert window._analysis._shanten.text() == "未開啟"  # noqa: SLF001
+
+    def test_the_status_bar_says_both_are_off(self, wired) -> None:
+        _, _, window = wired
+        assert "都關著" in window._notice.text()  # noqa: SLF001
+
+    def test_turning_it_on_switches_to_the_waiting_message(self, wired) -> None:
+        _, _, window = wired
+        window._switches[features.ADVICE].click()  # noqa: SLF001
+        assert window._advice._headline._verb.text() == "等待引擎…"  # noqa: SLF001
+
+    def test_a_disabled_feature_does_not_show_stale_data(self, wired) -> None:
+        """關掉之後畫面上不能留著最後一手 —— 那看起來像還在運作。"""
+        _, model, window = wired
+        switch = window._switches[features.VISION]  # noqa: SLF001
+        switch.click()
+        model.update_packet_hand(TENPAI)
+        assert window._analysis._shanten.text() == "聽牌"  # noqa: SLF001
+
+        switch.click()
+        assert window._analysis._shanten.text() == "未開啟"  # noqa: SLF001
+
+    def test_replay_mode_shows_content_without_a_switchboard(self, panel) -> None:
+        """重播沒有 switchboard,但那條路真的在跑 —— 不該顯示「未開啟」。"""
+        model, window = panel
+        model.update_packet_hand(TENPAI)
+        assert window._analysis._shanten.text() == "聽牌"  # noqa: SLF001
+
+
+class TestUnavailableFeature:
+    """``--no-vision`` / ``--no-packets``:那條路根本沒建起來。
+
+    開關做成可按的話,使用者撥了它會自己彈回去 —— 看起來像壞掉,而實際上是
+    他自己在命令列關掉的。
+    """
+
+    @pytest.fixture
+    def half(self, qtbot):
+        board = FakeSwitchboard(missing={features.VISION})
+        window = PanelWindow(ViewModel(), switchboard=board)
+        qtbot.addWidget(window)
+        return board, window
+
+    def test_the_missing_ones_switch_is_disabled(self, half) -> None:
+        _, window = half
+        assert not window._switches[features.VISION].isEnabled()  # noqa: SLF001
+
+    def test_the_other_one_still_works(self, half) -> None:
+        board, window = half
+        switch = window._switches[features.ADVICE]  # noqa: SLF001
+        assert switch.isEnabled()
+        switch.click()
+        assert board.is_enabled(features.ADVICE)
+
+    def test_the_tooltip_says_it_was_disabled_at_startup(self, half) -> None:
+        _, window = half
+        assert "啟動參數" in window._switches[features.VISION].toolTip()  # noqa: SLF001
+
+    def test_it_is_shown_as_off_not_on(self, half) -> None:
+        """與重播模式不同:那條路真的沒在跑,顯示為開會誤導。"""
+        _, window = half
+        assert not window._switches[features.VISION].isChecked()  # noqa: SLF001

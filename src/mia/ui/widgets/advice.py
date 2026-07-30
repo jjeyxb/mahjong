@@ -57,7 +57,17 @@ class _Headline(QWidget):
         layout.addWidget(self._detail)
         layout.addStretch(1)
 
-    def update_from(self, engine: EngineView | None, *, stale: bool = False) -> None:
+    def update_from(
+        self, engine: EngineView | None, *, stale: bool = False, enabled: bool = True
+    ) -> None:
+        if not enabled:
+            # 「等待引擎…」在功能關著的時候是錯的:那句話讓人以為它正在載入,
+            # 於是使用者就一直等下去。關著就要說關著,並指出開關在哪。
+            self._verb.setText("未開啟")
+            self._tile.setVisible(False)
+            self._detail.setText("用右上角的開關打開")
+            self._verb.setStyleSheet("font-size: 26px; font-weight: 600; color: palette(mid);")
+            return
         if engine is None:
             self._verb.setText("等待引擎…")
             self._tile.setVisible(False)
@@ -177,11 +187,11 @@ class AdviceTab(QWidget):
 
         layout.addStretch(1)
 
-    def update_from(self, state: ViewState) -> None:
-        primary = state.primary
-        self._headline.update_from(primary, stale=state.advice_is_stale)
+    def update_from(self, state: ViewState, *, enabled: bool = True) -> None:
+        primary = state.primary if enabled else None
+        self._headline.update_from(primary, stale=state.advice_is_stale, enabled=enabled)
         self._update_candidates(primary)
-        self._update_others(state)
+        self._update_others(state if enabled else ViewState())
 
     def _update_candidates(self, engine: EngineView | None) -> None:
         candidates = engine.candidates[: self.max_candidates] if engine else ()

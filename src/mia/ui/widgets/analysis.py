@@ -100,13 +100,22 @@ class AnalysisTab(QWidget):
 
         layout.addStretch(1)
 
-    def update_from(self, state: ViewState) -> None:
-        self._update_headline(state)
+    def update_from(self, state: ViewState, *, enabled: bool = True) -> None:
+        if not enabled:
+            # 關著就整頁清空,不要留上一次的手牌 —— 那看起來像還在運作
+            state = ViewState()
+        self._update_headline(state, enabled=enabled)
         self._hand.set_tiles(_concealed(state), drawn=state.drawn)
         self._update_ukeire(state)
         self._update_discards(state)
 
-    def _update_headline(self, state: ViewState) -> None:
+    def _update_headline(self, state: ViewState, *, enabled: bool = True) -> None:
+        if not enabled:
+            # 「等待手牌…」在功能關著的時候會讓人一直等下去
+            self._shanten.setText("未開啟")
+            self._source.setText("用右上角的開關打開")
+            return
+
         analysis = state.analysis
         if analysis is None:
             self._shanten.setText("手牌讀不出來" if state.hand else "等待手牌…")

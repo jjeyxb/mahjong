@@ -24,6 +24,8 @@
 
 from __future__ import annotations
 
+from typing import Protocol
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -41,13 +43,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mia import APP_TITLE
+from mia import APP_TITLE, features
 from mia.ui.viewmodel import ViewModel, ViewState
 from mia.ui.widgets.advice import AdviceTab
 from mia.ui.widgets.analysis import AnalysisTab
 from mia.ui.widgets.tiles import DEFAULT_SKIN, TileIcons
+from mia.ui.widgets.toggle import ToggleSwitch
 
-__all__ = ["PanelWindow", "present"]
+__all__ = ["PanelWindow", "Switchboard", "present"]
 
 #: 放得下 14 張 44px 高的牌、加上左側功能列。
 MIN_WIDTH = 500
@@ -55,6 +58,19 @@ MIN_HEIGHT = 540
 
 #: 左側功能列的寬度。夠放四個全形字。
 NAV_WIDTH = 96
+
+
+class Switchboard(Protocol):
+    """能開關功能的東西。
+
+    只宣告視窗真正用到的兩個方法,而不是直接吃一個
+    :class:`~mia.live.runtime.LiveRuntime` —— UI 這一層不該相依 live
+    (它也要服務錄影重播,那時候根本沒有工作執行緒可開關)。
+    """
+
+    def available(self, key: str) -> bool: ...
+    def is_enabled(self, key: str) -> bool: ...
+    def set_enabled(self, key: str, on: bool) -> None: ...
 
 
 class _Page(QWidget):
@@ -91,6 +107,19 @@ class _Page(QWidget):
         caption.setStyleSheet("color: palette(mid); font-size: 11px;")
         self._settings_layout.insertWidget(index, caption)
         self._settings_layout.insertWidget(index + 1, widget)
+        self._reveal()
+
+    def add_trailing(self, widget: QWidget) -> None:
+        """加在設定列**最右邊**(伸縮元件之後)。
+
+        開關放右邊而不是跟其他設定排在一起:它決定「這一頁有沒有在運作」,
+        與「候選列幾個」不是同一個層級的東西。混在一排裡會讓人以為它也只是
+        一個顯示選項。
+        """
+        self._settings_layout.addWidget(widget)
+        self._reveal()
+
+    def _reveal(self) -> None:
         self._settings.setVisible(True)
         self._rule.setVisible(True)
 
@@ -102,6 +131,9 @@ class PanelWindow(QMainWindow):
         viewmodel: 狀態來源。視窗自己訂閱它,不主動去拉。
         skin: 牌面素材。
         always_on_top: 是否置頂。
+        switchboard: 兩個功能的開關要接到誰。``None``(錄影重播、示範資料)時
+            開關仍然畫出來,但是**停用**並顯示為開啟 —— 那些模式裡是命令列
+            決定跑哪一條路,把開關做成可按的會讓人以為按了有效。
 
     Note:
         :meth:`apply` 是唯一的資料入口。ViewModel 的通知可能來自別的執行緒,
@@ -115,6 +147,7 @@ class PanelWindow(QMainWindow):
         *,
         skin: str = DEFAULT_SKIN,
         always_on_top: bool = True,
+        switchboard: Switchboard | None = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle(APP_TITLE)
@@ -125,6 +158,8 @@ class PanelWindow(QMainWindow):
             self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
 
         self._viewmodel = viewmodel
+        self._switchboard = switchboard
+        self._switches: dict[str, ToggleSwitch] = {}
         icons = TileIcons(skin)
         self._advice = AdviceTab(icons, self)
         self._analysis = AnalysisTab(icons, self)
@@ -142,9 +177,12 @@ class PanelWindow(QMainWindow):
         self._stack = QStackedWidget(self)
 
         self._advice_page = self._add_page("AI 建議", self._advice)
-        self._add_page("向聽分析", self._analysis)
+        self._analysis_page = self._add_page("向聽分析", self._analysis)
         self._settings_page = self._add_page("設定", self._build_settings())
         self._build_advice_settings()
+        # 開關最後加,才會排在設定列最右邊
+        self._add_switch(self._advice_page, features.ADVICE)
+        self._add_switch(self._analysis_page, features.VISION)
 
         self._nav.currentRowChanged.connect(self._stack.setCurrentIndex)
         self._nav.setCurrentRow(0)
@@ -173,6 +211,33 @@ class PanelWindow(QMainWindow):
         self._stack.addWidget(page)
         self._nav.addItem(QListWidgetItem(name))
         return page
+
+    def _add_switch(self, page: _Page, key: str) -> None:
+        """在一頁的設定列右邊放一個開關。
+
+        兩個功能**預設都關著**,要使用者自己打開。理由不只是省資源:打開
+        AI 建議會開一個載著 130MB 權重的子程序、打開畫面辨識會開始持續擷取
+        螢幕。這兩件事都該是明確的動作,不是打開視窗的副作用。
+        """
+        switch = ToggleSwitch(page)
+        switch.setToolTip(f"{features.NAMES[key]} —— 開啟後才會開始運作")
+        if self._switchboard is None:
+            # 錄影重播沒有可開關的東西:命令列已經決定了跑哪一條路。
+            # 顯示為開啟(那條路真的在跑)但停用,免得使用者以為按了有效。
+            switch.set_initial(True)
+            switch.setEnabled(False)
+            switch.setToolTip("重播與示範模式由命令列決定,開關不適用")
+        elif not self._switchboard.available(key):
+            # --no-vision / --no-packets:這條路根本沒有建起來。做成可按的話
+            # 使用者撥了它會自己彈回去,那看起來像壞掉,而實際上是他自己關的。
+            switch.setEnabled(False)
+            switch.setToolTip(f"{features.NAMES[key]} 已在啟動參數中停用")
+        else:
+            switch.set_initial(self._switchboard.is_enabled(key))
+            switch.toggled.connect(lambda on, k=key: self._on_switch(k, on))
+
+        self._switches[key] = switch
+        page.add_trailing(switch)
 
     def _build_advice_settings(self) -> None:
         """AI 建議頁的設定列。
@@ -223,6 +288,19 @@ class PanelWindow(QMainWindow):
 
     # ------------------------------------------------------------------ 事件
 
+    def _on_switch(self, key: str, on: bool) -> None:
+        """使用者撥了開關。
+
+        撥回實際狀態而不是使用者要的狀態:開啟可能失敗(權重不見了、
+        找不到遊戲視窗),那時開關要自己彈回去,不能停在「開」而底下沒東西在跑。
+        """
+        assert self._switchboard is not None
+        self._switchboard.set_enabled(key, on)
+        actual = self._switchboard.is_enabled(key)
+        if actual != on:
+            self._switches[key].set_initial(actual)
+        self.apply(self._viewmodel.state)
+
     def _on_engine_picked(self, index: int) -> None:
         self._viewmodel.set_preferred_engine(self._engine_picker.itemData(index))
 
@@ -254,9 +332,27 @@ class PanelWindow(QMainWindow):
         一瞬間的舊資料。更新一次的成本是十幾個 label,遠低於那個閃動的代價。
         """
         self._sync_engine_picker(state)
-        self._advice.update_from(state)
-        self._analysis.update_from(state)
-        self._notice.setText(_status_text(state))
+        self._advice.update_from(state, enabled=self._is_on(features.ADVICE))
+        self._analysis.update_from(state, enabled=self._is_on(features.VISION))
+        self._notice.setText(self._status_text(state))
+
+    def _is_on(self, key: str) -> bool:
+        """這個功能現在該不該顯示內容。
+
+        沒有 switchboard(重播、示範)時一律視為開著 —— 那些模式裡是命令列
+        決定跑哪一條路,而它確實在跑。
+        """
+        if self._switchboard is None:
+            return True
+        return self._switchboard.is_enabled(key)
+
+    def _status_text(self, state: ViewState) -> str:
+        """狀態列。兩個功能都關著時要**主動說**,不然畫面上只有一片空白。"""
+        if self._switchboard is not None and not any(
+            self._switchboard.is_enabled(k) for k in (features.ADVICE, features.VISION)
+        ):
+            return "兩個功能都關著 —— 用各頁右上角的開關打開"
+        return _status_text(state)
 
     def _sync_engine_picker(self, state: ViewState) -> None:
         """引擎清單是跑起來才知道的,所以下拉選單要跟著狀態長出來。"""
