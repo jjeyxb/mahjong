@@ -137,6 +137,9 @@ class AdviceTab(QWidget):
         super().__init__(parent)
         self._icons = icons
         self._rows: list[_CandidateRow] = []
+        #: 候選清單最多列幾個。可以在設定列調 —— 合法動作可能十幾個,
+        #: 但排到第八個之後幾乎不看,而列太多會把手牌那段推出畫面。
+        self.max_candidates = MAX_CANDIDATES
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -173,7 +176,7 @@ class AdviceTab(QWidget):
         self._update_others(state)
 
     def _update_candidates(self, engine: EngineView | None) -> None:
-        candidates = engine.candidates[:MAX_CANDIDATES] if engine else ()
+        candidates = engine.candidates[: self.max_candidates] if engine else ()
         # 沒有 Q 值的引擎(規則式 baseline)不該留著上一手的長條
         self._candidates_label.setVisible(bool(candidates))
 

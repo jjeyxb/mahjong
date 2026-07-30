@@ -83,7 +83,8 @@ class ViewState:
         packet_hand: 封包推出來的手牌。
         analysis: 向聽與進張。手牌不合法時是 ``None``。
         discards: 純以聽牌速度而言的打牌選項,最好的在前。
-        engines: 各引擎的建議,加入順序。
+        engines: 各引擎的建議,加入順序 —— 那個順序就是 :attr:`primary` 的優先序。
+        preferred_engine: 使用者點名要當主角的引擎;``None`` 表示照順序取。
         notices: 要顯示給使用者的警示(校正未鎖定、引擎掉隊、CV 沒把握…)。
     """
 
@@ -97,6 +98,7 @@ class ViewState:
     analysis: HandAnalysis | None = None
     discards: tuple[DiscardOption, ...] = ()
     engines: tuple[EngineView, ...] = ()
+    preferred_engine: str | None = None
     notices: tuple[str, ...] = ()
 
     @property
@@ -116,7 +118,20 @@ class ViewState:
 
     @property
     def primary(self) -> EngineView | None:
-        """要放在最上面的那個引擎 —— 第一個真的有動作的。"""
+        """要放在最上面的那個引擎。
+
+        指定了 :attr:`preferred_engine` 就用它,即使它這一手不動作 —— 使用者
+        點名要看某個引擎,那就該一直看它,不該因為它剛好沒事做就跳去別人。
+
+        沒指定的話取**第一個有動作的**,所以 :attr:`engines` 的順序就是優先序,
+        由建立引擎的那一端決定。規則式 baseline 要排在模型後面 —— 排前面的話
+        headline 會顯示 baseline、而真正的模型被擠到下面那排,Q 值長條也會整段
+        消失(baseline 沒有 meta)。
+        """
+        if self.preferred_engine:
+            for engine in self.engines:
+                if engine.name == self.preferred_engine:
+                    return engine
         for engine in self.engines:
             if engine.action is not None:
                 return engine
@@ -203,6 +218,10 @@ class ViewModel:
         """
         views = tuple(_to_view(a) for a in advices)
         self._emit(replace(self._state, engines=views))
+
+    def set_preferred_engine(self, name: str | None) -> None:
+        """點名哪個引擎當主角。``None`` 回到照 :attr:`ViewState.engines` 順序取。"""
+        self._emit(replace(self._state, preferred_engine=name))
 
     def set_notices(self, notices: Sequence[str]) -> None:
         """整批換掉警示。校正狀態、引擎存活這些由外部持續回報。"""

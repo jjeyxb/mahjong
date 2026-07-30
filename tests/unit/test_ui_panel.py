@@ -181,3 +181,83 @@ class TestPresent:
         assert not (window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
         present(window)
         assert not window.isHidden()
+
+
+class TestNavigation:
+    """左側功能列。"""
+
+    def test_there_are_three_pages(self, panel) -> None:
+        _, window = panel
+        assert window._nav.count() == 3  # noqa: SLF001
+        assert window._stack.count() == 3  # noqa: SLF001
+
+    def test_selecting_a_page_switches_the_stack(self, panel) -> None:
+        _, window = panel
+        window.show_page(1)
+        assert window._stack.currentIndex() == 1  # noqa: SLF001
+
+    def test_the_settings_strip_is_hidden_when_empty(self, panel) -> None:
+        """向聽分析頁目前沒有設定 —— 不該留一條空白的橫線。"""
+        _, window = panel
+        analysis_page = window._stack.widget(1)  # noqa: SLF001
+        assert not shown(analysis_page._settings)  # noqa: SLF001
+
+
+class TestEnginePicker:
+    """主要引擎下拉選單。引擎清單是跑起來才知道的,所以要跟著狀態長出來。"""
+
+    def _advice(self, name: str, tile: str) -> Advice:
+        return Advice(name, Dahai(actor=0, pai=tile, tsumogiri=False), None, 1.0)
+
+    def test_it_starts_with_only_the_auto_entry(self, panel) -> None:
+        _, window = panel
+        assert window._engine_picker.count() == 1  # noqa: SLF001
+
+    def test_engines_are_added_as_they_appear(self, panel) -> None:
+        model, window = panel
+        model.update_advices([self._advice("mortal", "1m"), self._advice("baseline", "9p")])
+        picker = window._engine_picker  # noqa: SLF001
+        assert [picker.itemData(i) for i in range(picker.count())] == [None, "mortal", "baseline"]
+
+    def test_picking_an_engine_makes_it_primary(self, panel) -> None:
+        model, window = panel
+        model.update_advices([self._advice("mortal", "1m"), self._advice("baseline", "9p")])
+        window._engine_picker.setCurrentIndex(2)  # noqa: SLF001
+        assert model.state.preferred_engine == "baseline"
+        assert model.state.primary is not None
+        assert model.state.primary.name == "baseline"
+
+    def test_rebuilding_the_list_does_not_clear_the_preference(self, panel) -> None:
+        """重建下拉選單時要擋掉訊號,否則清空的瞬間會把偏好設成 None。"""
+        model, window = panel
+        model.update_advices([self._advice("mortal", "1m")])
+        window._engine_picker.setCurrentIndex(1)  # noqa: SLF001
+        model.update_advices([self._advice("mortal", "1m"), self._advice("baseline", "9p")])
+        assert model.state.preferred_engine == "mortal"
+
+    def test_the_candidate_count_is_adjustable(self, panel) -> None:
+        model, window = panel
+        meta = {"mask_bits": 0b1111, "q_values": [0.1, 0.2, 0.3, 0.4]}
+        model.update_advices(
+            [Advice("mortal", Dahai(actor=0, pai="1m", tsumogiri=False), meta, 1.0)]
+        )
+        window._candidate_count.setValue(2)  # noqa: SLF001
+        assert sum(shown(row) for row in window._advice._rows) == 2  # noqa: SLF001
+
+
+class TestAlwaysOnTopToggle:
+    def test_toggling_it_off_keeps_the_window_visible(self, panel) -> None:
+        """改 window flag 會讓已顯示的視窗被隱藏 —— 必須重新 show 一次。"""
+        _, window = panel
+        present(window)
+        window._on_top.setChecked(False)  # noqa: SLF001
+        assert not window.isHidden()
+        assert not (window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
+
+    def test_toggling_it_back_on_keeps_the_window_visible(self, panel) -> None:
+        _, window = panel
+        present(window)
+        window._on_top.setChecked(False)  # noqa: SLF001
+        window._on_top.setChecked(True)  # noqa: SLF001
+        assert not window.isHidden()
+        assert window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint

@@ -42,11 +42,18 @@ DEMO_HAND = ("1m", "1m", "2m", "3s", "4m", "5pr", "6m", "8p", "8s", "8s", "9m", 
 
 
 def build_engines(args: argparse.Namespace) -> list[AIEngine]:
-    engines: list[AIEngine] = [DummyEngine()]
+    """建引擎。**模型排在規則式 baseline 之前。**
+
+    順序就是 ``ViewState.primary`` 的優先序。baseline 排前面的話,headline 會
+    顯示 baseline 的建議、真正的模型被擠到下面那排,而 Q 值長條會整段消失
+    (baseline 沒有 meta)—— 那正是實際跑起來看到的症狀。
+    """
+    engines: list[AIEngine] = []
     for weights in args.mortal or []:
         from majsoul_copilot.engine.mortal import mortal_engine
 
         engines.append(mortal_engine(weights, seat=args.seat, name=Path(weights).stem))
+    engines.append(DummyEngine())
     return engines
 
 
