@@ -192,3 +192,58 @@ class TestRestart:
             bot.restart()
             bot.react(TSUMO)
             assert len(self._history(bot)) == 2
+
+
+class TestPeek:
+    """``peek`` 問一個假設性的後續,問完狀態必須與問之前完全相同。
+
+    存在的理由是立直:MJAI 的引擎回 ``reach`` 之後,要等它**看到** reach 事件
+    才會說切哪一張;而那個事件要等使用者宣言完、牌也打出去了才會從封包送來,
+    那時候「該切哪張」已經沒有意義了。
+
+    ``fake_bot`` 會在 meta 裡回它看過幾行(``seen``),所以「歷史有沒有被污染」
+    是可以直接量的 —— 不必去猜。
+    """
+
+    def _seen(self, advice: Advice) -> int:
+        assert advice.meta is not None
+        return int(advice.meta["seen"])
+
+    def test_peek_returns_the_hypothetical_answer(self) -> None:
+        with engine() as bot:
+            bot.react(TSUMO)
+            answer = bot.peek(Tsumo(actor=0, pai="1m"))
+        assert answer.action == Dahai(actor=0, pai="1m", tsumogiri=True)
+
+    def test_the_peeked_event_does_not_stay_in_the_history(self) -> None:
+        """關鍵的那一條。留在歷史裡的話,引擎之後整場都以為多打了一張牌 ——
+        而它**不會報錯**,只會給出看起來正常但其實錯的建議。
+        """
+        with engine() as bot:
+            bot.react(TSUMO)
+            bot.react(TSUMO)
+            bot.peek(Tsumo(actor=0, pai="1m"))
+            after = bot.react(TSUMO)
+        # 真實歷史是 3 個事件(兩次 react + 這一次),不是 4
+        assert self._seen(after) == 3
+
+    def test_the_engine_is_restarted_by_the_peek(self) -> None:
+        """復原的方式就是砍掉重練 —— libriichi 的 Bot 沒有 rollback。"""
+        with engine() as bot:
+            bot.react(TSUMO)
+            peeked = bot.peek(Tsumo(actor=0, pai="1m"))
+            # peek 當下那個行程看過 2 行;重播之後的新行程只看過 1 行
+            assert self._seen(peeked) == 2
+            assert self._seen(bot.react(TSUMO)) == 2
+
+    def test_peek_still_works_a_second_time(self) -> None:
+        with engine() as bot:
+            bot.react(TSUMO)
+            bot.peek(Tsumo(actor=0, pai="1m"))
+            bot.peek(Tsumo(actor=0, pai="2m"))
+            assert self._seen(bot.react(TSUMO)) == 2
+
+    def test_peek_before_start_raises(self) -> None:
+        bot = engine()
+        with pytest.raises(EngineError, match="尚未啟動"):
+            bot.peek(TSUMO)

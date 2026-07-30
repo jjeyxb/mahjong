@@ -221,6 +221,9 @@ class PacketWorker(threading.Thread):
         # 已經打掉的切牌建議 —— 使用者要的答案恰好就是被丟掉的那一個。
         if result.decisions:
             self.decisions += 1
+            # 建議立直時要順便問「然後切哪一張」—— 使用者在按下立直的那一刻
+            # 就需要知道,而引擎不會主動說
+            result = self._group.resolve_follow_ups(result)
             self._bus.post(Advices(result.advices))
 
     def __repr__(self) -> str:
