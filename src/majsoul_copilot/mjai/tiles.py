@@ -27,6 +27,7 @@ __all__ = [
     "mjai_to_ms",
     "ms_to_mjai",
     "normalize_red",
+    "sort_key",
 ]
 
 UNKNOWN = "?"
@@ -83,6 +84,37 @@ def mjai_to_ms(tile: str) -> str:
 def is_red_five(tile: str) -> bool:
     """判斷是否為赤五。接受兩種表示法。"""
     return tile in _RED_TO_MJAI or tile in _MJAI_TO_RED
+
+
+#: 顯示用的花色順序:萬 → 筒 → 索 → 字牌。
+_SUIT_ORDER = {"m": 0, "p": 1, "s": 2}
+_HONOR_GROUP = 3
+_UNKNOWN_GROUP = 9
+
+
+def sort_key(tile: str) -> tuple[int, int, int]:
+    """理牌用的排序鍵(MJAI 記法)。
+
+    ``sorted()`` 直接排字串會把筒子插進萬子中間 —— ``1m`` < ``1p`` < ``2m``,
+    所以 13 張手牌會排成 1m 1p 1p 2m 2p 3m…,畫面上看起來像壞掉。麻將的順序是
+    **先花色再點數**,字牌固定在最後、依東南西北白發中。
+
+    赤五排在同款普通五**之前**(``5mr`` 在 ``5m`` 前)。兩者點數相同但不能互換,
+    固定順序才不會每次更新都跳動。
+
+    >>> sorted(["1p", "2m", "5mr", "5m", "E"], key=sort_key)
+    ['2m', '5mr', '5m', '1p', 'E']
+    """
+    if tile == UNKNOWN:
+        return (_UNKNOWN_GROUP, 0, 0)
+    if tile in _MJAI_TO_HONOR:
+        return (_HONOR_GROUP, HONOR_ORDER.index(tile), 0)
+    if tile in _MJAI_TO_RED:
+        return (_SUIT_ORDER[tile[1]], 5, 0)
+    if len(tile) == 2 and tile[1] in _SUIT_ORDER and tile[0].isdigit():
+        return (_SUIT_ORDER[tile[1]], int(tile[0]), 1)
+    # 認不得的牌排到最後,而不是拋例外 —— 排序是顯示用的,不該讓 UI 崩掉
+    return (_UNKNOWN_GROUP, 0, 0)
 
 
 def normalize_red(tile: str) -> str:
