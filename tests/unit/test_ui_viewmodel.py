@@ -239,3 +239,53 @@ class TestNotifications:
         m.update_cv_hand(["10m"])
         m.update_cv_hand(["10m"])
         assert len(m.state.notices) == 1
+
+
+class TestPrimaryEngine:
+    """哪個引擎當主角。
+
+    這一段是為了釘住一個實際看到的問題:規則式 baseline 排在模型前面時,
+    headline 顯示的是 baseline、真正的模型被擠到下面那排,而 Q 值長條整段
+    消失(baseline 沒有 meta)。畫面看起來「有東西」,所以很容易當成正常。
+    """
+
+    def _advice(self, engine: str, tile: str, meta: dict | None = None) -> Advice:
+        return Advice(engine, Dahai(actor=0, pai=tile, tsumogiri=False), meta, 1.0)
+
+    def test_order_decides_who_is_primary(self) -> None:
+        m = model()
+        m.update_advices([self._advice("baseline", "1m"), self._advice("mortal", "9p")])
+        assert m.state.primary is not None
+        assert m.state.primary.name == "baseline", "順序就是優先序"
+
+    def test_a_preferred_engine_overrides_the_order(self) -> None:
+        m = model()
+        m.set_preferred_engine("mortal")
+        m.update_advices([self._advice("baseline", "1m"), self._advice("mortal", "9p")])
+        assert m.state.primary is not None
+        assert m.state.primary.name == "mortal"
+
+    def test_a_preferred_engine_stays_primary_even_with_no_action(self) -> None:
+        """使用者點名要看某個引擎,就該一直看它 —— 不該因為它剛好沒事做就跳走。"""
+        m = model()
+        m.set_preferred_engine("mortal")
+        m.update_advices([self._advice("baseline", "1m"), Advice("mortal", None)])
+        assert m.state.primary is not None
+        assert m.state.primary.name == "mortal"
+        assert m.state.primary.action is None
+
+    def test_an_unknown_preference_falls_back_to_the_order(self) -> None:
+        """指定的引擎沒起來(啟動失敗)時,不該整頁空白。"""
+        m = model()
+        m.set_preferred_engine("不存在的引擎")
+        m.update_advices([self._advice("baseline", "1m")])
+        assert m.state.primary is not None
+        assert m.state.primary.name == "baseline"
+
+    def test_clearing_the_preference_returns_to_the_order(self) -> None:
+        m = model()
+        m.set_preferred_engine("mortal")
+        m.set_preferred_engine(None)
+        m.update_advices([self._advice("baseline", "1m"), self._advice("mortal", "9p")])
+        assert m.state.primary is not None
+        assert m.state.primary.name == "baseline"
