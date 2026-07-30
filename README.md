@@ -73,11 +73,20 @@ MJAI 本來就是 JSON-lines over stdio 的協定，子程序化是它的原生�
 
 功能 2   WebSocket frame ──liqi──▶ MjaiEvent ──▶ engine × N ──▶ Advice
          (base64 .jsonl)           (JSON)
-                                                                  │
-                                                                  ▼
-                                                    ViewModel ──▶ Panel（側邊視窗）
-                                                              └─▶ Overlay（透明置頂）
 ```
+
+即時模式下兩條路各跑一條執行緒，交會點只有一個郵箱：
+
+```
+擷取執行緒(15 fps)──┐
+                      ├─▶ UpdateBus ──▶ pump()(UI 執行緒)──▶ ViewModel ──▶ Panel
+封包執行緒(事件驅動)─┘                                                  └─▶ Overlay
+```
+
+`pump()` 是唯一碰 `ViewModel` 的地方，而它只在 UI 執行緒上跑 —— Qt 的 widget
+只能在建立它的執行緒上動，而 `ViewModel` 本身也不是執行緒安全的。郵箱**每個
+slot 只留最新一筆**：主執行緒卡住的時候要掉幀，不要恢復後把積壓的舊局面
+補播一遍。細節見 [docs/decisions.md](docs/decisions.md) 第十節。
 
 兩種 HUD 共用同一個 `ViewModel`，不重複實作顯示邏輯。
 
@@ -92,6 +101,7 @@ src/mia/
 ├── analysis/      向聽數、進張、打牌建議(mahjong 套件)
 ├── mjai/          events / tiles(牌表示轉換)
 ├── engine/        base / subprocess_engine / mortal / dummy / multiplex
+├── live/          即時模式:bus / vision / packets / runtime / source
 ├── ui/            viewmodel + panel/ overlay/ widgets/
 ├── groundtruth/   cdp / capture_addon / dump / liqi / schema / to_mjai
 ├── eval/          align / metrics / report
@@ -237,7 +247,8 @@ python tools/gt.py inspect data/ws.jsonl --actions --mjai-out data/g1.mjai.jsonl
 | M3-1b | 準確率評測工具鏈 | ✅ 對齊與報告已完成並測過;**待錄一份成對素材**跑出數字，見 [docs/recording.md](docs/recording.md) |
 | M4 | **功能 1**:向聽 / 進張計算 | ✅ 完成 —— `analysis/shanten.py`,整條管線已跑通 |
 | M5 | **功能 2**:engine 子程序 + Mortal 接入 | ✅ 完成 —— 已用真實對局驗證,見下方「M5 實測」 |
-| M6 | UI 側邊視窗 | |
+| M6 | UI 側邊視窗 | ✅ 完成 —— 左側功能列 + 牌面圖片 + Q 值長條 |
+| M6-1 | **即時資料連接層** | ✅ 完成 —— 封包這條路已實機驗證;兩條路同時跑尚未一起驗過 |
 | M7 | Overlay 模式 | |
 | M8 | **功能 3**:風格微調(見下節) | |
 
@@ -399,6 +410,45 @@ JSONL。liqi 解析全在離線階段。這樣解析程式有 bug 或協定改�
 ```bash
 python tools/advise.py data/gt/ws.jsonl --mortal models/mortal_298k.pth
 ```
+
+### 即時模式：真的接上遊戲
+
+```bash
+# 一個指令搞定：瀏覽器會自己開起來，登入後就開始給建議
+python tools/ui.py --live --mortal models/mortal_298k.pth
+
+# 已經有另一個 gt.py 在錄了（或用 MITM 錄 Steam 版），只跟著那個檔案走
+python tools/ui.py --live --tail data/recordings/now/ws.jsonl
+
+# 只要 AI 建議，不跑畫面辨識（不必授權螢幕錄製）
+python tools/ui.py --live --no-packets   # ← 反過來：只要畫面辨識，不接封包
+```
+
+`--live` 會開一個 `tools/gt.py cdp` 子程序抓封包，同時擷取遊戲視窗跑 CV。
+**封包錄影是副產品**：即時建議與離線準確率評測用的是同一份 `ws.jsonl`，
+不必為了產生資料集再打一場。
+
+擷取仍然是子程序而不是塞進主程式，理由與 `gt.py` 當初對 mitmdump 的決定相同
+—— Playwright 與 mitmproxy 各自帶著自己的事件迴圈，而主程式這邊還有一個
+Qt 事件迴圈要顧。代價是多一次落地與讀回，換到的是「三種擷取方式都能用」
+與「瀏覽器崩掉不會拖垮 UI」。
+
+**引擎在對局開始前就先起好。** 載 130MB 權重要 10 秒，等到發牌才載就來不及了。
+所以座位不能靠啟動參數寫死 —— `bot.py` 改成每收到 `start_game` 就照它的 `id`
+重建 `libriichi` 的 `Bot`（權重原封不動留著，重建幾乎免費）。
+
+即時路徑的實機驗證（把整場東風戰當成正在寫入的錄影檔跟著跑）：
+
+| 項目 | 結果 |
+|---|---|
+| 事件 / 決策點 | 550 / 73 —— 與離線重播完全相同 |
+| 座位辨識 | 刻意用 `--seat 0` 啟動，正確跟著事件流改成 2 |
+| 全場耗時 | 2.0 秒（含 Mortal 每一手的推論） |
+| 郵箱合併 | 投遞 210 筆 → UI 只收到 **12 次**通知 |
+| 半截行處理 | 1398 行、**0 個壞行**（刻意在第 400 行切一次） |
+
+**尚未一起驗過的是「畫面與封包同時在真實對局上跑」** —— 兩條路各自都在真實
+素材上驗過了，但需要一次實機對局才能驗它們一起跑。
 
 ### 準確率評測：拿封包當標準答案
 

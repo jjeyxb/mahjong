@@ -53,10 +53,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mia.groundtruth import capture_addon
-from mia.groundtruth.dump import DumpStats, DumpWriter, parse_dump
-from mia.groundtruth.liqi import LiqiParser
+from mia.groundtruth.dump import DumpWriter
 from mia.groundtruth.schema import LiqiSchema
-from mia.groundtruth.to_mjai import MajsoulToMjai, events_to_jsonl
+from mia.groundtruth.stream import MjaiDecoder
+from mia.groundtruth.to_mjai import events_to_jsonl
 from mia.mjai.events import MjaiEvent
 from mia.utils.logging import setup_logging
 from mia.utils.paths import DATA_DIR
@@ -176,27 +176,23 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     schema = LiqiSchema.load()
     print(f"協定: {schema!r}\n")
 
-    # 每條 WebSocket 連線各自一個解析器與轉換器
-    converters: dict[str, MajsoulToMjai] = {}
+    # 依連線分流的解析與轉換都在 MjaiDecoder 裡 —— 即時模式用的是同一個
+    decoder = MjaiDecoder(schema)
     mjai_events: list[MjaiEvent] = []
-    stats = DumpStats()
     shown = 0
 
-    for frame, message in parse_dump(path, schema, stats=stats):
-        converter = converters.get(frame.flow)
-        if converter is None:
-            converter = converters[frame.flow] = MajsoulToMjai(LiqiParser(schema))
-        produced = converter.handle(message)
-        mjai_events.extend(produced)
+    for decoded in decoder.decode_file(path):
+        mjai_events.extend(decoded.events)
 
-        if args.actions and not message.is_action:
+        if args.actions and not decoded.message.is_action:
             continue
         if shown < args.limit:
-            print(f"  {frame.timestamp:8.3f}s  {message}")
-            for event in produced:
+            print(f"  {decoded.frame.timestamp:8.3f}s  {decoded.message}")
+            for event in decoded.events:
                 print(f"                → {event}")
             shown += 1
 
+    stats = decoder.stats
     print()
     print(stats.summary())
     print(f"轉出 MJAI 事件 {len(mjai_events)} 個")

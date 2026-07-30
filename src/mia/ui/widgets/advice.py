@@ -57,7 +57,7 @@ class _Headline(QWidget):
         layout.addWidget(self._detail)
         layout.addStretch(1)
 
-    def update_from(self, engine: EngineView | None) -> None:
+    def update_from(self, engine: EngineView | None, *, stale: bool = False) -> None:
         if engine is None:
             self._verb.setText("等待引擎…")
             self._tile.setVisible(False)
@@ -83,7 +83,15 @@ class _Headline(QWidget):
         if top is not None:
             detail += f"   Q={top.q:+.2f}"
         detail += f"   {engine.latency_ms:.0f} ms"
+        if stale:
+            # 建議的牌已經不在手上。標出來而不是藏起來 —— 使用者看到「切 3s」
+            # 而手上沒有 3s 時,要知道那是剛剛打掉了,不是程式算錯。
+            detail += "   ·已打出"
         self._detail.setText(detail)
+        self._verb.setStyleSheet(
+            "font-size: 26px; font-weight: 600;"
+            + ("color: palette(mid);" if stale else "")
+        )
 
 
 class _CandidateRow(QWidget):
@@ -171,7 +179,7 @@ class AdviceTab(QWidget):
 
     def update_from(self, state: ViewState) -> None:
         primary = state.primary
-        self._headline.update_from(primary)
+        self._headline.update_from(primary, stale=state.advice_is_stale)
         self._update_candidates(primary)
         self._update_others(state)
 

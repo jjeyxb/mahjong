@@ -1,29 +1,39 @@
 #!/usr/bin/env python
-"""開側邊視窗。
+"""開 MIA 的側邊視窗。
 
-三種餵資料的方式:
+四種餵資料的方式:
+
+``--live``
+    **真的接上遊戲。** 開一個擷取子程序抓封包、同時擷取畫面跑 CV,兩條路的
+    結果一起顯示。這是實際使用的模式,其餘三種都是為了驗它的某一段。
 
 ``--replay <ws.jsonl>``
     把錄下的對局照時間重播 —— 引擎真的在跑,建議是真的算出來的。**不需要開遊戲**,
-    所以 UI 隨時可以驗、可以截圖給論文用。這是預設。
+    所以 UI 隨時可以驗、可以截圖給論文用。
 
 ``--session <錄影目錄>``
     把錄下的畫面跑一次 CV,顯示辨識出來的手牌與向聽。驗的是功能 1 那條路。
 
 ``--demo``
-    塞一組寫死的假資料就停住。純粹用來看版面,不需要任何素材。
+    塞一組寫死的假資料就停住。純粹用來看版面,不需要任何素材。這是預設。
 
 用法::
 
+    # 實際使用:瀏覽器會自己開起來,登入後就開始給建議
+    python tools/ui.py --live --mortal models/mortal_298k.pth
+
+    # 已經有另一個 gt.py 在錄了,只要跟著那個檔案走
+    python tools/ui.py --live --tail data/recordings/now/ws.jsonl
+
     python tools/ui.py --demo
     python tools/ui.py --replay tests/fixtures/real_game_full.jsonl --speed 8
-    python tools/ui.py --replay data/gt/ws.jsonl --mortal models/mortal_298k.pth
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -32,6 +42,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from mia.engine import AIEngine, DummyEngine, EngineGroup
+from mia.live.runtime import LiveRuntime
 from mia.mjai import MjaiEvent
 from mia.mjai.handstate import HandTracker
 from mia.ui.panel.window import PanelWindow, present
@@ -39,6 +50,13 @@ from mia.ui.viewmodel import ViewModel
 from mia.utils.logging import setup_logging
 
 DEMO_HAND = ("1m", "1m", "2m", "3s", "4m", "5pr", "6m", "8p", "8s", "8s", "9m", "E", "P")
+
+#: 即時模式下多久把郵箱套進 UI 一次(毫秒)。
+#:
+#: 100 ms 是刻意的:擷取是 15 fps(66 ms),再快只是重畫同樣的東西;而人看
+#: 手牌變化,10 Hz 已經完全跟得上。郵箱會把這段時間內的更新合併掉,所以
+#: 「調慢」不會漏資訊,只會讓畫面晚 0.1 秒 —— 遠小於遊戲自己的動畫時間。
+PUMP_INTERVAL_MS = 100
 
 
 def build_engines(args: argparse.Namespace) -> list[AIEngine]:
@@ -109,6 +127,58 @@ def run_replay(args: argparse.Namespace, model: ViewModel) -> None:
     timer.start(max(1, round(1000 / args.speed)))
     # 掛在 model 上避免被 GC —— QTimer 沒有 parent 時會被當成暫時物件回收
     model._timer = timer  # type: ignore[attr-defined]  # noqa: SLF001
+
+
+def run_live(args: argparse.Namespace, model: ViewModel) -> LiveRuntime:
+    """接上遊戲。回傳 runtime,呼叫端要負責在結束時 stop 它。
+
+    兩條路各自獨立起停:沒有 ``--mortal`` 也可以只跑畫面辨識,擷取子程序起不來
+    也不影響 CV。這正是三個功能刻意解耦的地方 —— 一邊壞掉另一邊照樣有用。
+    """
+    from mia.config.loader import load_config
+    from mia.live import CaptureProcess, PacketWorker, UpdateBus, VisionWorker, capture_command
+    from mia.live.runtime import Worker
+    from mia.utils.paths import DATA_DIR
+    from mia.vision.tiles.classify import DEFAULT_SKIN
+
+    bus = UpdateBus()
+    workers: list[Worker] = []
+    capture: CaptureProcess | None = None
+
+    if not args.no_packets:
+        if args.tail:
+            # 別人已經在錄了,只跟著走 —— 不要再開一個擷取子程序去搶同一個瀏覽器
+            dump = args.tail
+        else:
+            dump = DATA_DIR / "live" / time.strftime("%Y%m%d-%H%M%S") / "ws.jsonl"
+            capture = CaptureProcess(
+                capture_command(
+                    dump,
+                    mode=args.capture_mode,
+                    url=args.url,
+                    user_data_dir=args.user_data_dir,
+                    connect=args.connect,
+                )
+            )
+            print(f"封包錄影會寫到 {dump}")
+        workers.append(
+            PacketWorker(bus, dump=dump, engines=build_engines(args), from_start=True)
+        )
+
+    if not args.no_vision:
+        workers.append(VisionWorker(bus, config=load_config(), skin=args.skin or DEFAULT_SKIN))
+
+    if not workers:
+        raise SystemExit("--no-vision 與 --no-packets 同時給了,那就沒有東西可以顯示")
+
+    runtime = LiveRuntime(model, bus, workers=workers, capture=capture)
+    runtime.start()
+
+    timer = QTimer()
+    timer.timeout.connect(runtime.pump)
+    timer.start(PUMP_INTERVAL_MS)
+    model._timer = timer  # type: ignore[attr-defined]  # noqa: SLF001
+    return runtime
 
 
 def run_session(args: argparse.Namespace, model: ViewModel) -> None:
@@ -191,11 +261,33 @@ def run_demo(model: ViewModel) -> None:
     model.set_notices(["示範資料 —— 不是真實局面"])
 
 
+def _quit_on_signals(app: QApplication) -> None:
+    """讓 Ctrl-C 與 SIGTERM 走正常的關閉流程。
+
+    預設行為下 SIGTERM 直接終止行程,``finally`` 不會跑 —— 引擎子程序會因為
+    stdin 收到 EOF 自己結束,但**擷取子程序不會**:那是一個獨立的 Chromium,
+    父程序死掉它照樣開著。留一個孤兒瀏覽器在螢幕上是使用者看得到的問題。
+
+    Python 只在位元組碼之間處理訊號,而 ``app.exec()`` 卡在 C 裡面。即時模式
+    本來就有一個 100 ms 的 QTimer 在跑,解譯器每一次 tick 都會拿回控制權,
+    所以處理函式最慢在 100 ms 內生效。
+    """
+    import signal
+
+    def quit_app(signum: int, _frame: object) -> None:
+        print(f"\n收到訊號 {signum},正在關閉…")
+        app.quit()
+
+    signal.signal(signal.SIGINT, quit_app)
+    signal.signal(signal.SIGTERM, quit_app)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     source = parser.add_mutually_exclusive_group()
+    source.add_argument("--live", action="store_true", help="真的接上遊戲(畫面 + 封包)")
     source.add_argument("--replay", type=Path, help="重播封包錄影(引擎真的在跑)")
     source.add_argument("--session", type=Path, help="重播畫面錄影(跑 CV)")
     source.add_argument("--demo", action="store_true", help="塞假資料看版面")
@@ -203,6 +295,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--speed", type=float, default=4.0, help="重播速度(步/秒),預設 4")
     parser.add_argument("--skin", default=None, help="牌面素材皮膚")
     parser.add_argument("--log-level", default="WARNING")
+
+    live = parser.add_argument_group("即時模式(--live)")
+    live.add_argument("--no-vision", action="store_true", help="不跑畫面辨識,只要 AI 建議")
+    live.add_argument("--no-packets", action="store_true", help="不接封包,只要畫面辨識")
+    live.add_argument(
+        "--tail",
+        type=Path,
+        metavar="WS.JSONL",
+        help="跟著別的程序正在寫的錄影檔走,不自己開擷取子程序",
+    )
+    live.add_argument(
+        "--capture-mode",
+        default="cdp",
+        choices=("cdp", "proxy", "local"),
+        help="封包擷取方式,預設 cdp(零前置設定)",
+    )
+    live.add_argument("--url", help="要開啟的網址,預設網頁版雀魂")
+    live.add_argument("--user-data-dir", help="持久化的瀏覽器設定檔目錄,可保留登入狀態")
+    live.add_argument("--connect", metavar="ENDPOINT", help="連到已在跑的瀏覽器")
     args = parser.parse_args(argv)
     args.seat = 0
 
@@ -213,15 +324,27 @@ def main(argv: list[str] | None = None) -> int:
     window = PanelWindow(model, **({"skin": args.skin} if args.skin else {}))
     model.subscribe(window.apply)
 
-    if args.replay:
+    runtime: LiveRuntime | None = None
+    if args.live:
+        runtime = run_live(args, model)
+    elif args.replay:
         run_replay(args, model)
     elif args.session:
         run_session(args, model)
     else:
         run_demo(model)
 
+    if runtime is not None:
+        _quit_on_signals(app)
+
     present(window)
-    return app.exec()
+    try:
+        return app.exec()
+    finally:
+        # 一定要收:引擎子程序與擷取子程序都不是 daemon 的孩子,漏掉會留下
+        # 一個載著 130MB 權重的 Python 與一個孤兒 Chromium。
+        if runtime is not None:
+            runtime.stop()
 
 
 if __name__ == "__main__":

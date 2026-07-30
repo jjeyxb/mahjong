@@ -24,7 +24,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 
 from mia.analysis import (
@@ -138,6 +139,25 @@ class ViewState:
         return self.engines[0] if self.engines else None
 
     @property
+    def advice_is_stale(self) -> bool:
+        """建議切的那張牌已經不在手上 —— 那一手已經打完了。
+
+        手牌與建議是**兩個獨立的更新槽**(理由見 :mod:`mia.live.bus`),所以
+        即時模式下兩者最多會差一個事件:打牌的事件到了、手牌變成 13 張,但
+        建議還是上一巡算出來的那個。差一個事件是刻意接受的代價 —— 合併成一個
+        槽的話,別人打牌的事件會把還該顯示著的建議連帶蓋掉。
+
+        代價換成這個旗標讓 UI 標出來:使用者看到「切 3s」而手上沒有 3s 時,
+        該知道那是「剛剛打掉了」而不是程式算錯。
+
+        沒有手牌或建議不是切牌時一律 False —— 立直、吃碰沒有對應的單張牌可比。
+        """
+        primary = self.primary
+        if primary is None or not primary.tile or not self.hand:
+            return False
+        return primary.tile not in self.hand
+
+    @property
     def is_unanimous(self) -> bool:
         """有動作的引擎是否給了同一個答案。分歧的那幾手才值得停下來看。"""
         actions = {e.action for e in self.engines if e.action is not None}
@@ -160,6 +180,8 @@ class ViewModel:
     def __init__(self, on_change: Callable[[ViewState], None] | None = None) -> None:
         self._state = ViewState()
         self._listeners: list[Callable[[ViewState], None]] = []
+        self._depth = 0
+        self._dirty = False
         if on_change is not None:
             self._listeners.append(on_change)
 
@@ -170,6 +192,25 @@ class ViewModel:
     def subscribe(self, listener: Callable[[ViewState], None]) -> None:
         """加一個變化通知。側邊視窗與 Overlay 各自訂閱同一個 ViewModel。"""
         self._listeners.append(listener)
+
+    @contextmanager
+    def batch(self) -> Iterator[None]:
+        """把區塊內的多筆更新合成**一次**通知。
+
+        即時模式一輪會一次套用「CV 手牌 + 封包手牌 + 引擎建議」三筆更新。
+        逐筆通知的話 UI 每輪重畫三次,而中間那兩次畫的是不完整的組合
+        —— 例如手牌已經換成下一巡、建議還是上一巡的。
+
+        區塊內沒有任何更新時不會發通知。
+        """
+        self._depth += 1
+        try:
+            yield
+        finally:
+            self._depth -= 1
+            if self._depth == 0 and self._dirty:
+                self._dirty = False
+                self._notify()
 
     # ------------------------------------------------------------------ 更新
 
@@ -284,8 +325,14 @@ class ViewModel:
 
     def _emit(self, state: ViewState) -> None:
         self._state = state
+        if self._depth:
+            self._dirty = True
+            return
+        self._notify()
+
+    def _notify(self) -> None:
         for listener in self._listeners:
-            listener(state)
+            listener(self._state)
 
 
 def _analyse(hand: tuple[str, ...]) -> tuple[HandAnalysis | None, tuple[DiscardOption, ...]]:

@@ -30,9 +30,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mia.engine import AIEngine, DummyEngine, EngineGroup
-from mia.groundtruth.liqi import LiqiParser
-from mia.groundtruth.schema import LiqiSchema
-from mia.groundtruth.to_mjai import MajsoulToMjai
 from mia.mjai import MjaiEvent, MjaiFormatError, parse_event
 from mia.utils.logging import setup_logging
 
@@ -75,17 +72,10 @@ def load_events(path: Path) -> tuple[list[MjaiEvent], str]:
 
 
 def _from_dump(path: Path) -> list[MjaiEvent]:
-    from mia.groundtruth.dump import parse_dump
+    from mia.groundtruth.stream import MjaiDecoder
 
-    schema = LiqiSchema.load()
-    converters: dict[str, MajsoulToMjai] = {}
-    events: list[MjaiEvent] = []
-    for frame, message in parse_dump(path, schema):
-        converter = converters.get(frame.flow)
-        if converter is None:
-            converter = converters[frame.flow] = MajsoulToMjai(LiqiParser(schema))
-        events.extend(converter.handle(message))
-    return events
+    decoder = MjaiDecoder()
+    return [event for decoded in decoder.decode_file(path) for event in decoded.events]
 
 
 def own_seat(events: list[MjaiEvent]) -> int:
