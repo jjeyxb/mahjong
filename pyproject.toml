@@ -3,9 +3,9 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "majsoul-copilot"
+name = "mia"
 version = "0.1.0"
-description = "雀魂麻將輔助系統 — 螢幕擷取 + 電腦視覺 + Mortal AI"
+description = "Mahjong Intelligence Assistant (MIA) — 螢幕擷取 + 電腦視覺 + Mortal AI"
 requires-python = ">=3.14"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE", "NOTICE"]
@@ -44,7 +44,7 @@ ignore = ["RUF001", "RUF002", "RUF003"]  # 允許註解中的全形標點
 
 [tool.mypy]
 python_version = "3.14"
-packages = ["majsoul_copilot"]
+packages = ["mia"]
 mypy_path = "src"
 plugins = ["pydantic.mypy"]
 warn_unused_ignores = true
@@ -69,5 +69,5 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 # ctypes.windll 只存在於 Windows 的 typeshed,在 macOS 上檢查這個模組必然報錯。
 # 這個模組的型別正確性只能在 Windows 上跑 mypy 才有意義。
-module = ["majsoul_copilot.capture.windows"]
+module = ["mia.capture.windows"]
 disable_error_code = ["attr-defined", "import-untyped"]

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from majsoul_copilot.analysis import (
+from mia.analysis import (
     AGARI,
     TENPAI,
     HandError,

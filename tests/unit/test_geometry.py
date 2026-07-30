@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from majsoul_copilot.utils.geometry import NormRect, Rect, Size
+from mia.utils.geometry import NormRect, Rect, Size
 
 
 class TestRect:

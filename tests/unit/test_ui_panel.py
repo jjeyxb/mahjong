@@ -11,16 +11,16 @@ from __future__ import annotations
 
 import pytest
 
-from majsoul_copilot.engine.base import Advice
-from majsoul_copilot.mjai import Dahai, Reach
-from majsoul_copilot.ui.viewmodel import ViewModel
+from mia.engine.base import Advice
+from mia.mjai import Dahai, Reach
+from mia.ui.viewmodel import ViewModel
 
 pytest.importorskip("PySide6", reason="UI 測試需要 PySide6")
 
 from PySide6.QtCore import Qt
 
-from majsoul_copilot.ui.panel.window import PanelWindow, present
-from majsoul_copilot.ui.widgets.tiles import TileIcons
+from mia.ui.panel.window import PanelWindow, present
+from mia.ui.widgets.tiles import TileIcons
 
 TENPAI = ["1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "1p", "2p", "3p"]
 

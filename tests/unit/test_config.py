@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from majsoul_copilot.config.loader import _deep_merge, load_config, save_config
-from majsoul_copilot.config.models import AppConfig, CalibrationConfig, CaptureConfig
+from mia.config.loader import _deep_merge, load_config, save_config
+from mia.config.models import AppConfig, CalibrationConfig, CaptureConfig
 
 
 class TestDeepMerge:

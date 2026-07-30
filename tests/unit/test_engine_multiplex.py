@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from majsoul_copilot.engine import Advice, EngineError, EngineGroup
-from majsoul_copilot.mjai import Dahai, MjaiEvent, Reach, Tsumo
+from mia.engine import Advice, EngineError, EngineGroup
+from mia.mjai import Dahai, MjaiEvent, Reach, Tsumo
 
 TSUMO = Tsumo(actor=0, pai="3s")
 

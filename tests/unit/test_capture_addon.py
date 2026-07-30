@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from majsoul_copilot.groundtruth.capture_addon import WebSocketDump
+from mia.groundtruth.capture_addon import WebSocketDump
 
 
 @dataclass
@@ -133,7 +133,7 @@ class TestOutputFormat:
 class TestParseIntegration:
     def test_dump_is_readable_by_the_offline_parser(self, dump: WebSocketDump) -> None:
         """addon 寫出的格式必須能被 groundtruth.dump 直接讀回去。"""
-        from majsoul_copilot.groundtruth.dump import iter_frames
+        from mia.groundtruth.dump import iter_frames
 
         flow = FakeFlow(GAME_URL)
         flow.send(b"\x01hello", from_client=False)

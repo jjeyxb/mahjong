@@ -9,12 +9,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from majsoul_copilot.calibration.letterbox import (
+from mia.calibration.letterbox import (
     estimate_background,
     find_content_rect,
     fit_aspect,
 )
-from majsoul_copilot.utils.geometry import Rect
+from mia.utils.geometry import Rect
 from tests.conftest import make_letterboxed
 
 

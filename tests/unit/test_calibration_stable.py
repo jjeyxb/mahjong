@@ -14,10 +14,10 @@ from __future__ import annotations
 
 import numpy as np
 
-from majsoul_copilot.calibration.stable import StableCalibrator
-from majsoul_copilot.capture.base import Frame, WindowInfo
-from majsoul_copilot.config.models import CalibrationConfig
-from majsoul_copilot.utils.geometry import Rect, Size
+from mia.calibration.stable import StableCalibrator
+from mia.capture.base import Frame, WindowInfo
+from mia.config.models import CalibrationConfig
+from mia.utils.geometry import Rect, Size
 from tests.conftest import make_letterboxed
 
 #: 縮小版的實測情境:視窗含一條「瀏覽器工具列」,底下是 16:9 畫布。

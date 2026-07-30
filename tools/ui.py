@@ -31,12 +31,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
-from majsoul_copilot.engine import AIEngine, DummyEngine, EngineGroup
-from majsoul_copilot.mjai import MjaiEvent
-from majsoul_copilot.mjai.handstate import HandTracker
-from majsoul_copilot.ui.panel.window import PanelWindow, present
-from majsoul_copilot.ui.viewmodel import ViewModel
-from majsoul_copilot.utils.logging import setup_logging
+from mia.engine import AIEngine, DummyEngine, EngineGroup
+from mia.mjai import MjaiEvent
+from mia.mjai.handstate import HandTracker
+from mia.ui.panel.window import PanelWindow, present
+from mia.ui.viewmodel import ViewModel
+from mia.utils.logging import setup_logging
 
 DEMO_HAND = ("1m", "1m", "2m", "3s", "4m", "5pr", "6m", "8p", "8s", "8s", "9m", "E", "P")
 
@@ -50,7 +50,7 @@ def build_engines(args: argparse.Namespace) -> list[AIEngine]:
     """
     engines: list[AIEngine] = []
     for weights in args.mortal or []:
-        from majsoul_copilot.engine.mortal import mortal_engine
+        from mia.engine.mortal import mortal_engine
 
         engines.append(mortal_engine(weights, seat=args.seat, name=Path(weights).stem))
     engines.append(DummyEngine())
@@ -113,13 +113,13 @@ def run_replay(args: argparse.Namespace, model: ViewModel) -> None:
 
 def run_session(args: argparse.Namespace, model: ViewModel) -> None:
     """把錄下的畫面跑一次 CV。驗的是功能 1。"""
-    from majsoul_copilot.calibration.table import Calibration
-    from majsoul_copilot.config.loader import load_config
-    from majsoul_copilot.recorder import SessionReader
-    from majsoul_copilot.utils.geometry import Size
-    from majsoul_copilot.vision.roi import RoiSet
-    from majsoul_copilot.vision.tiles.classify import TemplateSet, classify_hand
-    from majsoul_copilot.vision.tiles.hand import read_hand
+    from mia.calibration.table import Calibration
+    from mia.config.loader import load_config
+    from mia.recorder import SessionReader
+    from mia.utils.geometry import Size
+    from mia.vision.roi import RoiSet
+    from mia.vision.tiles.classify import TemplateSet, classify_hand
+    from mia.vision.tiles.hand import read_hand
 
     session = SessionReader(args.session)
     if session.table_rect is None:
@@ -167,8 +167,8 @@ def run_session(args: argparse.Namespace, model: ViewModel) -> None:
 
 def run_demo(model: ViewModel) -> None:
     """一組寫死的資料。只為了看版面,不代表任何真實局面。"""
-    from majsoul_copilot.engine.base import Advice
-    from majsoul_copilot.mjai import Dahai
+    from mia.engine.base import Advice
+    from mia.mjai import Dahai
 
     model.update_packet_hand((*DEMO_HAND, "F"), drawn="F")
     # mask_bits 的位元位置要真的對應那幾張牌,q_values 也要照索引升冪 ——

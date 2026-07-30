@@ -25,14 +25,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from majsoul_copilot.calibration.table import Calibration
-from majsoul_copilot.config.loader import load_config
-from majsoul_copilot.eval import align, build_timeline, evaluate_frame, summarize
-from majsoul_copilot.recorder import SessionReader
-from majsoul_copilot.utils.geometry import Size
-from majsoul_copilot.utils.logging import setup_logging
-from majsoul_copilot.vision.roi import RoiSet
-from majsoul_copilot.vision.tiles.classify import TemplateSet
+from mia.calibration.table import Calibration
+from mia.config.loader import load_config
+from mia.eval import align, build_timeline, evaluate_frame, summarize
+from mia.recorder import SessionReader
+from mia.utils.geometry import Size
+from mia.utils.logging import setup_logging
+from mia.vision.roi import RoiSet
+from mia.vision.tiles.classify import TemplateSet
 
 
 def main(argv: list[str] | None = None) -> int:

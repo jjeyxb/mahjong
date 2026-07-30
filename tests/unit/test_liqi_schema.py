@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from majsoul_copilot.groundtruth.schema import DEFAULT_LIQI_PATH, LiqiSchema, SchemaError
+from mia.groundtruth.schema import DEFAULT_LIQI_PATH, LiqiSchema, SchemaError
 
 MINIMAL = {
     "nested": {

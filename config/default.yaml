@@ -1,4 +1,4 @@
-# Majsoul Copilot 預設設定
+# MIA 預設設定
 #
 # 個人機器上的覆寫請寫在 config/default.local.yaml(不進版控),
 # 該檔會以遞迴合併的方式蓋過本檔。

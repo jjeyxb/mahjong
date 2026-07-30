@@ -5,11 +5,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from majsoul_copilot.calibration.table import Calibration
-from majsoul_copilot.config.loader import load_config
-from majsoul_copilot.config.models import RoiConfig
-from majsoul_copilot.utils.geometry import Rect, Size
-from majsoul_copilot.vision.roi import MissingRoiError, RoiSet, roi_names
+from mia.calibration.table import Calibration
+from mia.config.loader import load_config
+from mia.config.models import RoiConfig
+from mia.utils.geometry import Rect, Size
+from mia.vision.roi import MissingRoiError, RoiSet, roi_names
 
 #: 刻意讓牌桌矩形有偏移、且不等於整張影像 —— 兩者相同的話,
 #: 「換算時忘了加牌桌原點」這個錯誤剛好會被蓋掉,測不出來。

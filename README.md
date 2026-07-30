@@ -1,4 +1,4 @@
-# Majsoul Copilot
+# MIA — Mahjong Intelligence Assistant
 
 跨平台（macOS / Windows）的雀魂麻將輔助系統。大學畢業專題。
 
@@ -84,7 +84,7 @@ MJAI 本來就是 JSON-lines over stdio 的協定，子程序化是它的原生�
 ### 目錄
 
 ```
-src/majsoul_copilot/
+src/mia/
 ├── config/        設定模型 (pydantic)、YAML 載入、skin profile
 ├── capture/       平台擷取抽象:macos(Quartz) / windows(PrintWindow) / mss fallback
 ├── calibration/   牌桌矩形偵測、DPI 與 Retina 縮放、ROI 正規化

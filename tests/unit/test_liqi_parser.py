@@ -10,13 +10,13 @@ import struct
 
 import pytest
 
-from majsoul_copilot.groundtruth.liqi import (
+from mia.groundtruth.liqi import (
     LiqiParseError,
     LiqiParser,
     MessageKind,
     deobfuscate,
 )
-from majsoul_copilot.groundtruth.schema import DEFAULT_LIQI_PATH, LiqiSchema
+from mia.groundtruth.schema import DEFAULT_LIQI_PATH, LiqiSchema
 
 pytestmark = pytest.mark.skipif(
     not DEFAULT_LIQI_PATH.is_file(), reason="需要 assets/proto/liqi.json"

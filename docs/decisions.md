@@ -457,12 +457,12 @@ river_grid:
 
 | 動作 | 對象 |
 |---|---|
-| 刪除 | `src/majsoul_copilot/vision/grid.py`(單應變換 6×3 網格) |
+| 刪除 | `src/mia/vision/grid.py`(單應變換 6×3 網格) |
 | 刪除 | `tools/grid_annotate.py`(拖四角的互動標定工具) |
 | 刪除 | `tests/unit/test_vision_grid.py`(12 個測試) |
 | 刪除 | `utils/geometry.py` 的 `NormQuad` |
 | 刪除 | `config/models.py` 的 `SeatRoiConfig`、`RiverGridConfig`、`NormQuadTuple` |
-| 刪除 | `src/majsoul_copilot/tracker/`(原 M4,整層) |
+| 刪除 | `src/mia/tracker/`(原 M4,整層) |
 | 精簡 | `RoiConfig` 從 11 個矩形 + 4 個四邊形 → 只剩 `own_hand` |
 | 精簡 | `RoiSet` 移除巢狀名稱走訪與 `.grids` / `.grid()` |
 | 精簡 | `tools/roi_annotate.py` 的欄位清單 |

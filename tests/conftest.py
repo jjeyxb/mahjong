@@ -12,8 +12,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np
 import pytest
 
-from majsoul_copilot.capture.base import Frame, WindowInfo
-from majsoul_copilot.utils.geometry import Rect
+from mia.capture.base import Frame, WindowInfo
+from mia.utils.geometry import Rect
 
 
 @pytest.fixture

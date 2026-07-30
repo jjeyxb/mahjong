@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from majsoul_copilot.mjai import (
+from mia.mjai import (
     NONE_ACTION,
     Chi,
     Dahai,

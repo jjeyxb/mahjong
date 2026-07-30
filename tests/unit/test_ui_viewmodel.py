@@ -6,10 +6,10 @@
 
 from __future__ import annotations
 
-from majsoul_copilot.analysis import AGARI, TENPAI
-from majsoul_copilot.engine.base import Advice
-from majsoul_copilot.mjai import Dahai, Reach
-from majsoul_copilot.ui.viewmodel import ViewModel, ViewState
+from mia.analysis import AGARI, TENPAI
+from mia.engine.base import Advice
+from mia.mjai import Dahai, Reach
+from mia.ui.viewmodel import ViewModel, ViewState
 
 # 123m 456m 789m + 11p 對子 + 23p 兩面 = 聽 1p/4p。
 #

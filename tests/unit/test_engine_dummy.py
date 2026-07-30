@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from majsoul_copilot.engine import DummyEngine, EngineError
-from majsoul_copilot.mjai import (
+from mia.engine import DummyEngine, EngineError
+from mia.mjai import (
     Chi,
     Dahai,
     Reach,
