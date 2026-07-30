@@ -1,0 +1,120 @@
+"""把 Mortal 的 Q 值對應回動作。
+
+標籤錯開一格的話,UI 會顯示「建議切 3m」而引擎說的其實是 4m —— 那種錯誤在
+畫面上完全看不出來,所以這裡的期望值全部取自**真實引擎輸出**,不是自己造的。
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from majsoul_copilot.engine.actions import (
+    ACTION_SPACE,
+    TILE_ACTIONS,
+    decode_candidates,
+)
+
+#: 2026-07-30 實測:手牌 123456789m 123p 5p 摸 9s,引擎回 reach。
+#: 合法動作恰為那 14 張牌 + 立直,mask 的位元完全對應。
+REACH_META = {
+    "mask_bits": 137506074623,
+    "q_values": [
+        -7.349411, -7.4835396, -7.2532053, -6.0267124, -6.3264084, -7.1490574,
+        -6.0205574, -6.8105097, -7.011588, -6.3229656, -7.6495876, -7.3316984,
+        -1.4386911, -1.1807599, 1.2769496,
+    ],
+}
+
+#: 同日實測:上家打 3m,手上三種吃法 + 一對 3m3m,引擎回 none。
+CALL_META = {
+    "mask_bits": (1 << 38) | (1 << 39) | (1 << 40) | (1 << 41) | (1 << 45),
+    "q_values": [-6.848, -5.228, -3.789, -4.055, 0.063],
+}
+
+
+class TestActionSpace:
+    def test_the_label_table_covers_the_whole_space(self) -> None:
+        from majsoul_copilot.engine.actions import _LABELS
+
+        assert len(_LABELS) == ACTION_SPACE == 46
+
+    def test_the_first_thirty_seven_are_tiles(self) -> None:
+        """34 種牌 + 3 種赤五。第 37 個開始才是立直、吃碰這些。"""
+        assert TILE_ACTIONS == 37
+
+
+@pytest.fixture(scope="module")
+def candidates():
+    """實測的立直局面解出來的候選。"""
+    return decode_candidates(REACH_META)
+
+
+class TestDecodeReach:
+    def test_every_legal_action_gets_a_candidate(self, candidates) -> None:
+        assert len(candidates) == 15
+
+    def test_the_chosen_action_is_the_highest(self, candidates) -> None:
+        """引擎實際回的是 reach,而它就是最高分那個。"""
+        assert candidates[0].label == "reach"
+        assert candidates[0].chosen
+
+    def test_exactly_one_candidate_is_chosen(self, candidates) -> None:
+        assert sum(c.chosen for c in candidates) == 1
+
+    def test_results_are_sorted_by_q_descending(self, candidates) -> None:
+        values = [c.q for c in candidates]
+        assert values == sorted(values, reverse=True)
+
+    def test_the_hand_tiles_are_labelled_correctly(self, candidates) -> None:
+        """手牌是 123456789m 123p 5p 摸 9s —— 切牌選項應該恰好是這 14 張。"""
+        tiles = {c.label for c in candidates if c.is_tile}
+        expected = {f"{n}m" for n in range(1, 10)} | {"1p", "2p", "3p", "5p", "9s"}
+        assert tiles == expected
+
+    def test_reach_is_not_a_tile(self, candidates) -> None:
+        reach = next(c for c in candidates if c.label == "reach")
+        assert not reach.is_tile
+        assert reach.display == "立直"
+
+
+class TestDecodeCalls:
+    def test_chi_pon_and_none_are_labelled(self) -> None:
+        """38/39/40 是吃的三種、41 是碰、45 是不動作 —— 全部實測確認過。"""
+        candidates = decode_candidates(CALL_META)
+        labels = [c.label for c in candidates]
+        assert labels.count("chi") == 3
+        assert "pon" in labels
+        assert "none" in labels
+
+    def test_none_wins_here(self) -> None:
+        """引擎實際回的是 none。"""
+        assert decode_candidates(CALL_META)[0].label == "none"
+
+    def test_calls_display_in_chinese(self) -> None:
+        displays = {c.display for c in decode_candidates(CALL_META)}
+        assert {"吃", "碰", "不動作"} <= displays
+
+
+class TestRejection:
+    def test_no_meta_gives_nothing(self) -> None:
+        """規則式 baseline 沒有 meta,那不是錯誤。"""
+        assert decode_candidates(None) == ()
+        assert decode_candidates({}) == ()
+
+    def test_a_length_mismatch_gives_nothing(self) -> None:
+        """位元數與 Q 值個數不符,代表對引擎輸出的理解有誤。
+
+        勉強 zip 會產生錯開一格的標籤 —— UI 上完全看不出來,所以寧可什麼都不顯示。
+        """
+        assert decode_candidates({"mask_bits": 0b111, "q_values": [1.0]}) == ()
+
+    def test_missing_fields_give_nothing(self) -> None:
+        assert decode_candidates({"mask_bits": 0b1}) == ()
+        assert decode_candidates({"q_values": [1.0]}) == ()
+
+    def test_wrong_types_give_nothing(self) -> None:
+        assert decode_candidates({"mask_bits": "7", "q_values": [1.0]}) == ()
+
+    def test_bits_beyond_the_action_space_are_ignored(self) -> None:
+        """遮罩若出現不該有的高位元,那是理解錯了 —— 長度就會對不上而被擋掉。"""
+        assert decode_candidates({"mask_bits": 1 << 60, "q_values": [1.0]}) == ()

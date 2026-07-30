@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+import os
+
+# UI 測試要在無頭環境跑。這行必須在任何 Qt import **之前** —— Qt 只在第一次
+# 建 QApplication 時讀這個變數,之後改就沒用了。設在 conftest 是因為它必然
+# 比測試模組早載入。
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 import numpy as np
 import pytest
 
