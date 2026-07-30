@@ -24,7 +24,7 @@ from majsoul_copilot.ui.widgets.advice import AdviceTab
 from majsoul_copilot.ui.widgets.analysis import AnalysisTab
 from majsoul_copilot.ui.widgets.tiles import DEFAULT_SKIN, TileIcons
 
-__all__ = ["PanelWindow"]
+__all__ = ["PanelWindow", "present"]
 
 #: 放得下 14 張 44px 高的牌加一點邊界。
 MIN_WIDTH = 380
@@ -44,10 +44,20 @@ class PanelWindow(QMainWindow):
         ``tools/ui.py`` 用 ``QTimer`` 做這件事。
     """
 
-    def __init__(self, viewmodel: ViewModel, *, skin: str = DEFAULT_SKIN) -> None:
+    def __init__(
+        self,
+        viewmodel: ViewModel,
+        *,
+        skin: str = DEFAULT_SKIN,
+        always_on_top: bool = True,
+    ) -> None:
         super().__init__()
         self.setWindowTitle("Majsoul Copilot")
         self.setMinimumSize(MIN_WIDTH, MIN_HEIGHT)
+        # window flag 必須在 show() **之前**設定。show 之後再改,Qt 會把視窗
+        # 隱藏並要求重新 show() —— 表現出來是「Dock 有圖示但畫面上沒有視窗」。
+        if always_on_top:
+            self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
 
         icons = TileIcons(skin)
         self._advice = AdviceTab(icons, self)
@@ -94,15 +104,23 @@ def _status_text(state: ViewState) -> str:
     return "　|　".join(parts)
 
 
-def _center_on_screen(window: QMainWindow) -> None:
-    """把視窗放到螢幕右側 —— 遊戲通常在中間或左邊。"""
+def present(window: QMainWindow) -> None:
+    """顯示視窗並放到螢幕右側 —— 遊戲通常在中間或左邊。
+
+    順序有意義:**先移動、再 show**。反過來的話,任何在 show 之後動到 window
+    flag 的操作都會讓視窗被 Qt 隱藏,而 Dock 上仍然看得到圖示 —— 那個症狀
+    完全不像「視窗被藏起來了」,很難聯想到是 flag 的關係。
+
+    :class:`PanelWindow` 已經在建構時設好置頂,這裡只負責位置與顯示。
+    """
     screen = window.screen()
-    if screen is None:
-        return
-    available = screen.availableGeometry()
-    size = window.frameGeometry()
-    window.move(
-        available.right() - size.width() - 24,
-        available.top() + max(0, (available.height() - size.height()) // 2),
-    )
-    window.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+    if screen is not None:
+        available = screen.availableGeometry()
+        size = window.sizeHint().expandedTo(window.minimumSize())
+        window.move(
+            available.right() - size.width() - 24,
+            available.top() + max(0, (available.height() - size.height()) // 2),
+        )
+    window.show()
+    window.raise_()
+    window.activateWindow()
