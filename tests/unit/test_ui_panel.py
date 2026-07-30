@@ -17,7 +17,9 @@ from majsoul_copilot.ui.viewmodel import ViewModel
 
 pytest.importorskip("PySide6", reason="UI 測試需要 PySide6")
 
-from majsoul_copilot.ui.panel.window import PanelWindow
+from PySide6.QtCore import Qt
+
+from majsoul_copilot.ui.panel.window import PanelWindow, present
 from majsoul_copilot.ui.widgets.tiles import TileIcons
 
 TENPAI = ["1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "1p", "2p", "3p"]
@@ -145,3 +147,37 @@ class TestPanel:
             [Advice("mortal", Dahai(actor=0, pai="1m", tsumogiri=True), meta, 1.0)]
         )
         assert shown(window._advice._rows[0])  # noqa: SLF001
+
+
+class TestPresent:
+    """顯示流程。
+
+    這一段是為了釘住一個真實的 bug:原本 ``show()`` 之後才設
+    ``WindowStaysOnTopHint``,Qt 會把視窗隱藏並要求重新 ``show()``。症狀是
+    「Dock 上有圖示,但畫面上沒有視窗」—— 完全不像 flag 造成的,而且我當初
+    截圖驗證時只呼叫了 ``show()``、沒走這條路,所以漏掉了。
+    """
+
+    def test_the_window_is_visible_after_present(self, qtbot) -> None:
+        model = ViewModel()
+        window = PanelWindow(model)
+        qtbot.addWidget(window)
+        present(window)
+        assert not window.isHidden(), "present() 之後視窗竟然是隱藏的"
+
+    def test_always_on_top_is_set_before_showing(self, qtbot) -> None:
+        """flag 要在建構時就設好。show 之後再設會讓視窗被隱藏。"""
+        model = ViewModel()
+        window = PanelWindow(model)
+        qtbot.addWidget(window)
+        assert window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+        present(window)
+        assert not window.isHidden()
+
+    def test_it_can_be_turned_off(self, qtbot) -> None:
+        model = ViewModel()
+        window = PanelWindow(model, always_on_top=False)
+        qtbot.addWidget(window)
+        assert not (window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
+        present(window)
+        assert not window.isHidden()

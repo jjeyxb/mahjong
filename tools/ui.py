@@ -34,7 +34,7 @@ from PySide6.QtWidgets import QApplication
 from majsoul_copilot.engine import AIEngine, DummyEngine, EngineGroup
 from majsoul_copilot.mjai import MjaiEvent
 from majsoul_copilot.mjai.handstate import HandTracker
-from majsoul_copilot.ui.panel.window import PanelWindow, _center_on_screen
+from majsoul_copilot.ui.panel.window import PanelWindow, present
 from majsoul_copilot.ui.viewmodel import ViewModel
 from majsoul_copilot.utils.logging import setup_logging
 
@@ -213,8 +213,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         run_demo(model)
 
-    window.show()
-    _center_on_screen(window)
+    present(window)
     return app.exec()
 
 
