@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from mia.analysis import AGARI, TENPAI
 from mia.engine.base import Advice
-from mia.mjai import Dahai, Reach
+from mia.mjai import Chi, Dahai, Reach
 from mia.ui.viewmodel import ViewModel, ViewState
 
 # 123m 456m 789m + 11p 對子 + 23p 兩面 = 聽 1p/4p。
@@ -407,3 +407,75 @@ class TestSkipDecisions:
         model.update_packet_hand(("1m", "2m", "3m"))
         model.update_advices([Advice("mortal", None, self.SKIP_META, 10.0)])
         assert not model.state.advice_is_stale
+
+
+class TestCallAndReachDisplay:
+    """兩個實機打一場才發現的顯示問題。"""
+
+    def test_a_chi_shows_which_two_tiles_to_use(self) -> None:
+        """``吃 3m`` 可以用 1m2m、2m4m 或 4m5m —— 不寫出來使用者不知道點哪兩張。"""
+        model = ViewModel()
+        model.update_advices(
+            [Advice("m", Chi(actor=0, target=3, pai="3m", consumed=["1m", "2m"]), None, 9.0)]
+        )
+        view = model.state.engines[0]
+        assert view.tile == "3m"
+        assert view.consumed == ("1m", "2m")
+        assert view.shown_tiles == ("3m", "1m", "2m")
+
+    def test_a_chi_is_not_a_discard(self) -> None:
+        """被鳴的那張是別家打出來的,不在自己手上。"""
+        model = ViewModel()
+        model.update_advices(
+            [Advice("m", Chi(actor=0, target=3, pai="3m", consumed=["1m", "2m"]), None, 9.0)]
+        )
+        assert not model.state.engines[0].is_discard
+
+    def test_a_chi_is_never_marked_stale(self) -> None:
+        """釘住一個會很吵的迴歸:拿被鳴那張去比手牌,每個吃碰建議都會被標
+        「已打出」—— 因為它本來就不在手上。
+        """
+        model = ViewModel()
+        model.update_packet_hand(("1m", "2m", "5p"))
+        model.update_advices(
+            [Advice("m", Chi(actor=0, target=3, pai="3m", consumed=["1m", "2m"]), None, 9.0)]
+        )
+        assert not model.state.advice_is_stale
+
+    def test_reach_shows_the_tile_to_discard_afterwards(self) -> None:
+        """按下立直的下一秒就要選一張打出去。引擎不會主動說,要靠 peek 問。"""
+        model = ViewModel()
+        model.update_advices(
+            [
+                Advice(
+                    "m",
+                    Reach(actor=0),
+                    None,
+                    14.0,
+                    follow_up=Dahai(actor=0, pai="5p", tsumogiri=False),
+                )
+            ]
+        )
+        view = model.state.engines[0]
+        assert view.follow_up_tile == "5p"
+        assert view.shown_tiles == ("5p",)
+
+    def test_reach_without_a_follow_up_still_works(self) -> None:
+        """peek 問失敗時仍然要顯示「立直」—— 主要建議已經拿到手了。"""
+        model = ViewModel()
+        model.update_advices([Advice("m", Reach(actor=0), None, 14.0)])
+        view = model.state.engines[0]
+        assert view.action == "立直"
+        assert view.follow_up_tile is None
+        assert view.shown_tiles == ()
+
+    def test_two_engines_choosing_different_chi_are_not_unanimous(self) -> None:
+        """分歧判斷靠 action 字串。只寫「吃 3m」的話這兩個會被當成一致。"""
+        model = ViewModel()
+        model.update_advices(
+            [
+                Advice("a", Chi(actor=0, target=3, pai="3m", consumed=["1m", "2m"]), None, 1.0),
+                Advice("b", Chi(actor=0, target=3, pai="3m", consumed=["4m", "5m"]), None, 1.0),
+            ]
+        )
+        assert not model.state.is_unanimous

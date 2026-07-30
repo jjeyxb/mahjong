@@ -46,12 +46,19 @@ class Advice:
         meta: 引擎自訂的附加資訊,不屬於 MJAI 協定本身。Mortal 會在這裡放
             各候選動作的 Q 值與遮罩,那是 UI 上「為什麼這樣打」的唯一素材。
         latency_ms: 從送出事件到收到回覆的時間。多引擎比較時要看得到誰慢。
+        follow_up: 做了 :attr:`action` 之後緊接著要做的事。
+
+            **只有立直會有。** MJAI 的引擎回 ``reach`` 之後,要等它**看到**
+            ``reach`` 事件才會說切哪一張;而那個事件要等使用者真的宣言完、
+            牌也打出去了才會從封包送來 —— 那時候「該切哪張」已經沒有意義了。
+            所以呼叫端要用 :meth:`AIEngine.peek` 先問一步,答案放在這裡。
     """
 
     engine: str
     action: MjaiEvent | None = None
     meta: dict[str, Any] | None = None
     latency_ms: float = 0.0
+    follow_up: MjaiEvent | None = None
 
     @property
     def is_action(self) -> bool:
@@ -117,6 +124,21 @@ class AIEngine(Protocol):
         Raises:
             EngineError: 引擎崩潰或回覆無法解析。
             EngineTimeout: 逾時。
+        """
+        ...
+
+    def peek(self, event: MjaiEvent) -> Advice:
+        """問一個**假設性**的後續:「如果這件事發生了,你接下來會做什麼?」
+
+        問完引擎的狀態必須與問之前完全相同 —— 這個事件**沒有真的發生**,
+        它只是一個假設。實作要自己負責復原。
+
+        存在的唯一理由是立直:引擎回 ``reach`` 之後不會順便說切哪一張,
+        而使用者在按下立直的那一刻就需要知道。見 :attr:`Advice.follow_up`。
+
+        Raises:
+            EngineError: 引擎崩潰,或復原失敗。復原失敗必須拋例外而不是默默
+                回傳 —— 帶著被污染的狀態繼續跑會給出看起來正常但其實錯的建議。
         """
         ...
 

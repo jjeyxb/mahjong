@@ -134,6 +134,30 @@ class SubprocessEngine:
         self._history.append(line)
         return self._to_advice(reply, elapsed)
 
+    def peek(self, event: MjaiEvent) -> Advice:
+        """問一個假設性的後續,然後把引擎復原。
+
+        復原的方式是**砍掉重練 + 重播真實歷史**。子程序裡的 libriichi ``Bot``
+        沒有 rollback,所以沒有更便宜的做法 —— 一旦事件送進去,它的內部狀態就
+        變了。這裡刻意不去記帳「等一下如果使用者真的立直了就不用復原」:那個
+        最佳化要靠猜使用者接下來做什麼,而猜錯的代價是整場都拿著錯的局面給建議,
+        還**不會報錯**。慢一點換確定正確。
+
+        代價實測:重啟 + 重播約一秒(視局面進行到多後面)。而引擎會回 ``reach``
+        的時機一場大概兩次,而且那正是使用者停下來讀建議的那一刻。
+        """
+        if not self.is_running:
+            raise EngineError(f"{self.name}: 尚未啟動 —— 先呼叫 start()")
+
+        line = json.dumps(event.to_dict(), ensure_ascii=False, separators=(",", ":"))
+        started = time.perf_counter()
+        reply = self._exchange(line)
+        elapsed = (time.perf_counter() - started) * 1000
+        # **不**寫進 _history —— 這件事沒有真的發生
+        advice = self._to_advice(reply, elapsed)
+        self.restart()
+        return advice
+
     def close(self) -> None:
         self._closed = True
         self._terminate()

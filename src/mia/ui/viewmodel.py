@@ -35,7 +35,7 @@ from mia.analysis import (
     analyse,
     suggest_discards,
 )
-from mia.engine.actions import Candidate, action_label, decode_candidates
+from mia.engine.actions import Candidate, action_label, action_tiles, decode_candidates
 from mia.engine.base import Advice
 from mia.mjai.tiles import UNKNOWN, mjai_to_ms, ms_to_mjai
 
@@ -49,8 +49,15 @@ class EngineView:
     Attributes:
         name: 引擎名稱。
         action: 建議的動作,人看的字串。``None`` 表示這一手不需要動作。
-        tile: 若建議是切牌,那張牌(MJAI 記法);否則 ``None``。
-            UI 靠它決定要不要畫牌面圖。
+        tile: 這個動作**在講哪張牌**(MJAI 記法)。切牌是切掉的那張,鳴牌是
+            被鳴的那張。UI 靠它決定要不要畫牌面圖。
+        consumed: 鳴牌時要從**自己手上**拿出來的那幾張。
+            吃牌一定要顯示 —— ``吃 3m`` 可以是 1m2m、2m4m 或 4m5m 三種吃法,
+            不寫出來使用者不知道該點哪兩張。
+        is_discard: 這個動作是不是切牌。與 :attr:`tile` 分開,因為鳴牌的
+            :attr:`tile` **不在自己手上**(那是別家打出來的),
+            :attr:`ViewState.advice_is_stale` 不能拿它去比手牌。
+        follow_up_tile: 立直之後要切的那張。見 :attr:`Advice.follow_up`。
         candidates: 所有合法動作與 Q 值,最高分在前。規則式引擎沒有,是空的。
         latency_ms: 這一手花了多久。
     """
@@ -61,6 +68,21 @@ class EngineView:
     candidates: tuple[Candidate, ...] = ()
     latency_ms: float = 0.0
     declined: bool = False
+    consumed: tuple[str, ...] = ()
+    is_discard: bool = False
+    follow_up_tile: str | None = None
+
+    @property
+    def shown_tiles(self) -> tuple[str, ...]:
+        """這一手要畫成牌面圖的全部牌,由左而右。
+
+        立直的後續切牌也算進來 —— 使用者按下立直之後馬上就要選那張牌。
+        """
+        tiles = [t for t in (self.tile,) if t]
+        tiles.extend(self.consumed)
+        if self.follow_up_tile:
+            tiles.append(self.follow_up_tile)
+        return tuple(tiles)
 
     @property
     def has_reasoning(self) -> bool:
@@ -167,7 +189,9 @@ class ViewState:
         沒有手牌或建議不是切牌時一律 False —— 立直、吃碰沒有對應的單張牌可比。
         """
         primary = self.primary
-        if primary is None or not primary.tile or not self.hand:
+        # 只對切牌成立。鳴牌的那張是**別家打出來的**,本來就不在自己手上,
+        # 拿它去比會讓每一個吃碰建議都被誤標成「已打出」。
+        if primary is None or not primary.is_discard or not primary.tile or not self.hand:
             return False
         return primary.tile not in self.hand
 
@@ -386,12 +410,16 @@ def _to_view(advice: Advice) -> EngineView:
             declined=advice.declined,
         )
 
-    tile = getattr(action, "pai", None)
+    tile, consumed = action_tiles(action)
+    follow = advice.follow_up
     # 立直與吃碰的 Q 值也要看得到,所以 candidates 不因為「不是切牌」而省略
     return EngineView(
         name=advice.engine,
         action=action_label(action),
-        tile=tile if action.TYPE == "dahai" else None,
+        tile=tile,
         candidates=decode_candidates(advice.meta),
         latency_ms=advice.latency_ms,
+        consumed=consumed,
+        is_discard=action.TYPE == "dahai",
+        follow_up_tile=getattr(follow, "pai", None) if follow is not None else None,
     )

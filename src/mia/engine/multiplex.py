@@ -16,10 +16,10 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from mia.engine.base import Advice, AIEngine, EngineError
-from mia.mjai import MjaiEvent
+from mia.mjai import MjaiEvent, Reach
 from mia.utils.logging import logger
 
 __all__ = ["EngineGroup", "GroupResult"]
@@ -157,6 +157,37 @@ class EngineGroup:
             self._drop(name, reason)
         self._engines = [e for e in self._engines if e.name not in failures]
         return GroupResult(tuple(a for a in results if a is not None), failures)
+
+    def resolve_follow_ups(self, result: GroupResult) -> GroupResult:
+        """替回了「立直」的引擎補上「然後切哪一張」。
+
+        MJAI 的引擎回 ``reach`` 之後不會順便說切哪一張,要等它看到 ``reach``
+        事件才會說 —— 而那個事件要等使用者真的宣言完、牌也打出去了才會從封包
+        送來。所以這裡先用 :meth:`AIEngine.peek` 問一步。
+
+        只對真的回了 ``reach`` 的引擎問,因為 ``peek`` 對子程序引擎要付一次
+        重啟 + 重播的代價。問失敗**不算引擎掉隊** —— 主要建議(立直)已經拿到
+        手了,少一個後續切牌不值得把整個引擎移出這一場。
+        """
+        if not any(a.action is not None and a.action.TYPE == "reach" for a in result.advices):
+            return result
+
+        by_name = {e.name: e for e in self._engines}
+        resolved: list[Advice] = []
+        for advice in result.advices:
+            action = advice.action
+            engine = by_name.get(advice.engine)
+            if action is None or action.TYPE != "reach" or engine is None:
+                resolved.append(advice)
+                continue
+            try:
+                follow = engine.peek(Reach(actor=int(getattr(action, "actor", 0))))
+            except EngineError as exc:
+                logger.warning(f"{advice.engine}: 問不到立直後要切哪張 — {exc}")
+                resolved.append(advice)
+            else:
+                resolved.append(replace(advice, follow_up=follow.action))
+        return GroupResult(tuple(resolved), dict(result.failures))
 
     def close(self) -> None:
         for engine in self._engines:

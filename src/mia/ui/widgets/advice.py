@@ -38,8 +38,21 @@ MAX_CANDIDATES = 8
 _BAR_RANGE = 1000
 
 
+#: 「自己要拿出來的牌」最多幾張。吃碰是 2、大明槓是 3。
+_MAX_OWN_TILES = 3
+
+
 class _Headline(QWidget):
-    """最上面那一行:建議切哪張,大字加牌面圖。"""
+    """最上面那一行:大字 + 牌面圖。
+
+    牌面圖是**一排**而不是一張。原本只畫一張,於是:
+
+    * ``吃 3m`` 只看到 3m —— 而 3m 可以用 1m2m、2m4m 或 4m5m 去吃,
+      使用者根本不知道該點哪兩張。
+    * ``立直`` 什麼牌都沒有 —— 而按下立直的下一秒就要選一張打出去。
+
+    兩個都是實機打一場才發現的。
+    """
 
     def __init__(self, icons: TileIcons, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -48,14 +61,40 @@ class _Headline(QWidget):
 
         self._verb = QLabel("—", self)
         self._verb.setStyleSheet("font-size: 26px; font-weight: 600;")
-        self._tile = TileLabel(icons, 64, self)
+        #: 動作在講的那張。鳴牌時是**別家打出來的**那張,不在自己手上。
+        self._subject = TileLabel(icons, 64, self)
+        #: 分隔詞。它是唯一讓「桌上那張」與「自己手上那幾張」分得開的東西
+        #: —— 三張一樣大小排在一起,使用者看不出該點哪幾張。
+        self._joiner = QLabel("", self)
+        self._joiner.setStyleSheet("color: palette(mid); font-size: 15px;")
+        #: 自己要拿出來的那幾張。
+        self._own = [TileLabel(icons, 64, self) for _ in range(_MAX_OWN_TILES)]
         self._detail = QLabel("", self)
         self._detail.setStyleSheet("color: palette(mid);")
 
         layout.addWidget(self._verb)
-        layout.addWidget(self._tile)
+        layout.addWidget(self._subject)
+        layout.addWidget(self._joiner)
+        for label in self._own:
+            layout.addWidget(label)
         layout.addWidget(self._detail)
         layout.addStretch(1)
+
+    def _show_tiles(
+        self, subject: str | None = None, *, joiner: str = "", own: tuple[str, ...] = ()
+    ) -> None:
+        """畫出這一手的牌。沒用到的位子要藏起來,不然會留上一手的殘影。"""
+        if subject:
+            self._subject.set_tile(subject)
+        self._subject.setVisible(bool(subject))
+        self._joiner.setText(joiner)
+        self._joiner.setVisible(bool(joiner))
+        own = own[:_MAX_OWN_TILES]
+        for label, tile in zip(self._own, own, strict=False):
+            label.set_tile(tile)
+            label.setVisible(True)
+        for label in self._own[len(own) :]:
+            label.setVisible(False)
 
     def update_from(
         self, engine: EngineView | None, *, stale: bool = False, enabled: bool = True
@@ -64,13 +103,13 @@ class _Headline(QWidget):
             # 「等待引擎…」在功能關著的時候是錯的:那句話讓人以為它正在載入,
             # 於是使用者就一直等下去。關著就要說關著,並指出開關在哪。
             self._verb.setText("未開啟")
-            self._tile.setVisible(False)
+            self._show_tiles()
             self._detail.setText("用右上角的開關打開")
             self._verb.setStyleSheet("font-size: 26px; font-weight: 600; color: palette(mid);")
             return
         if engine is None:
             self._verb.setText("等待引擎…")
-            self._tile.setVisible(False)
+            self._show_tiles()
             self._detail.setText("")
             return
         top = engine.candidates[0] if engine.candidates else None
@@ -78,7 +117,7 @@ class _Headline(QWidget):
         if engine.action is None and not engine.declined:
             # 真的沒人在問。這是九成的事件,保持安靜。
             self._verb.setText("不需要動作")
-            self._tile.setVisible(False)
+            self._show_tiles()
             self._detail.setText(f"{engine.name}")
             self._verb.setStyleSheet("font-size: 26px; font-weight: 600; color: palette(mid);")
             return
@@ -87,7 +126,7 @@ class _Headline(QWidget):
             # 遊戲在問「碰 / 槓 / 跳過」,引擎說不鳴。**這是一個答案**,
             # 底下的候選清單會列出鳴牌各要多少 Q,使用者才看得出差多少。
             self._verb.setText("跳過")
-            self._tile.setVisible(False)
+            self._show_tiles()
             detail = f"{engine.name}"
             if top is not None:
                 detail += f"   Q={top.q:+.2f}"
@@ -96,14 +135,22 @@ class _Headline(QWidget):
             self._verb.setStyleSheet("font-size: 26px; font-weight: 600;")
             return
 
-        if engine.tile:
+        # 大字是動詞,牌交給圖去講。動詞取 action_label 的第一個詞
+        # (「吃 3m ← 1m 2m」→「吃」)—— 文字與圖同時寫一次會又長又重複。
+        if engine.is_discard:
             self._verb.setText("切")
-            self._tile.set_tile(engine.tile)
-            self._tile.setVisible(True)
-        else:
-            # 立直、吃碰這種沒有對應的單張牌,直接把動作寫成大字
+            self._show_tiles(engine.tile)
+        elif engine.follow_up_tile:
+            # 立直。使用者按下立直的下一秒就要選一張打出去,所以那張才是重點。
             self._verb.setText(engine.action)
-            self._tile.setVisible(False)
+            self._show_tiles(joiner="切", own=(engine.follow_up_tile,))
+        else:
+            # 吃碰槓。「用」把桌上那張與自己手上那幾張分開 —— 三張一樣大小
+            # 排在一起,使用者看不出該點哪幾張。
+            self._verb.setText(engine.action.split(" ")[0])
+            self._show_tiles(
+                engine.tile, joiner="用" if engine.consumed else "", own=engine.consumed
+            )
 
         detail = f"{engine.name}"
         if top is not None:

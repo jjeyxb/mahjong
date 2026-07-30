@@ -61,6 +61,7 @@ __all__ = [
     "TILE_ACTIONS",
     "Candidate",
     "action_label",
+    "action_tiles",
     "decode_candidates",
     "is_decision",
     "legal_count",
@@ -113,24 +114,51 @@ def action_label(event: MjaiEvent) -> str:
     使用者看到 actor 編號這種與決策無關的東西。
 
     Returns:
-        像「切 1z」、「立直」、「碰 5m」這樣。認不得的型別回 ``type`` 本身,
-        不會拋例外 —— UI 在畫的時候不該因為多了一種動作就崩掉。
+        像「切 1z」、「立直」、「吃 3m ← 1m 2m」這樣。認不得的型別回 ``type``
+        本身,不會拋例外 —— UI 在畫的時候不該因為多了一種動作就崩掉。
 
     Note:
         回傳值也用來比較各引擎有沒有分歧,所以**不同動作必須給出不同字串**。
-        鳴牌帶上被鳴的那張就是為了這個:兩個引擎都建議「碰」但碰的不是同一張,
-        那是分歧。
+        鳴牌要帶上「用手上哪幾張」正是為了這個:``吃 3m`` 可以是 1m2m、2m4m
+        或 4m5m 三種吃法,只寫「吃 3m」的話兩個引擎選了不同吃法會被當成一致。
+        碰也一樣 —— ``碰 5m`` 用不用掉赤五是兩個不同的決定。
     """
     kind = event.TYPE
     pai = getattr(event, "pai", None)
+    consumed = tuple(getattr(event, "consumed", ()) or ())
+
     if kind == "dahai":
         return f"切 {pai}"
     if kind in {"chi", "pon", "daiminkan", "kakan"}:
-        return f"{_DISPLAY.get(_ACTION_ALIAS.get(kind, kind), kind)} {pai}"
+        verb = _DISPLAY.get(_ACTION_ALIAS.get(kind, kind), kind)
+        # 加槓只從手上拿一張(就是 pai 本身),寫出來是重複的
+        if consumed and kind != "kakan":
+            return f"{verb} {pai} ← {' '.join(consumed)}"
+        return f"{verb} {pai}"
     if kind == "ankan":
-        consumed = getattr(event, "consumed", ())
         return f"槓 {consumed[0]}" if consumed else "槓"
     return _DISPLAY.get(kind, kind)
+
+
+def action_tiles(event: MjaiEvent) -> tuple[str | None, tuple[str, ...]]:
+    """一個動作要畫成牌面圖的牌:``(主角那張, 手上要拿出來的那幾張)``。
+
+    主角那張是「這個動作在講哪張牌」:切牌是切掉的那張,鳴牌是被鳴的那張。
+    第二個是自己手上要拿出來的 —— **吃牌一定要顯示**,否則使用者不知道該點
+    哪兩張。
+    """
+    kind = event.TYPE
+    pai = getattr(event, "pai", None)
+    consumed = tuple(getattr(event, "consumed", ()) or ())
+    if kind == "dahai":
+        return pai, ()
+    if kind in {"chi", "pon", "daiminkan"}:
+        return pai, consumed
+    if kind == "kakan":
+        return pai, ()
+    if kind == "ankan":
+        return (consumed[0] if consumed else None), consumed[1:]
+    return None, ()
 
 
 #: MJAI 的事件型別 → 顯示名的鍵。三種槓在畫面上都只說「槓」。

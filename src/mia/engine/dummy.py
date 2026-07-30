@@ -20,6 +20,8 @@ baseline 應該停在「規則能簡單算出來」的邊界上,才看得出差�
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from mia.analysis import HandError, suggest_discards
 from mia.engine.base import Advice, EngineError
 from mia.mjai import Chi, Dahai, MjaiEvent, Pon, Tsumo, mjai_to_ms, ms_to_mjai
@@ -81,6 +83,23 @@ class DummyEngine:
         if isinstance(event, Tsumo | Chi | Pon) and event.actor == self._tracker.seat:
             return Advice(self._name, self._choose_discard())
         return Advice(self._name, None)
+
+    def peek(self, event: MjaiEvent) -> Advice:
+        """問一個假設性的後續,問完把狀態復原。
+
+        這個引擎的全部狀態就是一個 :class:`HandTracker`,而它是純資料 ——
+        複製一份、問完換回來就好,不像子程序引擎得砍掉重練。
+
+        實務上不會被呼叫:``peek`` 存在是為了立直的後續切牌,而這個引擎
+        **不宣告立直**(見類別說明)。實作它只是為了滿足介面,讓呼叫端不必
+        對不同引擎寫兩套路。
+        """
+        saved = replace(self._tracker)
+        saved.tiles = list(self._tracker.tiles)
+        try:
+            return self.react(event)
+        finally:
+            self._tracker = saved
 
     def __repr__(self) -> str:
         tracker = self._tracker

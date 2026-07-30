@@ -130,3 +130,34 @@ class TestRobustness:
         bot = started()
         bot.react(Dahai(actor=0, pai="9s", tsumogiri=False))
         assert bot.react(Tsumo(actor=0, pai="9s")).action is not None
+
+
+class TestPeek:
+    """規則式引擎的 ``peek``:狀態就是一個 HandTracker,複製一份就好。"""
+
+    def test_the_hand_is_unchanged_afterwards(self) -> None:
+        engine = DummyEngine()
+        engine.start()
+        engine.react(StartGame(id=0))
+        engine.react(StartKyoku(
+            bakaze="E", kyoku=1, honba=0, kyotaku=0, oya=0, dora_marker="1m",
+            tehais=[["1m","1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p"],
+                    *[["?"] * 13] * 3],
+            scores=[25000] * 4,
+        ))
+        before = list(engine._tracker.tiles)  # noqa: SLF001
+        engine.peek(Tsumo(actor=0, pai="4p"))
+        assert engine._tracker.tiles == before  # noqa: SLF001
+
+    def test_peek_answers_the_hypothetical(self) -> None:
+        engine = DummyEngine()
+        engine.start()
+        engine.react(StartGame(id=0))
+        engine.react(StartKyoku(
+            bakaze="E", kyoku=1, honba=0, kyotaku=0, oya=0, dora_marker="1m",
+            tehais=[["1m","1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p"],
+                    *[["?"] * 13] * 3],
+            scores=[25000] * 4,
+        ))
+        advice = engine.peek(Tsumo(actor=0, pai="9p"))
+        assert advice.is_action, "摸了一張沒用的牌,應該要建議打掉某一張"
