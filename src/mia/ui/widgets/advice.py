@@ -4,9 +4,8 @@
 
 Q 值怎麼畫成長條
 ----------------
-Q 值是**相對的** —— 同一手之內互相比較才有意義,不同局面之間的絕對值不可比
-(實測見過 +2.7 也見過 -6.8)。所以長條不用固定刻度,每次都以這一手的
-最高/最低值重新正規化。固定刻度的話,大部分局面的長條會全部擠在一端。
+正規化在 :func:`~mia.ui.viewmodel.q_fraction`(Overlay 也用同一個),那裡寫著
+為什麼不用固定刻度。
 
 負值不畫成反向長條。使用者要看的是「哪個選項比較好」,不是「Q 值的正負」
 —— 全部選項都是負分很常見(場況不好),那時反向長條會讓整個畫面看起來像出錯了。
@@ -27,7 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from mia.engine.actions import Candidate
-from mia.ui.viewmodel import EngineView, ViewState
+from mia.ui.viewmodel import EngineView, ViewState, q_fraction
 from mia.ui.widgets.tiles import TileIcons, TileLabel
 
 __all__ = ["AdviceTab"]
@@ -116,41 +115,20 @@ class _Headline(QWidget):
 
         if engine.action is None and not engine.declined:
             # 真的沒人在問。這是九成的事件,保持安靜。
-            self._verb.setText("不需要動作")
+            self._verb.setText(engine.verb)
             self._show_tiles()
             self._detail.setText(f"{engine.name}")
             self._verb.setStyleSheet("font-size: 26px; font-weight: 600; color: palette(mid);")
             return
 
-        if engine.action is None:
-            # 遊戲在問「碰 / 槓 / 跳過」,引擎說不鳴。**這是一個答案**,
-            # 底下的候選清單會列出鳴牌各要多少 Q,使用者才看得出差多少。
-            self._verb.setText("跳過")
-            self._show_tiles()
-            detail = f"{engine.name}"
-            if top is not None:
-                detail += f"   Q={top.q:+.2f}"
-            detail += f"   {engine.latency_ms:.0f} ms"
-            self._detail.setText(detail)
-            self._verb.setStyleSheet("font-size: 26px; font-weight: 600;")
-            return
-
-        # 大字是動詞,牌交給圖去講。動詞取 action_label 的第一個詞
-        # (「吃 3m ← 1m 2m」→「吃」)—— 文字與圖同時寫一次會又長又重複。
-        if engine.is_discard:
-            self._verb.setText("切")
-            self._show_tiles(engine.tile)
-        elif engine.follow_up_tile:
-            # 立直。使用者按下立直的下一秒就要選一張打出去,所以那張才是重點。
-            self._verb.setText(engine.action)
-            self._show_tiles(joiner="切", own=(engine.follow_up_tile,))
-        else:
-            # 吃碰槓。「用」把桌上那張與自己手上那幾張分開 —— 三張一樣大小
-            # 排在一起,使用者看不出該點哪幾張。
-            self._verb.setText(engine.action.split(" ")[0])
-            self._show_tiles(
-                engine.tile, joiner="用" if engine.consumed else "", own=engine.consumed
-            )
+        # 大字是動詞,牌交給圖去講 —— 文字與圖同時寫一次會又長又重複。
+        # 「切什麼 / 吃要用哪兩張 / 立直之後切哪張」由 EngineView 決定,
+        # Overlay 用的是同一組屬性,兩邊不會講得不一樣。
+        #
+        # 「跳過」也走這條路:遊戲在問「碰 / 槓 / 跳過」而引擎說不鳴,**那是一個
+        # 答案**,底下的候選清單會列出鳴牌各要多少 Q,使用者才看得出差多少。
+        self._verb.setText(engine.verb)
+        self._show_tiles(engine.subject, joiner=engine.joiner, own=engine.own_tiles)
 
         detail = f"{engine.name}"
         if top is not None:
@@ -203,10 +181,7 @@ class _CandidateRow(QWidget):
             self._name.setText(candidate.display)
 
         self._value.setText(f"{candidate.q:+.2f}")
-        span = high - low
-        # 只有一個候選時 span 為 0 —— 畫滿而不是除以零
-        fraction = 1.0 if span <= 0 else (candidate.q - low) / span
-        self._bar.setValue(round(fraction * _BAR_RANGE))
+        self._bar.setValue(round(q_fraction(candidate.q, low=low, high=high) * _BAR_RANGE))
         weight = "600" if candidate.chosen else "400"
         self._value.setStyleSheet(f"font-weight: {weight};")
 

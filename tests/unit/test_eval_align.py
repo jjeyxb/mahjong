@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import itertools
 import time
 from pathlib import Path
 
@@ -80,12 +81,26 @@ class TestBuildTimeline:
         assert real.seat == 2
 
     def test_the_stream_stays_in_sync(self, real: HandTimeline) -> None:
-        """一場真實對局從頭到尾都對得上 —— 有 desync 就代表 to_mjai 漏了東西。"""
-        assert all(s.in_sync for s in real.states)
+        """一場真實對局從頭到尾都對得上 —— 有 desync 就代表 to_mjai 漏了東西。
+
+        界標不算:它本來就是「這裡沒有手牌」的意思。
+        """
+        assert all(s.in_sync for s in real.states if not s.boundary)
 
     def test_hand_sizes_are_always_legal(self, real: HandTimeline) -> None:
         """13/14 張(或副露後對應的張數)。melds 為 -1 就是不合法。"""
-        assert all(s.melds >= 0 for s in real.states)
+        assert all(s.melds >= 0 for s in real.states if not s.boundary)
+
+    def test_every_kyoku_ends_with_a_boundary(self, real: HandTimeline) -> None:
+        """局末一定要有界標,否則 bisect 會一路回答上一局的最後一手 ——
+        而那段時間(和了動畫、結算、下一局發牌)畫面上根本沒有那副手牌。
+        """
+        assert any(s.boundary for s in real.states)
+
+    def test_a_frame_after_the_kyoku_ends_has_no_answer(self, real: HandTimeline) -> None:
+        """界標之後、下一局開始之前,問什麼時刻都該回 None。"""
+        first = next(s for s in real.states if s.boundary)
+        assert real.stable_at(first.wall + 1.0, settle=0.4) is None
 
     def test_states_are_sorted_by_time(self, real: HandTimeline) -> None:
         walls = [s.wall for s in real.states]
@@ -97,7 +112,8 @@ class TestBuildTimeline:
 
     def test_states_only_appear_when_the_hand_changes(self, real: HandTimeline) -> None:
         """別家的動作不該產生狀態 —— 那會讓每一幀都落在「剛變化」而被拒絕。"""
-        pairs = zip(real.states, real.states[1:], strict=False)
+        hands = [s for s in real.states if not s.boundary]
+        pairs = itertools.pairwise(hands)
         assert all(a.tiles != b.tiles or a.drawn != b.drawn for a, b in pairs)
 
 

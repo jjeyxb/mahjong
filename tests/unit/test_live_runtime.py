@@ -6,15 +6,17 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
 
 from mia import features
+from mia.calibration.canvas import Canvas, CanvasChoice
 from mia.engine.base import Advice
 from mia.live.bus import Advices, CvHand, PacketHand, UpdateBus, WorkerStatus
 from mia.live.runtime import Feature, LiveRuntime
-from mia.live.source import CaptureProcess, capture_command
+from mia.live.source import CaptureLauncher, CaptureProcess, capture_command
 from mia.mjai import Dahai
 from mia.ui.viewmodel import ViewModel
 
@@ -65,6 +67,18 @@ def _feature(key: str = features.VISION, spy: Spy | None = None) -> tuple[Featur
     return Feature(key, spy), spy
 
 
+def _launcher(command: list[str] | None = None, root: Path | None = None) -> CaptureLauncher:
+    """一個不會真的開瀏覽器的 launcher。
+
+    ``sleep`` 而不是 ``true``:要驗「已經在跑的時候不再開一個」就需要一個
+    活得夠久的子程序。呼叫端記得 ``stop()``。
+    """
+    return CaptureLauncher(
+        lambda _dump: command or ["sleep", "30"],
+        root=root or Path("/tmp/mia-test-live"),
+    )
+
+
 @pytest.fixture
 def model() -> ViewModel:
     return ViewModel()
@@ -83,13 +97,14 @@ class TestLifecycle:
         assert spy.made == []
         assert not feature.enabled
 
-    def test_start_is_idempotent(self, model: ViewModel, bus: UpdateBus) -> None:
-        capture = CaptureProcess(["true"])
-        runtime = LiveRuntime(model, bus, capture=capture)
-        runtime.start()
-        first = capture.command
-        runtime.start()
-        assert capture.command is first  # 沒有再開第二個子程序
+    def test_start_does_not_open_the_browser(self, model: ViewModel, bus: UpdateBus) -> None:
+        """開一個瀏覽器並開始往磁碟寫錄影檔,跟載 130MB 權重是同一個層級的事
+        —— 該是使用者按下「開始遊戲」的結果,不是打開視窗的副作用。
+        """
+        capture = _launcher()
+        LiveRuntime(model, bus, capture=capture).start()
+        assert not capture.running
+        assert capture.status.read() == ""
 
     def test_enabling_creates_and_starts_a_worker(self, model: ViewModel, bus: UpdateBus) -> None:
         feature, spy = _feature()
@@ -327,7 +342,7 @@ class TestNotices:
 
     def test_capture_status_comes_first(self, model: ViewModel, bus: UpdateBus) -> None:
         """擷取子程序掛掉的話後面兩個都沒有輸入,先看到根本原因比先看到症狀有用。"""
-        capture = CaptureProcess(["true"], name="封包擷取")
+        capture = _launcher()
         capture.status.say("啟動失敗")
         feature, spy = _feature(features.ADVICE, Spy("封包"))
         runtime = LiveRuntime(model, bus, features=[feature], capture=capture)
@@ -355,6 +370,26 @@ class TestCaptureCommand:
     def test_an_unknown_mode_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="未知的擷取模式"):
             capture_command("/tmp/ws.jsonl", mode="telepathy")
+
+    def test_canvas_reaches_the_subprocess(self) -> None:
+        """畫布尺寸是**開視窗時下的命令**,只能靠命令列送過去。
+
+        漏掉的話 UI 上選了尺寸、瀏覽器照樣用預設大小開,而 CV 會說「畫布
+        對不上」—— 症狀看起來像畫布功能壞了,實際上是這一行沒接。
+        """
+        command = capture_command("/tmp/ws.jsonl", canvas="1920x1080")
+        assert command[command.index("--canvas") + 1] == "1920x1080"
+
+    def test_canvas_is_not_sent_when_attaching_to_someone_elses_browser(self) -> None:
+        """``--connect`` 過去的視窗不是我們開的,不該去改它的大小。"""
+        command = capture_command(
+            "/tmp/ws.jsonl", canvas="1920x1080", connect="http://localhost:9222"
+        )
+        assert "--canvas" not in command
+
+    def test_canvas_is_a_cdp_only_flag(self) -> None:
+        command = capture_command("/tmp/ws.jsonl", mode="proxy", canvas="1920x1080")
+        assert "--canvas" not in command
 
     def test_cdp_only_flags_are_not_passed_to_the_mitm_modes(self) -> None:
         """``gt.py proxy`` 沒有 --url,傳過去它會直接 argparse 錯誤退出。"""
@@ -387,3 +422,210 @@ class TestCaptureProcess:
 
     def test_stop_on_a_process_that_never_started_is_harmless(self) -> None:
         CaptureProcess(["true"]).stop()
+
+
+class TestStartGame:
+    """「開始遊戲」按下去之後。"""
+
+    @pytest.fixture
+    def wired(self, model: ViewModel, bus: UpdateBus, tmp_path: Path):
+        capture = _launcher(root=tmp_path)
+        feature, spy = _feature(features.ADVICE, Spy("封包"))
+        runtime = LiveRuntime(model, bus, features=[feature], capture=capture)
+        runtime.start()
+        yield runtime, capture, spy
+        runtime.stop()
+
+    def test_it_launches(self, wired) -> None:
+        runtime, capture, _ = wired
+        runtime.start_game()
+        assert capture.running
+        assert runtime.game_running()
+
+    def test_pressing_it_twice_does_not_open_a_second_browser(self, wired) -> None:
+        """按這個按鈕的意思從來不是「把現在這場砍了重開」。"""
+        runtime, capture, _ = wired
+        runtime.start_game()
+        first = capture.dump
+        runtime.start_game()
+        assert capture.dump == first
+
+    def test_each_game_gets_its_own_dump_file(self, model, bus, tmp_path) -> None:
+        """DumpWriter 是 append 模式開的 —— 兩場寫進同一個檔案的話,從檔頭讀的
+        封包執行緒會先把上一場整個重播一遍,然後拿著一個已經結束的牌局給建議。
+        """
+        capture = _launcher(command=["true"], root=tmp_path)
+        runtime = LiveRuntime(model, bus, capture=capture)
+        runtime.start_game()
+        first = capture.dump
+        _wait_until_dead(capture)
+        runtime.start_game()
+        assert capture.dump != first
+
+    def test_the_advice_worker_is_restarted_for_a_new_game(self, model, bus, tmp_path) -> None:
+        """它的錄影檔路徑是建構時決定的。不重開的話畫面會停在上一場的最後一手,
+        **而且不會有任何錯誤訊息**。
+        """
+        capture = _launcher(command=["true"], root=tmp_path)
+        feature, spy = _feature(features.ADVICE, Spy("封包"))
+        runtime = LiveRuntime(model, bus, features=[feature], capture=capture)
+        runtime.start_game()
+        runtime.set_enabled(features.ADVICE, True)
+        _wait_until_dead(capture)
+        runtime.start_game()
+        assert len(spy.made) == 2
+        runtime.stop()
+
+    def test_the_first_game_does_not_restart_anything(self, wired) -> None:
+        """先打開 AI 建議再按開始遊戲也要成立 —— 錄影檔路徑是懶決定的,
+        那個 worker 等的正是這一場要寫的檔案(DumpTail 會等檔案出現)。
+        """
+        runtime, _, spy = wired
+        runtime.set_enabled(features.ADVICE, True)
+        runtime.start_game()
+        assert len(spy.made) == 1
+
+    def test_a_disabled_advice_feature_is_left_alone(self, model, bus, tmp_path) -> None:
+        """換場不該順手把使用者關著的功能打開。"""
+        capture = _launcher(command=["true"], root=tmp_path)
+        feature, spy = _feature(features.ADVICE, Spy("封包"))
+        runtime = LiveRuntime(model, bus, features=[feature], capture=capture)
+        runtime.start_game()
+        _wait_until_dead(capture)
+        runtime.start_game()
+        assert spy.made == []
+
+    def test_without_a_capture_it_is_a_no_op(self, model: ViewModel, bus: UpdateBus) -> None:
+        """--tail / --no-packets:遊戲不是 MIA 開的。"""
+        runtime = LiveRuntime(model, bus)
+        runtime.start_game()
+        assert not runtime.can_start_game()
+        assert not runtime.game_running()
+
+    def test_stop_takes_the_browser_with_it(self, wired) -> None:
+        runtime, capture, _ = wired
+        runtime.start_game()
+        runtime.stop()
+        capture.poll()
+        assert not capture.running
+
+
+class TestCaptureLauncher:
+    def test_the_dump_path_is_decided_lazily_but_stays_put(self, tmp_path: Path) -> None:
+        """先問路徑、之後才開始 —— 「先打開 AI 建議再按開始遊戲」靠的就是這個。"""
+        launcher = _launcher(root=tmp_path)
+        assert launcher.dump == launcher.dump
+
+    def test_the_command_is_built_with_that_path(self, tmp_path: Path) -> None:
+        seen: list[Path] = []
+        launcher = CaptureLauncher(
+            lambda dump: seen.append(dump) or ["true"],  # type: ignore[func-returns-value]
+            root=tmp_path,
+        )
+        launcher.launch()
+        assert seen == [launcher.dump]
+
+    def test_two_games_in_the_same_second_do_not_collide(self, tmp_path: Path) -> None:
+        """時間戳只到秒。撞到就等於兩場寫進同一個檔案,正是要避免的事。
+
+        不能靠擷取子程序去建目錄來佔名字 —— 它要啟動、連上、收到第一個 frame
+        才會建,而在那之前這個名字看起來還是空的。
+        """
+        launcher = _launcher(command=["true"], root=tmp_path)
+        launcher.launch()
+        first = launcher.dump
+        _wait_until_dead(launcher)
+        launcher.launch()
+        assert launcher.dump != first
+
+    def test_the_status_object_survives_a_new_game(self, tmp_path: Path) -> None:
+        """狀態列盯著的是同一個物件 —— 換場之後換掉的話,UI 會一直看著上一場
+        那個已經不會再更新的狀態。
+        """
+        launcher = _launcher(command=["true"], root=tmp_path)
+        status = launcher.status
+        launcher.launch()
+        _wait_until_dead(launcher)
+        launcher.launch()
+        assert launcher.status is status
+        launcher.stop()
+
+    def test_it_says_nothing_before_the_first_game(self, tmp_path: Path) -> None:
+        """狀態列那個位置要留給真的出問題的那個 —— 還沒開始不是問題。"""
+        assert _launcher(root=tmp_path).status.read() == ""
+
+
+def _wait_until_dead(launcher: CaptureLauncher, timeout: float = 5.0) -> None:
+    """等子程序真的結束。
+
+    要 sleep:不 sleep 的話 500 次 poll 在一毫秒內就跑完了,而子程序還沒被
+    排到 —— 那是個會在別台機器上偶發的假失敗。
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        launcher.poll()
+        if not launcher.running:
+            return
+        time.sleep(0.01)
+    raise AssertionError("子程序沒有結束")
+
+
+class TestCanvas:
+    """畫布尺寸的選擇怎麼傳下去。見 :mod:`mia.calibration.canvas`。"""
+
+    def test_no_choice_means_the_option_is_unavailable(
+        self, model: ViewModel, bus: UpdateBus
+    ) -> None:
+        """重播與示範模式沒有畫布可選,UI 要分得出來才能把選單畫成停用。"""
+        feature, _ = _feature()
+        runtime = LiveRuntime(model, bus, features=[feature])
+        assert not runtime.can_pick_canvas()
+        assert runtime.canvas() is None
+
+    def test_unavailable_without_vision(self, model: ViewModel, bus: UpdateBus) -> None:
+        """``--no-vision`` 時牌桌矩形沒有人要用 —— 選了也不影響任何東西。"""
+        feature, _ = _feature(features.ADVICE)
+        runtime = LiveRuntime(model, bus, features=[feature], canvas=CanvasChoice())
+        assert not runtime.can_pick_canvas()
+
+    def test_setting_it_restarts_vision(self, model: ViewModel, bus: UpdateBus) -> None:
+        """校正器是 worker **建構時**吃設定的,不重開就還在用舊的畫布。
+
+        不重開的話症狀是「選了沒反應」,而使用者唯一能做的事就是再選一次
+        —— 那次會因為「值沒變」被忽略掉。
+        """
+        feature, spy = _feature()
+        runtime = LiveRuntime(model, bus, features=[feature], canvas=CanvasChoice())
+        runtime.start()
+        runtime.set_enabled(features.VISION, True)
+        assert len(spy.made) == 1
+
+        runtime.set_canvas("1920x1080")
+        assert runtime.canvas() == "1920x1080"
+        assert len(spy.made) == 2, "改了畫布卻沒有重建 worker"
+        runtime.stop()
+
+    def test_setting_the_same_value_changes_nothing(
+        self, model: ViewModel, bus: UpdateBus
+    ) -> None:
+        """重開一次要付重建 worker 的成本,值沒變就不該付。"""
+        feature, spy = _feature()
+        runtime = LiveRuntime(
+            model, bus, features=[feature], canvas=CanvasChoice(Canvas(1920, 1080))
+        )
+        runtime.start()
+        runtime.set_enabled(features.VISION, True)
+        runtime.set_canvas("1920x1080")
+        assert len(spy.made) == 1
+        runtime.stop()
+
+    def test_a_disabled_feature_is_not_started_by_picking(
+        self, model: ViewModel, bus: UpdateBus
+    ) -> None:
+        """選一個尺寸不等於「請開始擷取螢幕」。"""
+        feature, spy = _feature()
+        runtime = LiveRuntime(model, bus, features=[feature], canvas=CanvasChoice())
+        runtime.start()
+        runtime.set_canvas("1280x720")
+        assert spy.made == []
+        assert not feature.enabled

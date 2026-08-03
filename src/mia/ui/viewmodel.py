@@ -29,6 +29,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 
 from mia.analysis import (
+    AGARI,
+    TENPAI,
     DiscardOption,
     HandAnalysis,
     HandError,
@@ -39,7 +41,34 @@ from mia.engine.actions import Candidate, action_label, action_tiles, decode_can
 from mia.engine.base import Advice
 from mia.mjai.tiles import UNKNOWN, mjai_to_ms, ms_to_mjai
 
-__all__ = ["EngineView", "ViewModel", "ViewState"]
+__all__ = ["EngineView", "ViewModel", "ViewState", "q_fraction", "shanten_text"]
+
+
+def q_fraction(q: float, *, low: float, high: float) -> float:
+    """一個 Q 值的長條要畫多滿(0~1)。
+
+    Q 值是**相對的** —— 同一手之內互相比較才有意義,不同局面之間的絕對值不可比
+    (實測見過 +2.7 也見過 -6.8)。所以每一手都拿這一手的最高/最低重新正規化,
+    不用固定刻度:固定刻度的話大部分局面的長條會全部擠在同一端。
+
+    只有一個候選時 ``high == low``,畫滿而不是除以零。
+    """
+    span = high - low
+    return 1.0 if span <= 0 else (q - low) / span
+
+
+def shanten_text(shanten: int) -> str:
+    """向聽數要寫成什麼字。
+
+    放在這裡而不是各自寫在 widget 裡:側邊視窗的標題、打牌選項清單、Overlay
+    三個地方都要這一句,而「0 是聽牌、-1 是和了」寫錯了畫面上看起來仍然正常
+    —— 只是數字差一。
+    """
+    if shanten == AGARI:
+        return "和了"
+    if shanten == TENPAI:
+        return "聽牌"
+    return f"{shanten} 向聽"
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +128,59 @@ class EngineView:
         if self.action is not None:
             return self.action
         return "跳過" if self.declined else "不需要動作"
+
+    # 底下四個屬性合起來就是「大字 + 一排牌」那一行。側邊視窗與 Overlay 都用
+    # 它們,而不是各自去拆 :attr:`action` 的字串 —— 「吃要寫出 consumed」與
+    # 「立直要畫出後續切牌」這兩件事都是實機打過一場才發現的,抄成兩份遲早
+    # 會有一份漏掉,而漏掉的那一份看起來仍然正常。
+
+    @property
+    def verb(self) -> str:
+        """大字那個動詞。牌交給圖去講,所以這裡不含牌名。
+
+        與 :attr:`headline` 的差別:那個是完整的一句話(``吃 3m ← 1m 2m``),
+        用在「其他引擎怎麼說」那種並排比較;這個只有動詞,因為旁邊就畫著牌。
+        """
+        if self.action is None:
+            return self.headline
+        if self.is_discard:
+            return "切"
+        if self.follow_up_tile:
+            # 立直:動詞就是「立直」,重點的牌是後續要切的那張(在 own_tiles)
+            return self.action
+        return self.action.split(" ")[0]
+
+    @property
+    def subject(self) -> str | None:
+        """動詞後面那一張 —— 動作在講的牌。沒有就是 ``None``。
+
+        立直沒有 subject:立直本身不指向任何一張牌。
+        """
+        if self.action is None or self.follow_up_tile:
+            return None
+        return self.tile
+
+    @property
+    def joiner(self) -> str:
+        """:attr:`subject` 與 :attr:`own_tiles` 中間的那個字。
+
+        它是唯一讓「桌上那張」與「自己手上那幾張」分得開的東西 —— 三張一樣
+        大小排在一起,使用者看不出該點哪幾張。
+        """
+        if self.action is None:
+            return ""
+        if self.follow_up_tile:
+            return "切"
+        return "用" if self.consumed else ""
+
+    @property
+    def own_tiles(self) -> tuple[str, ...]:
+        """要從**自己手上**拿出來的那幾張,由左而右。"""
+        if self.action is None:
+            return ()
+        if self.follow_up_tile:
+            return (self.follow_up_tile,)
+        return self.consumed
 
 
 @dataclass(frozen=True, slots=True)

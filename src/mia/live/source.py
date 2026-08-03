@@ -15,13 +15,14 @@ from __future__ import annotations
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from mia.live.bus import WorkerStatus
 from mia.utils.logging import logger
 from mia.utils.paths import PROJECT_ROOT
 
-__all__ = ["CaptureProcess", "capture_command"]
+__all__ = ["CaptureLauncher", "CaptureProcess", "capture_command"]
 
 #: 擷取工具。三種後端(cdp / proxy / local)都由它的子命令提供。
 GT_TOOL = PROJECT_ROOT / "tools" / "gt.py"
@@ -39,6 +40,7 @@ def capture_command(
     user_data_dir: str | None = None,
     url_filter: str | None = None,
     connect: str | None = None,
+    canvas: str | None = None,
     extra: list[str] | None = None,
 ) -> list[str]:
     """組出擷取子程序的命令列。
@@ -51,6 +53,8 @@ def capture_command(
             連打幾場時差別很大。
         url_filter: 網址關鍵字過濾。
         connect: 連到已在跑的瀏覽器而不是自己開一個(僅 ``cdp``)。
+        canvas: 要把瀏覽器 viewport 調成的尺寸,例如 ``1920x1080``(僅 ``cdp``)。
+            ``connect`` 時**刻意不送** —— 那個視窗不是我們開的,不該去動它。
         extra: 直接附加的參數。
     """
     if mode not in ("cdp", "proxy", "local"):
@@ -62,6 +66,8 @@ def capture_command(
     if mode == "cdp":
         if connect:
             command += ["--connect", connect]
+        elif canvas:
+            command += ["--canvas", canvas]
         if url:
             command += ["--url", url]
         if user_data_dir:
@@ -78,9 +84,14 @@ class CaptureProcess:
     「請在瀏覽器中登入」這類指示。
     """
 
-    def __init__(self, command: list[str], *, name: str = "封包擷取") -> None:
+    def __init__(
+        self, command: list[str], *, name: str = "封包擷取", status: WorkerStatus | None = None
+    ) -> None:
         self.command = command
-        self.status = WorkerStatus(name)
+        #: 可以由外面傳進來 —— :class:`CaptureLauncher` 每開一場就換一個
+        #: ``CaptureProcess``,但狀態列讀的必須是同一個物件,否則換場之後
+        #: UI 還盯著上一場那個已經不會再更新的狀態。
+        self.status = status if status is not None else WorkerStatus(name)
         self._process: subprocess.Popen[bytes] | None = None
         self._started_at = 0.0
 
@@ -138,3 +149,97 @@ class CaptureProcess:
     def __repr__(self) -> str:
         code = self._process.poll() if self._process is not None else "未啟動"
         return f"<CaptureProcess alive={self.status.alive} exit={code}>"
+
+
+class CaptureLauncher:
+    """「開始遊戲」按下去之後發生的事:開一場新的擷取。
+
+    **每一場一個新的錄影檔。** :class:`~mia.groundtruth.dump.DumpWriter` 是用
+    append 模式開檔的,同一個檔案接兩場的話,從檔頭讀的封包執行緒會先把上一場
+    整個重播一遍,然後拿著一個已經結束的牌局給建議 —— 而那**不會報錯**。
+
+    路徑是**懶決定**的:第一次有人問(封包執行緒建構,或按下開始遊戲)才配一個
+    時間戳目錄,配了就固定到這一場結束。所以「先打開 AI 建議、再按開始遊戲」
+    也成立 —— :class:`~mia.live.packets.DumpTail` 本來就會等檔案出現。
+
+    Args:
+        build_command: 給一個錄影檔路徑,回傳要執行的命令列。通常是
+            :func:`capture_command` 綁上使用者的旗標。
+        root: 錄影檔要放在哪個目錄底下,每場一個子目錄。
+    """
+
+    def __init__(
+        self,
+        build_command: Callable[[Path], list[str]],
+        *,
+        root: Path | str,
+        name: str = "封包擷取",
+    ) -> None:
+        self._build = build_command
+        self.root = Path(root)
+        self.status = WorkerStatus(name)
+        self._dump: Path | None = None
+        self._process: CaptureProcess | None = None
+        self._used: set[Path] = set()
+
+    @property
+    def dump(self) -> Path:
+        """這一場要寫到哪。第一次問的時候才決定,之後固定到換場為止。"""
+        if self._dump is None:
+            self._dump = self._allocate()
+        return self._dump
+
+    @property
+    def running(self) -> bool:
+        return self._process is not None and self._process.status.alive
+
+    def launch(self) -> bool:
+        """開一場。回傳有沒有真的開起來 —— 已經在跑的話什麼都不做。
+
+        **已經在跑就不動它**,而不是先關再開:關掉瀏覽器等於把那一場丟掉,
+        而使用者按這個按鈕的意思從來不是「把現在這場砍了」。
+        """
+        if self.running:
+            return False
+        if self._process is not None:
+            # 上一場已經結束了 —— 換一個新的錄影檔,理由見類別的 docstring
+            self._dump = None
+        dump = self.dump
+        logger.info("封包錄影會寫到 {}", dump)
+        self._process = CaptureProcess(self._build(dump), status=self.status)
+        self._process.start()
+        return True
+
+    def poll(self) -> None:
+        if self._process is not None:
+            self._process.poll()
+
+    def stop(self, *, timeout: float = 5.0) -> None:
+        if self._process is not None:
+            self._process.stop(timeout=timeout)
+
+    def _allocate(self) -> Path:
+        """配一個還沒被用過的錄影檔路徑。
+
+        時間戳只到秒 —— 連按兩次「開始遊戲」會撞在同一秒,而撞到就等於兩場寫進
+        同一個檔案,正是這個類別要避免的事。所以撞了就往後找。
+
+        自己記得配過哪些,不能只看目錄存不存在:目錄是**擷取子程序**收到第一個
+        frame 時才建的,在那之前上一場的名字看起來還是空的。反過來也要看磁碟
+        —— 上一次執行留下來的目錄不該被重用。
+
+        刻意**不在這裡建目錄**:光是問路徑(打開 AI 建議就會問)不該在
+        ``data/live/`` 留下一個空資料夾。真正要建的是 ``DumpWriter``,它本來
+        就會建。
+        """
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        parent = self.root / stamp
+        suffix = 2
+        while parent in self._used or parent.exists():
+            parent = self.root / f"{stamp}-{suffix}"
+            suffix += 1
+        self._used.add(parent)
+        return parent / "ws.jsonl"
+
+    def __repr__(self) -> str:
+        return f"<CaptureLauncher running={self.running} dump={self._dump}>"
