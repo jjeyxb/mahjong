@@ -22,6 +22,7 @@ import time
 
 import numpy as np
 
+from mia.calibration.canvas import CanvasChoice
 from mia.calibration.stable import StableCalibrator
 from mia.calibration.table import Calibration
 from mia.capture.base import (
@@ -60,6 +61,7 @@ class VisionWorker(threading.Thread):
         backend: 擷取後端。省略則依平台自動建立。
         window: 直接指定要擷取的視窗;省略則依 ``config.capture.window`` 搜尋。
         skin: 牌面模板的皮膚。
+        canvas: 使用者選的畫布尺寸,蓋過 ``config.calibration.canvas``。
     """
 
     def __init__(
@@ -70,6 +72,7 @@ class VisionWorker(threading.Thread):
         backend: CaptureBackend | None = None,
         window: WindowInfo | None = None,
         skin: str = DEFAULT_SKIN,
+        canvas: CanvasChoice | None = None,
     ) -> None:
         super().__init__(name="vision", daemon=True)
         self._bus = bus
@@ -80,7 +83,7 @@ class VisionWorker(threading.Thread):
         self._stop = threading.Event()
         self.status = WorkerStatus("畫面")
 
-        self._calibrator = StableCalibrator(config.calibration)
+        self._calibrator = StableCalibrator(config.calibration, canvas=canvas)
         self._rois: RoiSet | None = None
         self._templates: TemplateSet | None = None
         self._previous: np.ndarray | None = None
@@ -155,8 +158,14 @@ class VisionWorker(threading.Thread):
 
         calibration = self._calibrator.feed(frame)
         if calibration is None:
-            done, need = self._calibrator.progress
-            self.status.say(f"牌桌校正中 {done}/{need}")
+            # 「鎖不上」與「還在蒐集」是兩件事,不能都顯示成進度 —— 前者停在
+            # 「校正中 3/15」不會動,看起來像卡住,而使用者其實有辦法解決。
+            failure = self._calibrator.failure
+            if failure is not None:
+                self.status.say(f"牌桌校正失敗:{failure}")
+            else:
+                done, need = self._calibrator.progress
+                self.status.say(f"牌桌校正中 {done}/{need}")
             return
 
         roi = self._crop(calibration, frame.image)

@@ -4,8 +4,9 @@
 四種餵資料的方式:
 
 ``--live``
-    **真的接上遊戲。** 開一個擷取子程序抓封包、同時擷取畫面跑 CV,兩條路的
-    結果一起顯示。這是實際使用的模式,其餘三種都是為了驗它的某一段。
+    **真的接上遊戲。** 按下視窗左下角的「開始遊戲」會開一個受控的瀏覽器並開始
+    抓封包,同時可以擷取畫面跑 CV,兩條路的結果一起顯示。這是實際使用的模式,
+    其餘三種都是為了驗它的某一段。
 
 ``--replay <ws.jsonl>``
     把錄下的對局照時間重播 —— 引擎真的在跑,建議是真的算出來的。**不需要開遊戲**,
@@ -17,9 +18,12 @@
 ``--demo``
     塞一組寫死的假資料就停住。純粹用來看版面,不需要任何素材。這是預設。
 
+四種模式都有 **Overlay**(疊在遊戲上的精簡 HUD),開關在側邊視窗的設定頁 ——
+它與側邊視窗訂閱同一份狀態,所以重播與示範模式也看得到,截圖不必開遊戲。
+
 用法::
 
-    # 實際使用:瀏覽器會自己開起來,登入後就開始給建議
+    # 實際使用:按「開始遊戲」開瀏覽器,登入後撥開關就開始給建議
     python tools/ui.py --live --mortal models/mortal_298k.pth
 
     # 已經有另一個 gt.py 在錄了,只要跟著那個檔案走
@@ -33,7 +37,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -41,11 +44,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
+from mia.calibration.canvas import Canvas, CanvasChoice
 from mia.engine import AIEngine, DummyEngine, EngineGroup
 from mia.live.runtime import LiveRuntime
 from mia.mjai import MjaiEvent
 from mia.mjai.handstate import HandTracker
+from mia.ui.overlay.window import OverlayWindow
 from mia.ui.panel.window import PanelWindow, present
+from mia.ui.state import UiState
 from mia.ui.viewmodel import ViewModel
 from mia.utils.logging import setup_logging
 
@@ -129,8 +135,35 @@ def run_replay(args: argparse.Namespace, model: ViewModel) -> None:
     model._timer = timer  # type: ignore[attr-defined]  # noqa: SLF001
 
 
-def build_live_runtime(args: argparse.Namespace, model: ViewModel) -> LiveRuntime:
-    """組出 runtime。**功能都還是關著的** —— 使用者用視窗上的開關打開。
+class _RememberedCanvas:
+    """把畫布尺寸的選擇轉給 runtime,順手記到磁碟。
+
+    這一層存在的理由只有「記住」::class:`LiveRuntime` 不該知道
+    ``data/ui_state.json`` 這種東西存不存在,而 :class:`PanelWindow` 也不該。
+    持久化的決定屬於接線的這一層。
+    """
+
+    def __init__(self, runtime: LiveRuntime, state: UiState) -> None:
+        self._runtime = runtime
+        self._state = state
+
+    def can_pick_canvas(self) -> bool:
+        return self._runtime.can_pick_canvas()
+
+    def canvas(self) -> str | None:
+        return self._runtime.canvas()
+
+    def set_canvas(self, key: str | None) -> None:
+        self._runtime.set_canvas(key)
+        self._state.canvas = key
+        self._state.save()
+
+
+def build_live_runtime(
+    args: argparse.Namespace, model: ViewModel, *, canvas: CanvasChoice | None = None
+) -> LiveRuntime:
+    """組出 runtime。**什麼都還沒開始** —— 瀏覽器等使用者按「開始遊戲」,
+    兩個功能等使用者撥開關。
 
     工廠是延遲呼叫的:``PacketWorker`` 一建立就會去組引擎,而 Mortal 要載
     130MB 權重。使用者沒打開 AI 建議的話,那 10 秒完全不該花。
@@ -140,36 +173,47 @@ def build_live_runtime(args: argparse.Namespace, model: ViewModel) -> LiveRuntim
     """
     from mia import features
     from mia.config.loader import load_config
-    from mia.live import CaptureProcess, PacketWorker, UpdateBus, VisionWorker, capture_command
+    from mia.live import PacketWorker, UpdateBus, VisionWorker, capture_command
     from mia.live.runtime import Feature, Worker
+    from mia.live.source import CaptureLauncher
     from mia.utils.paths import DATA_DIR
     from mia.vision.tiles.classify import DEFAULT_SKIN
 
     bus = UpdateBus()
     feature_list: list[Feature] = []
-    capture: CaptureProcess | None = None
+    capture: CaptureLauncher | None = None
 
     if not args.no_packets:
         if args.tail:
             # 別人已經在錄了,只跟著走 —— 不要再開一個擷取子程序去搶同一個瀏覽器
-            dump = args.tail
+            tail: Path = args.tail
+
+            def dump_path() -> Path:
+                return tail
         else:
-            dump = DATA_DIR / "live" / time.strftime("%Y%m%d-%H%M%S") / "ws.jsonl"
-            capture = CaptureProcess(
-                capture_command(
+            capture = CaptureLauncher(
+                lambda dump: capture_command(
                     dump,
                     mode=args.capture_mode,
                     url=args.url,
                     user_data_dir=args.user_data_dir,
                     connect=args.connect,
-                )
+                    # 每次開瀏覽器才讀:使用者可能在上一場結束後才改選單
+                    canvas=canvas.key if canvas else None,
+                ),
+                root=DATA_DIR / "live",
             )
-            print(f"封包錄影會寫到 {dump}")
+            # 路徑是 launcher 懶決定的:每按一次「開始遊戲」換一個新檔案,所以
+            # 這裡不能先取出來存著 —— 那樣第二場會繼續讀第一場的檔案。
+            launcher = capture
+
+            def dump_path() -> Path:
+                return launcher.dump
 
         def make_packets() -> Worker:
             # from_start=True:座位、寶牌、誰立直了全在先前的事件裡,所以
             # 中途才打開開關也要從頭讀一遍把局面追上來
-            return PacketWorker(bus, dump=dump, engines=build_engines(args), from_start=True)
+            return PacketWorker(bus, dump=dump_path(), engines=build_engines(args), from_start=True)
 
         feature_list.append(Feature(features.ADVICE, make_packets))
 
@@ -178,18 +222,18 @@ def build_live_runtime(args: argparse.Namespace, model: ViewModel) -> LiveRuntim
         skin = args.skin or DEFAULT_SKIN
 
         def make_vision() -> Worker:
-            return VisionWorker(bus, config=config, skin=skin)
+            return VisionWorker(bus, config=config, skin=skin, canvas=canvas)
 
         feature_list.append(Feature(features.VISION, make_vision))
 
     if not feature_list:
         raise SystemExit("--no-vision 與 --no-packets 同時給了,那就沒有東西可以顯示")
 
-    return LiveRuntime(model, bus, features=feature_list, capture=capture)
+    return LiveRuntime(model, bus, features=feature_list, capture=capture, canvas=canvas)
 
 
 def start_live(runtime: LiveRuntime, model: ViewModel) -> None:
-    """開擷取子程序並讓 pump 開始跑。功能仍然關著。"""
+    """讓 pump 開始跑。瀏覽器與兩個功能都還沒啟動。"""
     runtime.start()
     timer = QTimer()
     timer.timeout.connect(runtime.pump)
@@ -223,7 +267,7 @@ def run_session(args: argparse.Namespace, model: ViewModel) -> None:
         config.roi,
         Calibration(session.table_rect, Size(width, height), source="manual"),
     )
-    box = rois["own_hand"].pixels
+    box = rois["own_hand"].rect
     templates = TemplateSet.load()
     model.set_notices([f"重播畫面 {args.session.name} — {len(records)} 幀"])
 
@@ -339,22 +383,47 @@ def main(argv: list[str] | None = None) -> int:
 
     model = ViewModel()
 
+    # Overlay 與側邊視窗訂閱**同一個** ViewModel —— 兩種呈現方式,一份狀態。
+    # 它自己記得上次是開著還是收著,所以這裡不需要命令列參數。
+    #
+    # 狀態要在 runtime **之前**讀:上次選的畫布尺寸得跟著進去,不然第一次按
+    # 「開始遊戲」會用自動偵測開,使用者要再改一次選單才生效。
+    ui_state = UiState.load()
+    canvas = CanvasChoice(Canvas.parse(ui_state.canvas))
+
     # runtime 必須在視窗**之前**建好:視窗上的開關要接到它。反過來的話開關
     # 只能先畫成停用,之後再想辦法補接 —— 而那正是最容易忘記做的一步。
-    runtime: LiveRuntime | None = build_live_runtime(args, model) if args.live else None
+    runtime: LiveRuntime | None = (
+        build_live_runtime(args, model, canvas=canvas) if args.live else None
+    )
 
+    # options 是**兩個視窗共用**的,所以只放兩邊都收的參數。側邊視窗獨有的
+    # 東西一律寫在下面的呼叫裡 —— 塞進 options 的話 Overlay 會收到一個它不
+    # 認得的關鍵字,而 `**options` 加上 type: ignore 讓 mypy 看不出來,
+    # 要到真的執行才炸(canvas 就這樣炸過一次)。
     options: dict[str, object] = {}
     if args.skin:
         options["skin"] = args.skin
     if runtime is not None:
         options["switchboard"] = runtime
-    window = PanelWindow(model, **options)  # type: ignore[arg-type]
+    overlay = OverlayWindow(model, ui_state=ui_state, **options)  # type: ignore[arg-type]
+    model.subscribe(overlay.apply)
+
+    # launcher 與 canvas 只給側邊視窗 —— 「開始遊戲」是一個動作而不是要顯示的
+    # 狀態,畫布尺寸則是設定;Overlay 上兩者都沒有位置(鎖定之後也按不到)。
+    window = PanelWindow(
+        model,
+        overlay=overlay,
+        launcher=runtime,
+        canvas=_RememberedCanvas(runtime, ui_state) if runtime is not None else None,
+        **options,  # type: ignore[arg-type]
+    )
     model.subscribe(window.apply)
 
     if runtime is not None:
         start_live(runtime, model)
         _quit_on_signals(app)
-        print("兩個功能預設都是關著的 —— 用視窗上的開關打開。")
+        print("按視窗左下角的「開始遊戲」開啟瀏覽器;兩個功能的開關預設關著。")
     elif args.replay:
         run_replay(args, model)
     elif args.session:
@@ -363,6 +432,10 @@ def main(argv: list[str] | None = None) -> int:
         run_demo(model)
 
     present(window)
+    # Overlay 在側邊視窗**之後**才顯示,不然置頂的側邊視窗剛 raise 上來會蓋在
+    # 它前面 —— 使用者勾了卻看不到,只會以為壞了。
+    if overlay.shown:
+        overlay.set_shown(True)
     try:
         return app.exec()
     finally:

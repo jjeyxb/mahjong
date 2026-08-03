@@ -84,6 +84,18 @@ class CalibrationConfig(_Base):
     Retina 下實測為 56 px)、遊戲自己補的黑邊、瀏覽器的分頁列與網址列。
     """
 
+    canvas: str | None = Field(
+        None,
+        description=(
+            "指定遊戲畫布尺寸(邏輯像素,例如 1920x1080)。設了就**不跑邊框剝除** —— "
+            "直接由影像尺寸推導 table_rect 並驗證對不對得上。剝除是啟發式,"
+            "實測在 900x593 的視窗下 91% 的候選被丟棄、剩下的還是錯的"
+            "(見 mia.calibration.canvas)。MIA 自己開瀏覽器時會把 viewport "
+            "調到剛好這個尺寸;不是 MIA 開的就要自己確認視窗大小對得上。"
+            "留空表示自動偵測"
+        ),
+    )
+
     border_tolerance: int = Field(
         20,
         ge=0,

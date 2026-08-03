@@ -37,10 +37,22 @@ __all__ = ["SETTLE", "AlignedFrame", "HandTimeline", "align", "build_timeline"]
 
 #: 一個狀態的前後各要安靜這麼久,落在中間的幀才算「穩定」。
 #:
-#: 0.4 秒是估計值,不是量出來的 —— 雀魂的發牌與打牌動畫大約 0.3 秒,留一點餘裕。
-#: 錄到真實素材之後應該用 :func:`~mia.eval.report.evaluate` 掃幾個值
-#: 看準確率曲線在哪裡平掉,那個轉折點才是動畫的真實長度。
-SETTLE = 0.4
+#: **量出來的**(2026-08-01,`data/recordings/20260801-110639` + `data/gt/ws.jsonl`)。
+#:
+#: 掃 0.4 / 0.6 / 0.8 / 1.0 / 1.3 / 1.6 / 2.0,張數正確率是
+#: 81.3 / 80.7 / 85.3 / 86.0 / 89.3 / 86.7 / 90.0 % —— 在 **1.0 秒附近平掉**,
+#: 之後的起伏都在取樣雜訊內。所以雀魂的摸打與鳴牌動畫實際約 1 秒,
+#: 而不是原本估的 0.3~0.4 秒。
+#:
+#: 這個值只影響「哪些幀有標準答案」,不影響 CV 本身:同一批素材上,
+#: 張數正確的幀的每張牌正確率在各個 settle 都穩定落在 91~94%。
+SETTLE = 1.0
+
+#: 這些事件一到,這一局的手牌就不再是畫面上那副了。
+#:
+#: ``hora`` / ``ryukyoku`` 就開始:和了的瞬間手牌會被攤開重排,畫面已經不是
+#: 原本那副暗手牌。``end_kyoku`` / ``end_game`` 之後則是結算與過場。
+HAND_OFF_SCREEN = frozenset({"hora", "ryukyoku", "end_kyoku", "end_game"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +65,8 @@ class HandState:
         drawn: 這一巡摸到的牌。
         melds: 副露組數。
         in_sync: 產生這個狀態時事件流有沒有對得上。False 的不該拿來評分。
+        boundary: 這不是一副手牌,是一個「從這裡開始畫面上沒有手牌」的界標
+            (和了、流局、局末、場末)。見 :data:`HAND_OFF_SCREEN`。
     """
 
     wall: float
@@ -60,6 +74,7 @@ class HandState:
     drawn: str | None
     melds: int
     in_sync: bool
+    boundary: bool = False
 
 
 @dataclass(slots=True)
@@ -106,7 +121,7 @@ class HandTimeline:
         if index < 0:
             return None
         state = self.states[index]
-        if not state.in_sync:
+        if state.boundary or not state.in_sync:
             return None
         # 動畫還沒演完
         if wall - state.wall < settle:
@@ -161,6 +176,21 @@ def build_timeline(dump: Path | str) -> HandTimeline:
             except UnknownSeatError:
                 logger.warning("錄影檔在 start_game 之前就出現 start_kyoku,略過")
                 continue
+
+            if event.TYPE in HAND_OFF_SCREEN:
+                # 一局結束。接下來是和了動畫、結算畫面、下一局的發牌 —— 這段
+                # 時間畫面上沒有一副可以評分的手牌,而**時間軸必須說得出這件事**。
+                #
+                # 少了這個哨兵,stable_at 的 bisect 會一路回答上一局的最後一手,
+                # 直到下一局的 start_kyoku 為止。那段空窗可能有十幾秒,期間每一幀
+                # 都會被判成「CV 認錯」—— 而且 settle 開得越大,選到的越都是這種
+                # 長命狀態,準確率反而越難看。實測 settle 2.0s 時整體只剩 40%,
+                # 但每張牌正確率仍有 95%:那個落差全部來自這裡,與 CV 無關。
+                timeline.states.append(
+                    HandState(frame.wall_clock, (), None, -1, in_sync=False, boundary=True)
+                )
+                continue
+
             if (tuple(tracker.tiles), tracker.drawn) == before:
                 continue  # 手牌沒變的事件(別家的動作)不必記一個狀態
             timeline.states.append(

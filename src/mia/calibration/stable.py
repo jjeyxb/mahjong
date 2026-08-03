@@ -40,12 +40,25 @@
 
 丟掉候選的條件刻意只有兩個(偵測失敗、寬高比離譜),而不是「有警告就丟」——
 正確答案 1.7902 本身就偏離 16:9 達 0.7%,把示警當成拒絕條件會把對的丟掉。
+
+丟太多的時候要**拒絕鎖定**
+--------------------------
+上面那套的前提是「大多數候選是對的,少數是雜訊」。這個前提會破 —— 實測
+900x593 的視窗下,剝除停在瀏覽器工具列裡,91% 的候選因寬高比 1.56 被丟掉,
+而**通過檢查的那 9% 恰恰是剝過頭、剝進遊戲畫布裡的幀**。寬高比檢查於是
+反過來在挑錯的答案,中位數取的是一組有系統性偏差的離群值。
+
+那次鎖進去的矩形位移了約 0.7 張牌寬,手牌辨識從 96% 掉到 29%,**整場錄影
+沒有任何錯誤訊息**。所以現在的規則是:近期丟棄的比採用的多就不鎖,
+讓上層當場說「校正失敗」。詳見 :mod:`mia.calibration.canvas`。
 """
 
 from __future__ import annotations
 
+from collections import deque
 from statistics import median
 
+from mia.calibration.canvas import CanvasChoice
 from mia.calibration.table import Calibration, TableCalibrator
 from mia.capture.base import Frame
 from mia.config.models import CalibrationConfig
@@ -57,6 +70,13 @@ __all__ = ["StableCalibrator"]
 #: 鎖定後,若各候選在任一分量上的全距超過短邊的這個比例,就在結果裡記一筆警告。
 #: 不拒絕鎖定 —— 中位數本來就是為了在雜訊中給答案,但使用者該知道畫面很不穩。
 _SPREAD_WARN_RATIO = 0.02
+
+#: 判斷「丟太多」時只看最近這麼多次嘗試,單位是 ``stabilize_frames`` 的倍數。
+#:
+#: 用滑動視窗而不是累計,是為了**能夠復原**:遊戲還停在登入畫面或載入畫面時
+#: 剝除本來就會一直失敗,那段時間累積的丟棄數不該一路跟著使用者到牌桌上。
+#: 用累計的話,登入花了兩分鐘的人就再也鎖不上了。
+_WINDOW_FACTOR = 4
 
 
 class StableCalibrator:
@@ -77,13 +97,27 @@ class StableCalibrator:
     改變(使用者縮放視窗、切全螢幕),那會自動重置並重新蒐集。
     """
 
-    def __init__(self, config: CalibrationConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: CalibrationConfig | None = None,
+        *,
+        canvas: CanvasChoice | None = None,
+    ) -> None:
         self.config = config or CalibrationConfig()
-        self._calibrator = TableCalibrator(self.config)
+        self._calibrator = TableCalibrator(self.config, canvas=canvas)
         self._samples: list[Rect] = []
         self._rejected = 0
+        self._recent: deque[bool] = deque(
+            maxlen=max(2, self.config.stabilize_frames * _WINDOW_FACTOR)
+        )
+        self._blocked: str | None = None
         self._result: Calibration | None = None
         self._size: Size | None = None
+
+    @property
+    def canvas(self) -> CanvasChoice:
+        """使用者選的畫布尺寸。改了之後要自己呼叫 :meth:`reset`。"""
+        return self._calibrator.canvas
 
     # ------------------------------------------------------------------ 狀態
 
@@ -101,9 +135,20 @@ class StableCalibrator:
         """``(已接受的候選數, 需要的數量)``,給 UI 顯示進度用。"""
         return len(self._samples), self.config.stabilize_frames
 
+    @property
+    def failure(self) -> str | None:
+        """為什麼鎖不上。還在正常蒐集(或已鎖定)時為 ``None``。
+
+        這是**當下**的判斷,不是latch住的旗標:情況好轉(近期的候選開始
+        通過)之後就會自己消失,見 :data:`_WINDOW_FACTOR`。
+        """
+        return None if self._result is not None else self._blocked
+
     def reset(self) -> None:
         self._samples.clear()
         self._rejected = 0
+        self._recent.clear()
+        self._blocked = None
         self._result = None
         self._size = None
 
@@ -123,15 +168,24 @@ class StableCalibrator:
         self._size = frame.size
         candidate = self._calibrator.calibrate(frame)
 
-        # 手動指定就沒有「不穩定」可言,直接鎖定。
-        if candidate.source == "manual":
+        # 手動指定與畫布推導都是算出來的,不是猜的 —— 沒有「不穩定」可言,直接鎖定。
+        if candidate.source in ("manual", "canvas"):
             self._result = candidate
+            logger.info("牌桌校正已鎖定({}): {}", candidate.source, candidate)
             return self._result
 
-        if self._accepts(candidate):
+        accepted = self._accepts(candidate)
+        self._recent.append(accepted)
+        if accepted:
             self._samples.append(candidate.table_rect)
         else:
             self._rejected += 1
+
+        # 選了畫布卻推導失敗時,calibrate 會回 fallback 並附上原因。原封不動
+        # 轉述給上層 —— 「畫布對不上」比「候選都被丟掉」精確得多。
+        self._blocked = self._diagnose(candidate)
+        if self._blocked is not None:
+            return None
 
         if len(self._samples) < self.config.stabilize_frames:
             return None
@@ -167,6 +221,23 @@ class StableCalibrator:
             )
             return False
         return True
+
+    def _diagnose(self, candidate: Calibration) -> str | None:
+        """現在該不該拒絕鎖定,以及理由。可以鎖就回 ``None``。"""
+        if candidate.source == "fallback" and self.canvas.value is not None:
+            return candidate.warnings[0] if candidate.warnings else "畫布尺寸對不上目前的視窗"
+
+        if len(self._recent) < self.config.stabilize_frames:
+            return None  # 樣本還太少,說什麼都太早
+        rejected = self._recent.count(False)
+        if rejected * 2 <= len(self._recent):
+            return None
+        return (
+            f"最近 {len(self._recent)} 幀有 {rejected} 幀認不出牌桌邊界,"
+            "多於認得出來的。這種時候取中位數只會鎖進一組系統性偏掉的答案"
+            "(實測會讓手牌辨識從 96% 掉到 29%)。"
+            "請在向聽分析頁選一個固定畫布尺寸,或用 manual_table_rect 手動指定。"
+        )
 
     def _settle(self, frame: Frame) -> Calibration:
         """對蒐集到的候選取逐分量中位數,組成最終結果。"""

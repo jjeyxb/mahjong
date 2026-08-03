@@ -9,7 +9,7 @@ from __future__ import annotations
 from mia.analysis import AGARI, TENPAI
 from mia.engine.base import Advice
 from mia.mjai import Chi, Dahai, Reach
-from mia.ui.viewmodel import ViewModel, ViewState
+from mia.ui.viewmodel import ViewModel, ViewState, q_fraction, shanten_text
 
 # 123m 456m 789m + 11p 對子 + 23p 兩面 = 聽 1p/4p。
 #
@@ -479,3 +479,94 @@ class TestCallAndReachDisplay:
             ]
         )
         assert not model.state.is_unanimous
+
+
+class TestHeadlineParts:
+    """「大字 + 一排牌」那一行的組成。
+
+    側邊視窗與 Overlay 都吃這幾個屬性 —— 這裡驗的就是那個單一來源。兩邊各自
+    去拆 ``action`` 字串的話,遲早有一邊會漏掉「吃要寫出 consumed」或
+    「立直要畫出後續切牌」,而漏掉的那一邊看起來仍然正常。
+    """
+
+    @staticmethod
+    def view(advice: Advice):
+        model = ViewModel()
+        model.update_advices([advice])
+        return model.state.engines[0]
+
+    def test_a_discard_says_just_the_verb(self) -> None:
+        """牌交給圖去講,所以大字裡不再寫一次牌名。"""
+        view = self.view(Advice("m", Dahai(actor=0, pai="3s", tsumogiri=False), None, 1.0))
+        assert view.verb == "切"
+        assert view.subject == "3s"
+        assert view.own_tiles == ()
+
+    def test_a_chi_puts_the_called_tile_and_the_two_of_ours_on_opposite_sides(self) -> None:
+        """中間那個「用」是唯一讓「桌上那張」與「自己手上那兩張」分得開的東西。"""
+        view = self.view(
+            Advice("m", Chi(actor=0, target=3, pai="3m", consumed=["1m", "2m"]), None, 1.0)
+        )
+        assert view.verb == "吃"
+        assert view.subject == "3m"
+        assert view.joiner == "用"
+        assert view.own_tiles == ("1m", "2m")
+
+    def test_reach_shows_the_follow_up_as_the_tile_to_play(self) -> None:
+        """立直本身不指向任何一張牌,該畫的是接下來要切的那張。"""
+        view = self.view(
+            Advice(
+                "m",
+                Reach(actor=0),
+                None,
+                1.0,
+                follow_up=Dahai(actor=0, pai="5p", tsumogiri=False),
+            )
+        )
+        assert view.verb == "立直"
+        assert view.subject is None
+        assert view.joiner == "切"
+        assert view.own_tiles == ("5p",)
+
+    def test_a_skip_has_a_verb_but_no_tiles(self) -> None:
+        """「跳過」是一個答案,不是「沒有建議」。"""
+        view = self.view(Advice("m", None, {"mask_bits": 0b11, "q_values": [0.1, -6.3]}, 1.0))
+        assert view.verb == "跳過"
+        assert view.subject is None
+        assert view.own_tiles == ()
+
+    def test_nobody_asked_is_quiet(self) -> None:
+        view = self.view(Advice("m", None, None, 1.0))
+        assert view.verb == "不需要動作"
+        assert view.own_tiles == ()
+
+
+class TestShantenText:
+    """0 是聽牌、-1 是和了 —— 寫錯了畫面上看起來仍然正常,只是數字差一。"""
+
+    def test_agari(self) -> None:
+        assert shanten_text(AGARI) == "和了"
+
+    def test_tenpai(self) -> None:
+        assert shanten_text(TENPAI) == "聽牌"
+
+    def test_a_plain_number(self) -> None:
+        assert shanten_text(2) == "2 向聽"
+
+
+class TestQFraction:
+    """Q 值長條每一手重新正規化 —— 絕對值不可比,實測見過 +2.7 也見過 -6.8。"""
+
+    def test_the_best_fills_the_bar(self) -> None:
+        assert q_fraction(1.0, low=-1.0, high=1.0) == 1.0
+
+    def test_the_worst_is_empty(self) -> None:
+        assert q_fraction(-1.0, low=-1.0, high=1.0) == 0.0
+
+    def test_all_negative_still_spans_the_full_range(self) -> None:
+        """全部都是負分很常見(場況不好),那時長條不該整排看起來像出錯。"""
+        assert q_fraction(-6.8, low=-6.8, high=-0.2) == 0.0
+        assert q_fraction(-0.2, low=-6.8, high=-0.2) == 1.0
+
+    def test_a_single_candidate_does_not_divide_by_zero(self) -> None:
+        assert q_fraction(0.5, low=0.5, high=0.5) == 1.0

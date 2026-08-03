@@ -16,6 +16,7 @@ from typing import Literal
 
 import numpy as np
 
+from mia.calibration.canvas import Canvas, CanvasChoice, CanvasMismatchError
 from mia.calibration.letterbox import find_content_rect, fit_aspect
 from mia.capture.base import Frame
 from mia.config.models import CalibrationConfig
@@ -24,7 +25,7 @@ from mia.utils.logging import logger
 
 __all__ = ["Calibration", "TableCalibrator"]
 
-CalibrationSource = Literal["auto", "manual", "fallback"]
+CalibrationSource = Literal["auto", "canvas", "manual", "fallback"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,8 +38,8 @@ class Calibration:
             見 :meth:`matches`。
         scale: 來自 :attr:`Frame.scale` 的 pixel/logical 比值。需要把畫面座標
             換算回滑鼠可點擊的邏輯座標時會用到。
-        source: ``auto`` 自動偵測成功 / ``manual`` 使用設定檔指定 /
-            ``fallback`` 偵測失敗,退而使用整張影像。
+        source: ``auto`` 自動偵測成功 / ``canvas`` 由指定的畫布尺寸推導 /
+            ``manual`` 使用設定檔指定 / ``fallback`` 偵測失敗,退而使用整張影像。
         warnings: 校正過程中的疑慮。非空代表結果可能不可靠,上層應顯示給使用者。
     """
 
@@ -89,13 +90,26 @@ class TableCalibrator:
     流程:
 
     1. 設定檔若指定了 ``manual_table_rect``,直接採用(逃生門)。
-    2. 否則裁掉四周純色邊框,得到內容區。
-    3. 檢查內容區的寬高比;偏離 16:9 超過容許值就置中裁成 16:9 並記一筆警告。
-    4. 完全偵測不到內容區時,退回使用整張影像並標記為 ``fallback``。
+    2. 選了固定畫布尺寸的話,直接推導並驗證,**不跑剝除**。
+    3. 否則裁掉四周純色邊框,得到內容區。
+    4. 檢查內容區的寬高比;偏離 16:9 超過容許值就置中裁成 16:9 並記一筆警告。
+    5. 完全偵測不到內容區時,退回使用整張影像並標記為 ``fallback``。
+
+    Args:
+        config: 校正參數。
+        canvas: 使用者選的畫布尺寸,會**蓋過** ``config.canvas``。傳一個可變的
+            :class:`~mia.calibration.canvas.CanvasChoice` 而不是值,是因為
+            UI 可以隨時改選 —— 見該類別的 docstring。省略時就用設定檔裡的。
     """
 
-    def __init__(self, config: CalibrationConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: CalibrationConfig | None = None,
+        *,
+        canvas: CanvasChoice | None = None,
+    ) -> None:
         self.config = config or CalibrationConfig()
+        self.canvas = canvas or CanvasChoice(Canvas.parse(self.config.canvas))
 
     def calibrate(self, frame: Frame) -> Calibration:
         image = frame.image
@@ -112,6 +126,9 @@ class TableCalibrator:
                 scale=frame.scale,
                 source="manual",
             )
+
+        if self.canvas.value is not None:
+            return self._from_canvas(self.canvas.value, frame)
 
         content = find_content_rect(
             image,
@@ -162,3 +179,29 @@ class TableCalibrator:
         for message in warnings:
             logger.warning(message)
         return calibration
+
+    def _from_canvas(self, canvas: Canvas, frame: Frame) -> Calibration:
+        """由指定的畫布尺寸推導矩形。
+
+        對不上時**不退回剝除** —— 使用者明確選了一個尺寸,而剝除正是他為了
+        避開才去選的東西。悄悄換回去只會讓「我明明選了 1920x1080」與畫面上
+        的結果對不起來,而且沒有任何線索。回 ``fallback`` 帶著說明,讓上層
+        拒絕鎖定。
+        """
+        try:
+            rect = canvas.table_rect(frame.size, frame.scale)
+        except CanvasMismatchError as exc:
+            logger.warning("畫布 {} 與這一幀對不上:{}", canvas.label, exc)
+            return Calibration(
+                table_rect=Rect.from_size(frame.size),
+                image_size=frame.size,
+                scale=frame.scale,
+                source="fallback",
+                warnings=(f"畫布尺寸 {canvas.label} 對不上目前的視窗:{exc}",),
+            )
+        return Calibration(
+            table_rect=rect,
+            image_size=frame.size,
+            scale=frame.scale,
+            source="canvas",
+        )

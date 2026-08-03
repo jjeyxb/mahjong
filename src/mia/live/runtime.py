@@ -35,9 +35,10 @@ from collections.abc import Callable, Sequence
 from typing import Protocol
 
 from mia import features
+from mia.calibration.canvas import CanvasChoice
 from mia.features import NAMES
 from mia.live.bus import Advices, CvHand, PacketHand, UpdateBus, WorkerStatus
-from mia.live.source import CaptureProcess
+from mia.live.source import CaptureLauncher
 from mia.ui.viewmodel import ViewModel
 from mia.utils.logging import logger
 
@@ -112,20 +113,25 @@ class LiveRuntime:
         viewmodel: 要更新的 ViewModel。
         bus: 工作執行緒投遞的郵箱。
         features: 可以獨立開關的功能。**預設全部關閉。**
-        capture: 擷取子程序;沒有(例如只跑畫面辨識)時為 ``None``。
+        capture: 開遊戲的東西;沒有(``--tail``、``--no-packets``)時為 ``None``。
 
     功能預設**全部關閉**,使用者用側邊視窗上的開關打開。
 
-    擷取子程序**不受開關影響**,跟著 :meth:`start` 一起開、一路開著。綁在開關上
-    的話,關掉再打開會殺掉瀏覽器 —— 整場對局就沒了。留著它還有一個好處:
-    錄影檔從一開始就在寫,所以中途才打開 AI 建議時
+    瀏覽器**不會自己開** —— 要使用者按「開始遊戲」(:meth:`start_game`)。
+    開一個瀏覽器並開始寫錄影檔跟「載入 130MB 權重」是同一個層級的事,該是明確
+    的動作而不是打開視窗的副作用。
+
+    擷取子程序**不受兩個功能開關影響**,一路開到使用者關掉瀏覽器為止。綁在開關
+    上的話,關掉再打開會殺掉瀏覽器 —— 整場對局就沒了。它一路開著還有一個好處:
+    錄影檔從按下開始遊戲那一刻就在寫,所以中途才打開 AI 建議時
     :class:`~mia.live.packets.PacketWorker` 會從頭讀一遍把局面追上來。
 
     用法::
 
-        runtime = LiveRuntime(model, bus, features=[vision, advice], capture=capture)
-        runtime.start()                      # 只開擷取子程序,功能仍關著
+        runtime = LiveRuntime(model, bus, features=[vision, advice], capture=launcher)
+        runtime.start()                      # 只是開始 pump,什麼都還沒跑
         timer = QTimer(); timer.timeout.connect(runtime.pump); timer.start(100)
+        runtime.start_game()                 # 開瀏覽器,開始錄
         runtime.set_enabled(features.ADVICE, True)
         ...
         runtime.stop()
@@ -137,12 +143,14 @@ class LiveRuntime:
         bus: UpdateBus,
         *,
         features: Sequence[Feature] = (),
-        capture: CaptureProcess | None = None,
+        capture: CaptureLauncher | None = None,
+        canvas: CanvasChoice | None = None,
     ) -> None:
         self._viewmodel = viewmodel
         self._bus = bus
         self._features = {f.key: f for f in features}
         self._capture = capture
+        self._canvas = canvas
         self._running = False
 
     # ------------------------------------------------------------------ 生命週期
@@ -156,17 +164,82 @@ class LiveRuntime:
         return tuple(self._features.values())
 
     def start(self) -> None:
-        """啟動擷取子程序。**功能本身不會被啟動** —— 預設全部關著。
+        """開始運轉。**什麼都不會被啟動** —— 功能預設全關,瀏覽器等使用者按。
 
-        擷取子程序要花好幾秒才會建出錄影檔,所以越早開越好:等使用者按下
-        AI 建議的開關時,錄影檔通常已經在了。
+        剩下的工作只有讓 :meth:`pump` 有意義:在這之前 pump 出去的東西沒有人
+        會收。
         """
         if self._running:
             return
         self._running = True
-        if self._capture is not None:
-            self._capture.start()
         self.pump()
+
+    def can_start_game(self) -> bool:
+        """MIA 在這個模式下負不負責開遊戲。
+
+        ``--tail`` 是跟著別人正在錄的檔案走、``--no-packets`` 根本不接封包
+        —— 兩種情況下遊戲都不是 MIA 開的。
+        """
+        return self._capture is not None
+
+    def game_running(self) -> bool:
+        """瀏覽器 / 擷取子程序現在是不是活著。給按鈕決定要不要可按。"""
+        return self._capture is not None and self._capture.running
+
+    def start_game(self) -> None:
+        """開一場:開瀏覽器,開始寫一個新的錄影檔。
+
+        換了錄影檔的話,**正在跟著舊檔案走的封包執行緒要重開** —— 它的路徑是
+        建構時決定的,不重開的話畫面會停在上一場的最後一手,而且不會有任何
+        錯誤訊息。重開要再付一次載權重的成本(實測 0.5~0.6 秒)。
+
+        已經有一場在跑就什麼都不做:按這個按鈕的意思從來不是「把現在這場砍了」。
+        """
+        if self._capture is None:
+            logger.warning("這個模式不由 MIA 開遊戲,忽略")
+            return
+        before = self._capture.dump
+        if not self._capture.launch():
+            return
+        if self._capture.dump != before:
+            self._restart(features.ADVICE)
+        self.pump()
+
+    # ------------------------------------------------------------------ 畫布
+
+    def canvas(self) -> str | None:
+        """現在選的畫布尺寸,``None`` 表示自動偵測。"""
+        return self._canvas.key if self._canvas is not None else None
+
+    def can_pick_canvas(self) -> bool:
+        """這個模式下選畫布有沒有意義。錄影重播與 ``--no-vision`` 就沒有。"""
+        return self._canvas is not None and self.available(features.VISION)
+
+    def set_canvas(self, key: str | None) -> None:
+        """改選畫布尺寸。
+
+        **畫面辨識當場重開**(它的校正器是建構時吃設定的),但**瀏覽器不會跟著
+        變大小** —— 尺寸是開視窗時下的命令,要下一次「開始遊戲」才生效。所以
+        改在對局中途的話,CV 會先進入「畫布對不上」的狀態,那是正確的:
+        它確實對不上,而說出來遠好過拿著一個偏掉的矩形繼續辨識。
+        """
+        if self._canvas is None:
+            logger.warning("這個模式不支援選畫布尺寸,忽略")
+            return
+        if not self._canvas.set(key):
+            return
+        logger.info("畫布尺寸改為 {}", self._canvas)
+        self._restart(features.VISION)
+        self.pump()
+
+    def _restart(self, key: str) -> None:
+        """把一個開著的功能關掉再開。關著的話什麼都不做。"""
+        feature = self._features.get(key)
+        if feature is None or not feature.enabled:
+            return
+        feature.disable()
+        self._clear_output(key)
+        feature.enable()
 
     def stop(self, *, timeout: float = 3.0) -> None:
         """停掉所有東西。可重複呼叫。
@@ -287,6 +360,7 @@ class LiveRuntime:
         # 「它是關著的」由開關本身表達,不需要再寫一句話。
         statuses = [f.worker.status for f in self._features.values() if f.worker is not None]
         if self._capture is not None:
+            # 還沒按開始遊戲時它的訊息是空的,不會佔位置
             # 擷取子程序排在最前面:它掛掉的話後面兩個都沒有輸入,
             # 先看到根本原因比先看到症狀有用
             statuses.insert(0, self._capture.status)

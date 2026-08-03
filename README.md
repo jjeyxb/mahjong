@@ -105,7 +105,7 @@ src/mia/
 ├── mjai/          events / tiles(牌表示轉換)
 ├── engine/        base / subprocess_engine / mortal / dummy / multiplex
 ├── live/          即時模式:bus / vision / packets / runtime / source
-├── ui/            viewmodel + panel/ overlay/ widgets/
+├── ui/            viewmodel + state(記住的位置)+ switchboard + panel/ overlay/ widgets/
 ├── groundtruth/   cdp / capture_addon / dump / liqi / schema / to_mjai
 ├── eval/          align / metrics / report
 ├── recorder/      錄製資料集、離線回放
@@ -115,7 +115,7 @@ engines/mortal/    Mortal 子程序的獨立環境 (Python 3.12)
 tools/             開發用 CLI:capture_probe / roi_annotate / roi_union / record / gt / fetch_*
 assets/tiles/      牌面模板圖(37 張/皮膚),由 tools/fetch_tiles.py 產生
 config/            ROI 定義、skin profile YAML
-data/              錄製資料集 (gitignore)
+data/              錄製資料集、ui_state.json(記住的 Overlay 位置)(gitignore)
 models/            權重 .pth (gitignore)
 docs/decisions.md  方向轉折的完整記錄
 tests/fixtures/    靜態截圖 + 期望輸出
@@ -247,12 +247,12 @@ python tools/gt.py inspect data/ws.jsonl --actions --mjai-out data/g1.mjai.jsonl
 | M1 | 擷取層雙平台 + 校正 | ✅ macOS 完成並實機驗證;Windows 待驗證 |
 | M2 | 封包擷取 → MJAI 事件流 + recorder | ✅ 已用真實對局驗證;MITM 兩模式已實作但未實測 |
 | M3 | **功能 1**:手牌 CV | ✅ 校正穩定化、手牌定位、牌面分類皆完成 |
-| M3-1b | 準確率評測工具鏈 | ✅ 對齊與報告已完成並測過;**待錄一份成對素材**跑出數字，見 [docs/recording.md](docs/recording.md) |
+| M3-1b | 準確率評測工具鏈 | ✅ 完成 —— 素材已錄、數字已量,**每張牌正確 95.8%**,見下方「M3-1b 實測」 |
 | M4 | **功能 1**:向聽 / 進張計算 | ✅ 完成 —— `analysis/shanten.py`,整條管線已跑通 |
 | M5 | **功能 2**:engine 子程序 + Mortal 接入 | ✅ 完成 —— 已用真實對局驗證,見下方「M5 實測」 |
 | M6 | UI 側邊視窗 | ✅ 完成 —— 左側功能列 + 牌面圖片 + Q 值長條 |
 | M6-1 | **即時資料連接層** | ✅ 完成 —— 封包這條路已實機驗證;兩條路同時跑尚未一起驗過 |
-| M7 | Overlay 模式 | |
+| M7 | Overlay 模式 | ✅ 完成 —— 疊在遊戲上的精簡 HUD,可拖曳 / 鎖定穿透;**尚未實機疊在對局上看過** |
 | M8 | **功能 3**:風格微調(見下節) | |
 
 ### M3 的三個子項
@@ -267,7 +267,7 @@ python tools/gt.py inspect data/ws.jsonl --actions --mjai-out data/g1.mjai.jsonl
 3. ~~**牌面模板庫 + 分類器**~~ —— ✅ 已完成（`vision/tiles/classify.py`）。
    模板改從**雀魂官方資源**取（`tools/fetch_tiles.py`），37 張已經標好、
    不需要人工標註。24 張目視確認過答案的牌全數正確，最低分 0.631、
-   最小差距 0.084。**per-tile 準確率報告仍待一份畫面 ↔ 封包配對的錄影。**
+   最小差距 0.084。真實對局上的 per-tile 準確率見下方「M3-1b 實測」。
 
 ---
 
@@ -417,7 +417,7 @@ python tools/advise.py data/gt/ws.jsonl --mortal models/mortal_298k.pth
 ### 即時模式：真的接上遊戲
 
 ```bash
-# 一個指令搞定：瀏覽器會自己開起來，登入後就開始給建議
+# 按左下角「開始遊戲」開瀏覽器，登入後撥開關就開始給建議
 python tools/ui.py --live --mortal models/mortal_298k.pth
 
 # 已經有另一個 gt.py 在錄了（或用 MITM 錄 Steam 版），只跟著那個檔案走
@@ -426,6 +426,11 @@ python tools/ui.py --live --tail data/recordings/now/ws.jsonl
 # 只要 AI 建議，不跑畫面辨識（不必授權螢幕錄製）
 python tools/ui.py --live --no-packets   # ← 反過來：只要畫面辨識，不接封包
 ```
+
+**瀏覽器不會自己開**，要按左下角的「開始遊戲」。每按一次是新的一場，寫到新的
+錄影檔 —— 錄影檔是 append 模式寫的，而封包這條路是從檔頭讀的，兩場疊在同一個
+檔案裡的話引擎會拿著一個已經結束的牌局給建議**而且不會報錯**。關掉瀏覽器之後
+再按一次就能開下一場，不必重開 MIA。
 
 **兩個功能預設都不執行**，各自由所在頁面右上角的開關控制（iOS 風格，Apple 的
 system green）。打開 AI 建議會開一個載著 130MB 權重的子程序、打開畫面辨識會
@@ -484,8 +489,37 @@ python tools/evaluate.py data/recordings/<id> data/gt/ws.jsonl --dry-run
 python tools/evaluate.py data/recordings/<id> data/gt/ws.jsonl
 ```
 
-工具鏈已完成並測過，**還缺一份成對素材** —— 錄製步驟見
-[docs/recording.md](docs/recording.md)。
+錄製步驟見 [docs/recording.md](docs/recording.md)。
+
+### M3-1b 實測（2026-08-01 錄、2026-08-03 定案）
+
+12 局 / 2 場完整東風戰，2395 個封包 frame（100% 解析）配 12599 幀畫面，
+牌桌 2536×1430。穩定秒數 1.0s，配到 **4327 幀**有明確標準答案：
+
+| | |
+|---|---|
+| 張數正確 | 88.4% |
+| **每張牌正確** | **95.8%** |
+| 整手正確 | 74.3% |
+| 赤寶牌召回 | **100.0%** |
+
+最常認錯的是 `E → 5m`、`P → 4p`、`2s → 3s` —— 字牌與萬子互認，符合模板比對
+在低對比牌面上的預期。
+
+跑這一輪修掉三個一直沒被發現的東西：
+
+1. **`tools/evaluate.py` 的 `Roi.pixels` 根本不存在** —— 工具鏈的 CV 那一段
+   從來沒有真的執行過。`_own_hand_roi` 掛著 `type: ignore[no-untyped-def]`,
+   回傳值變成 `Any`，mypy 就看不見了。沒有型別的地方就是沒有人在看的地方。
+2. **時間軸不會說「現在沒有手牌」** —— 局末到下一局那十幾秒,`bisect` 一律
+   回答上一局的最後一手,每一幀都被判成 CV 認錯。修掉之後同一批素材從
+   68% 升到 81.3%。
+3. **穩定秒數是量出來的,不是估的** —— 掃 0.4~2.0 秒,張數正確率在 **1.0 秒
+   附近平掉**,所以雀魂的摸打與鳴牌動畫實際約 1 秒(原本估 0.3~0.4)。
+
+第二段素材(視窗 900×593)一開始只有 29.1%,查出來是**牌桌校正鎖進了錯的
+矩形**,不是正規化 ROI 座標跨解析度失效 —— 用正確矩形重跑是 96.0%。
+這件事直接催生了固定畫布尺寸功能,見 `docs/decisions.md` 第十六節。
 
 ---
 

@@ -20,6 +20,7 @@ pytest.importorskip("PySide6", reason="UI 測試需要 PySide6")
 
 from PySide6.QtCore import Qt
 
+from mia.calibration.canvas import PRESETS as CANVAS_PRESETS
 from mia.ui.panel.window import PanelWindow, present
 from mia.ui.widgets.tiles import TileIcons
 
@@ -477,3 +478,266 @@ class TestUnavailableFeature:
         """與重播模式不同:那條路真的沒在跑,顯示為開會誤導。"""
         _, window = half
         assert not window._switches[features.VISION].isChecked()  # noqa: SLF001
+
+
+class TestOverlayControls:
+    """設定頁上的三個勾選。
+
+    **控制項在側邊視窗這一側,不在 Overlay 上。** Overlay 鎖定之後對滑鼠是
+    透明的 —— 擺在它自己身上的按鈕會變成看得到卻按不到的死按鈕。
+    """
+
+    @pytest.fixture
+    def wired(self, qtbot, tmp_path):
+        from mia.ui.overlay.window import OverlayWindow
+        from mia.ui.state import UiState
+
+        model = ViewModel()
+        overlay = OverlayWindow(model, ui_state=UiState.load(tmp_path / "ui.json"))
+        window = PanelWindow(model, overlay=overlay)
+        qtbot.addWidget(overlay)
+        qtbot.addWidget(window)
+        return overlay, window
+
+    def test_opening_the_panel_does_not_show_the_overlay(self, wired) -> None:
+        """建構時先設好勾選再接訊號 —— 反過來的話 setChecked 會立刻觸發一次
+        handler,把「上次記住的狀態」當成使用者剛剛的操作重存一遍。
+        """
+        overlay, _ = wired
+        assert overlay.isHidden()
+
+    def test_checking_it_shows_the_overlay(self, wired) -> None:
+        overlay, window = wired
+        window._overlay_shown.setChecked(True)  # noqa: SLF001
+        assert overlay.shown
+
+    def test_unchecking_it_hides_the_overlay(self, wired) -> None:
+        overlay, window = wired
+        window._overlay_shown.setChecked(True)  # noqa: SLF001
+        window._overlay_shown.setChecked(False)  # noqa: SLF001
+        assert overlay.isHidden()
+
+    def test_the_other_two_are_disabled_until_it_is_shown(self, wired) -> None:
+        """收起來的時候「展開」與「鎖定」沒有東西可以作用。"""
+        _, window = wired
+        assert not window._overlay_expanded.isEnabled()  # noqa: SLF001
+        assert not window._overlay_locked.isEnabled()  # noqa: SLF001
+
+    def test_showing_it_enables_the_other_two(self, wired) -> None:
+        _, window = wired
+        window._overlay_shown.setChecked(True)  # noqa: SLF001
+        assert window._overlay_expanded.isEnabled()  # noqa: SLF001
+        assert window._overlay_locked.isEnabled()  # noqa: SLF001
+
+    def test_expanding_reaches_the_overlay(self, wired) -> None:
+        overlay, window = wired
+        window._overlay_shown.setChecked(True)  # noqa: SLF001
+        window._overlay_expanded.setChecked(True)  # noqa: SLF001
+        assert overlay.expanded
+
+    def test_locking_reaches_the_overlay(self, wired) -> None:
+        overlay, window = wired
+        window._overlay_shown.setChecked(True)  # noqa: SLF001
+        window._overlay_locked.setChecked(True)  # noqa: SLF001
+        assert overlay.locked
+
+    def test_closing_the_panel_closes_the_overlay(self, wired) -> None:
+        """少了這一段,顯示中的 Overlay 會是最後一個還開著的視窗,Qt 於是不
+        結束程式 —— 畫面上只剩一個關不掉的浮動 HUD。
+        """
+        overlay, window = wired
+        window._overlay_shown.setChecked(True)  # noqa: SLF001
+        window.close()
+        assert overlay.isHidden()
+
+    def test_a_remembered_state_comes_back_checked(self, qtbot, tmp_path) -> None:
+        from mia.ui.overlay.window import OverlayWindow
+        from mia.ui.state import UiState
+
+        state = UiState.load(tmp_path / "ui.json")
+        state.overlay_visible = True
+        state.overlay_expanded = True
+        model = ViewModel()
+        overlay = OverlayWindow(model, ui_state=state)
+        window = PanelWindow(model, overlay=overlay)
+        qtbot.addWidget(overlay)
+        qtbot.addWidget(window)
+        assert window._overlay_shown.isChecked()  # noqa: SLF001
+        assert window._overlay_expanded.isChecked()  # noqa: SLF001
+
+
+class TestWithoutAnOverlay:
+    """重播與示範以外也可能沒有 Overlay(測試就是)—— 勾選要畫成停用。"""
+
+    def test_the_boxes_are_disabled(self, panel) -> None:
+        _, window = panel
+        assert not window._overlay_shown.isEnabled()  # noqa: SLF001
+        assert not window._overlay_expanded.isEnabled()  # noqa: SLF001
+        assert not window._overlay_locked.isEnabled()  # noqa: SLF001
+
+    def test_the_tooltip_explains_why(self, panel) -> None:
+        _, window = panel
+        assert "Overlay" in window._overlay_shown.toolTip()  # noqa: SLF001
+
+
+class FakeLauncher:
+    """滿足 :class:`~mia.ui.switchboard.GameLauncher` 的最小實作。"""
+
+    def __init__(self, *, available: bool = True) -> None:
+        self.available = available
+        self.running = False
+        self.calls = 0
+
+    def can_start_game(self) -> bool:
+        return self.available
+
+    def game_running(self) -> bool:
+        return self.running
+
+    def start_game(self) -> None:
+        self.calls += 1
+        self.running = True
+
+
+class TestStartGameButton:
+    """左下角那顆按鈕。瀏覽器不會自己開,要按了才開。"""
+
+    @pytest.fixture
+    def wired(self, qtbot):
+        launcher = FakeLauncher()
+        model = ViewModel()
+        window = PanelWindow(model, switchboard=FakeSwitchboard(), launcher=launcher)
+        model.subscribe(window.apply)
+        qtbot.addWidget(window)
+        return launcher, window
+
+    def test_opening_the_window_does_not_open_a_browser(self, wired) -> None:
+        """開一個瀏覽器並開始往磁碟寫錄影檔該是明確的動作,不是視窗的副作用。"""
+        launcher, _ = wired
+        assert launcher.calls == 0
+
+    def test_it_is_ready_to_press(self, wired) -> None:
+        _, window = wired
+        assert window._start_button.isEnabled()  # noqa: SLF001
+        assert window._start_button.text() == "開始遊戲"  # noqa: SLF001
+
+    def test_pressing_it_starts_the_game(self, wired) -> None:
+        launcher, window = wired
+        window._start_button.click()  # noqa: SLF001
+        assert launcher.calls == 1
+
+    def test_it_goes_dead_while_a_game_is_running(self, wired) -> None:
+        """關掉瀏覽器等於把那一場丟掉 —— 不該是一個手滑就按得到的按鈕。"""
+        _, window = wired
+        window._start_button.click()  # noqa: SLF001
+        assert not window._start_button.isEnabled()  # noqa: SLF001
+        assert window._start_button.text() == "遊戲進行中"  # noqa: SLF001
+
+    def test_it_comes_back_when_the_browser_is_closed(self, wired) -> None:
+        """使用者把瀏覽器關掉之後要能再開一場,不必重開 MIA。"""
+        launcher, window = wired
+        window._start_button.click()  # noqa: SLF001
+        launcher.running = False
+        window.apply(ViewModel().state)
+        assert window._start_button.isEnabled()  # noqa: SLF001
+
+    def test_the_status_bar_points_at_the_button(self, wired) -> None:
+        """功能開關的提示要讓位:打開了功能卻沒有遊戲,使用者會盯著空白等。"""
+        _, window = wired
+        assert "開始遊戲" in window._notice.text()  # noqa: SLF001
+
+    def test_the_status_bar_moves_on_once_a_game_is_running(self, wired) -> None:
+        _, window = wired
+        window._start_button.click()  # noqa: SLF001
+        assert "兩個功能都關著" in window._notice.text()  # noqa: SLF001
+
+
+class TestStartGameWithoutALauncher:
+    def test_replay_mode_disables_the_button(self, panel) -> None:
+        _, window = panel
+        assert not window._start_button.isEnabled()  # noqa: SLF001
+        assert "重播" in window._start_button.toolTip()  # noqa: SLF001
+
+    def test_tail_mode_says_it_is_not_ours_to_open(self, qtbot) -> None:
+        """--tail 是跟著別人正在錄的檔案走,遊戲不是 MIA 開的。"""
+        window = PanelWindow(ViewModel(), launcher=FakeLauncher(available=False))
+        qtbot.addWidget(window)
+        assert not window._start_button.isEnabled()  # noqa: SLF001
+        assert "--tail" in window._start_button.toolTip()  # noqa: SLF001
+
+
+class FakeCanvasPicker:
+    """實作 :class:`~mia.ui.switchboard.CanvasPicker` 的假物件。"""
+
+    def __init__(self, *, available: bool = True, current: str | None = None) -> None:
+        self.available = available
+        self.current = current
+        self.calls: list[str | None] = []
+
+    def can_pick_canvas(self) -> bool:
+        return self.available
+
+    def canvas(self) -> str | None:
+        return self.current
+
+    def set_canvas(self, key: str | None) -> None:
+        self.calls.append(key)
+        self.current = key
+
+
+class TestCanvasPicker:
+    """向聽分析頁上的畫布尺寸選單。
+
+    它存在的理由見 :mod:`mia.calibration.canvas` —— 自動偵測在某些視窗尺寸
+    下會安靜地給出偏掉 0.7 張牌寬的矩形。
+    """
+
+    def _window(self, qtbot, picker):
+        window = PanelWindow(ViewModel(), switchboard=FakeSwitchboard(), canvas=picker)
+        qtbot.addWidget(window)
+        return window
+
+    def test_auto_is_the_first_option(self, qtbot) -> None:
+        """自動偵測要排第一 —— 那是預設值,而預設值不該藏在清單中間。"""
+        window = self._window(qtbot, FakeCanvasPicker())
+        assert window._canvas_picker.itemData(0) is None  # noqa: SLF001
+
+    def test_every_preset_is_offered(self, qtbot) -> None:
+        window = self._window(qtbot, FakeCanvasPicker())
+        offered = {
+            window._canvas_picker.itemData(i)  # noqa: SLF001
+            for i in range(window._canvas_picker.count())  # noqa: SLF001
+        }
+        assert {p.key for p in CANVAS_PRESETS} <= offered
+
+    def test_it_starts_on_the_remembered_choice(self, qtbot) -> None:
+        """記住的尺寸要**選起來**,不是只存著。
+
+        選單停在「自動偵測」而實際上跑的是 1920x1080 的話,使用者會以為
+        上次的設定沒存到而再選一次 —— 那次選擇會被當成「沒有改變」忽略掉。
+        """
+        window = self._window(qtbot, FakeCanvasPicker(current="1920x1080"))
+        assert window._canvas_picker.currentData() == "1920x1080"  # noqa: SLF001
+
+    def test_picking_forwards_the_key(self, qtbot) -> None:
+        picker = FakeCanvasPicker()
+        window = self._window(qtbot, picker)
+        index = window._canvas_picker.findData("1280x720")  # noqa: SLF001
+        window._canvas_picker.setCurrentIndex(index)  # noqa: SLF001
+        assert picker.calls == ["1280x720"]
+
+    def test_going_back_to_auto_forwards_none(self, qtbot) -> None:
+        picker = FakeCanvasPicker(current="1280x720")
+        window = self._window(qtbot, picker)
+        window._canvas_picker.setCurrentIndex(0)  # noqa: SLF001
+        assert picker.calls == [None]
+
+    def test_it_is_disabled_when_nobody_can_act_on_it(self, qtbot) -> None:
+        """重播與 ``--no-vision``:可按而按了沒事發生,看起來就是壞掉。"""
+        window = self._window(qtbot, FakeCanvasPicker(available=False))
+        assert not window._canvas_picker.isEnabled()  # noqa: SLF001
+
+    def test_it_is_disabled_without_a_picker_at_all(self, qtbot) -> None:
+        window = PanelWindow(ViewModel(), switchboard=FakeSwitchboard())
+        qtbot.addWidget(window)
+        assert not window._canvas_picker.isEnabled()  # noqa: SLF001

@@ -33,6 +33,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from mia.calibration.canvas import Canvas
 from mia.groundtruth.dump import DumpWriter
 from mia.utils.logging import logger
 
@@ -99,6 +100,7 @@ class CdpCapture:
         duration: float | None = None,
         headless: bool = False,
         user_data_dir: str | None = None,
+        canvas: Canvas | None = None,
         stop_check: Callable[[], bool] | None = None,
     ) -> CdpStats:
         """啟動一個受控的 Chromium 並開啟雀魂。
@@ -106,6 +108,9 @@ class CdpCapture:
         Args:
             user_data_dir: 指定的話會用持久化的設定檔目錄,登入狀態可以留到下次
                 —— 否則每次都要重新登入,錄多場時很煩。
+            canvas: 把視窗調到讓**頁面 viewport 剛好等於**這個尺寸。
+                這是 MIA 這一端能為畫面辨識做的最有效的一件事,見
+                :mod:`mia.calibration.canvas`。
         """
         sync_playwright = _import_playwright()
         with sync_playwright() as playwright:
@@ -129,6 +134,8 @@ class CdpCapture:
 
             logger.info("開啟 {}", url)
             page.goto(url, wait_until="domcontentloaded")
+            if canvas is not None:
+                _fit_canvas(page, canvas)
             logger.info("請在瀏覽器視窗中登入並開始對局。按 Ctrl-C 結束錄製。")
 
             self._wait(context, duration, stop_check)
@@ -243,6 +250,59 @@ class CdpCapture:
             logger.info("使用者中斷")
         finally:
             self.stats.duration = time.monotonic() - start
+
+
+#: 調整視窗最多試幾次。
+#:
+#: 需要不只一次是因為**工具列高度事前不知道**:視窗高度扣掉 viewport 高度
+#: 才是它,而那要先開起來量。量到之後補上差額就對了,第二輪通常就收斂。
+#: 留第三輪是給書籤列這種「改了視窗大小才出現/消失」的東西。
+_FIT_ATTEMPTS = 3
+
+
+def _fit_canvas(page: Page, canvas: Canvas) -> None:
+    """把瀏覽器視窗調到讓頁面 viewport 剛好等於 ``canvas``。
+
+    調的是 **viewport 而不是視窗**:視窗 1920x1080 扣掉工具列之後 viewport
+    不是 16:9,雀魂就會自己補黑邊 —— 那樣畫布位置又變回要用猜的,而這整件事
+    就是為了不要用猜的。
+
+    調不到就只記警告不拋錯:螢幕放不下時瀏覽器會給一個它能給的尺寸,而
+    「錄不到最理想的畫布」遠遠好過「整場對局沒開始」。真正的把關在
+    :meth:`~mia.calibration.canvas.Canvas.table_rect` —— 對不上那邊會說。
+    """
+    session = page.context.new_cdp_session(page)
+    window_id = session.send("Browser.getWindowForTarget")["windowId"]
+
+    for _ in range(_FIT_ATTEMPTS):
+        inner = page.evaluate("() => [window.innerWidth, window.innerHeight]")
+        delta = (canvas.width - inner[0], canvas.height - inner[1])
+        if delta == (0, 0):
+            logger.info("畫布已調整為 {}", canvas.label)
+            return
+        bounds = session.send("Browser.getWindowBounds", {"windowId": window_id})["bounds"]
+        session.send(
+            "Browser.setWindowBounds",
+            {
+                "windowId": window_id,
+                # windowState 一定要一起送:視窗若是最大化或全螢幕,
+                # 寬高會被直接忽略而且不會有任何錯誤。
+                "bounds": {
+                    "windowState": "normal",
+                    "width": bounds["width"] + delta[0],
+                    "height": bounds["height"] + delta[1],
+                },
+            },
+        )
+        page.wait_for_timeout(200)
+
+    inner = page.evaluate("() => [window.innerWidth, window.innerHeight]")
+    logger.warning(
+        "調不到畫布 {},實際是 {}x{} —— 通常是螢幕放不下,請改選小一點的尺寸",
+        canvas.label,
+        inner[0],
+        inner[1],
+    )
 
 
 def _import_playwright() -> Any:

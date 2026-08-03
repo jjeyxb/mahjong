@@ -22,9 +22,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mia.analysis import AGARI, TENPAI
 from mia.mjai.tiles import ms_to_mjai, sort_key
-from mia.ui.viewmodel import ViewState
+from mia.ui.viewmodel import ViewState, shanten_text
 from mia.ui.widgets.tiles import HandStrip, TileIcons, TileLabel
 
 __all__ = ["AnalysisTab"]
@@ -122,12 +121,7 @@ class AnalysisTab(QWidget):
             self._source.setText("")
             return
 
-        if analysis.shanten == AGARI:
-            self._shanten.setText("和了")
-        elif analysis.shanten == TENPAI:
-            self._shanten.setText("聽牌")
-        else:
-            self._shanten.setText(f"{analysis.shanten} 向聽")
+        self._shanten.setText(shanten_text(analysis.shanten))
 
         parts = [_SOURCE_NAMES.get(state.hand_source, state.hand_source)]
         if analysis.melds:
@@ -160,10 +154,9 @@ class AnalysisTab(QWidget):
             self._discard_rows.append(row)
 
         for index, (row, option) in enumerate(zip(self._discard_rows, options, strict=False)):
-            state_text = "聽牌" if option.shanten == TENPAI else f"{option.shanten} 向聽"
             row.update_from(
                 _to_mjai(option.tile),
-                f"{state_text}　進張 {option.total_ukeire} 枚",
+                f"{shanten_text(option.shanten)}　進張 {option.total_ukeire} 枚",
                 best=index == 0,
             )
             row.setVisible(True)

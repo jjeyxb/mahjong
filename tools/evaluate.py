@@ -28,8 +28,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from mia.calibration.table import Calibration
 from mia.config.loader import load_config
 from mia.eval import align, build_timeline, evaluate_frame, summarize
+from mia.eval.align import SETTLE
 from mia.recorder import SessionReader
-from mia.utils.geometry import Size
+from mia.utils.geometry import Rect, Size
 from mia.utils.logging import setup_logging
 from mia.vision.roi import RoiSet
 from mia.vision.tiles.classify import TemplateSet
@@ -67,7 +68,8 @@ def main(argv: list[str] | None = None) -> int:
     if not _overlaps(session, timeline):
         return 1
 
-    settle_values = [args.settle] if args.settle is not None else [0.2, 0.3, 0.4, 0.6]
+    # 掃描值涵蓋 SETTLE 兩側,才看得出曲線在哪裡平掉(見 align.SETTLE 的量測)
+    settle_values = [args.settle] if args.settle is not None else [0.4, 0.6, SETTLE, 1.3, 2.0]
     if args.dry_run:
         print("\n穩定秒數 → 可評分的幀數")
         for settle in settle_values:
@@ -76,7 +78,9 @@ def main(argv: list[str] | None = None) -> int:
         print("\n沒有 0 的話兩份錄影就對得上,可以拿掉 --dry-run 跑完整評測。")
         return 0
 
-    settle = args.settle if args.settle is not None else 0.4
+    # 預設一律取 align.SETTLE —— 這裡另外寫一個 0.4 的話,改了那個常數也不會生效,
+    # 而報告上仍然印著「穩定秒數 0.4s」,看起來完全正常
+    settle = args.settle if args.settle is not None else SETTLE
     paired = list(align(session, timeline, settle=settle))
     if args.limit:
         paired = paired[: args.limit]
@@ -123,8 +127,12 @@ def _overlaps(session: SessionReader, timeline) -> bool:  # type: ignore[no-unty
     return True
 
 
-def _own_hand_roi(session: SessionReader):  # type: ignore[no-untyped-def]
+def _own_hand_roi(session: SessionReader) -> Rect:
     """算出 own_hand 在畫面上的像素框。
+
+    回傳型別要寫出來:原本這裡掛著 ``type: ignore[no-untyped-def]``,於是回傳
+    值是 ``Any``,``.pixels``(根本不存在的屬性)就一路過了 mypy,直到真的錄到
+    素材、跑到這一步才在使用者面前炸開。沒有型別的地方就是沒有人在看的地方。
 
     直接用 session 存下來的 ``table_rect`` —— 那是錄製當下 StableCalibrator
     蒐集多幀之後鎖定的結果。在這裡重跑一次校正不但慢,還可能因為挑到不同的
@@ -153,7 +161,7 @@ def _own_hand_roi(session: SessionReader):  # type: ignore[no-untyped-def]
     rois = RoiSet(config.roi, calibration)
     if "own_hand" not in rois:
         raise SystemExit("設定檔沒有 own_hand 這個 ROI —— 見 config/default.yaml")
-    return rois["own_hand"].pixels
+    return rois["own_hand"].rect
 
 
 if __name__ == "__main__":

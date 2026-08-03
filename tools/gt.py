@@ -68,11 +68,21 @@ DEFAULT_OUT = DATA_DIR / "recordings" / "ws_dump.jsonl"
 
 
 def cmd_cdp(args: argparse.Namespace) -> int:
+    from mia.calibration.canvas import Canvas
     from mia.groundtruth.cdp import (
         DEFAULT_MAJSOUL_URL,
         CdpCapture,
         PlaywrightMissingError,
     )
+
+    canvas = Canvas.parse(args.canvas)
+    if args.canvas and canvas is None:
+        print(f"看不懂的畫布尺寸 {args.canvas!r},格式是 1920x1080", file=sys.stderr)
+        return 2
+    if canvas is not None and args.connect:
+        # 連到別人開的瀏覽器就不該去動它的視窗大小 —— 那個視窗不是我們的。
+        print("--canvas 與 --connect 不能一起用:連過去的瀏覽器不歸我們管", file=sys.stderr)
+        return 2
 
     try:
         with DumpWriter(args.out) as writer:
@@ -86,6 +96,7 @@ def cmd_cdp(args: argparse.Namespace) -> int:
                     duration=args.duration,
                     headless=args.headless,
                     user_data_dir=args.user_data_dir,
+                    canvas=canvas,
                 )
     except PlaywrightMissingError as exc:
         print(f"\n{exc}", file=sys.stderr)
@@ -253,6 +264,9 @@ def main(argv: list[str] | None = None) -> int:
     p_cdp.add_argument("--duration", type=float, metavar="SEC", help="錄製秒數")
     p_cdp.add_argument("--headless", action="store_true", help="無頭模式(通常不要,你得看畫面打牌)")
     p_cdp.add_argument("--user-data-dir", help="持久化設定檔目錄,可保留登入狀態")
+    p_cdp.add_argument("--canvas", metavar="WxH",
+                       help="把視窗調到讓頁面 viewport 剛好是這個尺寸,例如 1920x1080。"
+                            "畫面辨識就不必再猜牌桌邊界在哪")
     p_cdp.set_defaults(func=cmd_cdp)
 
     p_proxy = sub.add_parser("proxy", help="MITM 代理(需裝憑證,需自行導向)")

@@ -24,9 +24,10 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -36,6 +37,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QPushButton,
     QSpinBox,
     QStackedWidget,
     QStatusBar,
@@ -44,12 +46,19 @@ from PySide6.QtWidgets import (
 )
 
 from mia import APP_TITLE, features
+from mia.calibration.canvas import PRESETS as CANVAS_PRESETS
+from mia.ui.switchboard import CanvasPicker, GameLauncher, Switchboard, is_on
 from mia.ui.viewmodel import ViewModel, ViewState
 from mia.ui.widgets.advice import AdviceTab
 from mia.ui.widgets.analysis import AnalysisTab
 from mia.ui.widgets.tiles import DEFAULT_SKIN, TileIcons
 from mia.ui.widgets.toggle import ToggleSwitch
 
+if TYPE_CHECKING:
+    from mia.ui.overlay.window import OverlayWindow
+
+#: ``Switchboard`` 原本定義在這裡,現在搬到 :mod:`mia.ui.switchboard`
+#: —— Overlay 也要用它,而那兩個是平行的呈現方式,誰都不該相依誰。
 __all__ = ["PanelWindow", "Switchboard", "present"]
 
 #: 放得下 14 張 44px 高的牌、加上左側功能列。
@@ -59,18 +68,8 @@ MIN_HEIGHT = 540
 #: 左側功能列的寬度。夠放四個全形字。
 NAV_WIDTH = 96
 
-
-class Switchboard(Protocol):
-    """能開關功能的東西。
-
-    只宣告視窗真正用到的兩個方法,而不是直接吃一個
-    :class:`~mia.live.runtime.LiveRuntime` —— UI 這一層不該相依 live
-    (它也要服務錄影重播,那時候根本沒有工作執行緒可開關)。
-    """
-
-    def available(self, key: str) -> bool: ...
-    def is_enabled(self, key: str) -> bool: ...
-    def set_enabled(self, key: str, on: bool) -> None: ...
+#: 「開始遊戲」按鈕的字。兩處(按鈕與狀態列提示)都取這裡,不會寫得不一樣。
+START_GAME = "開始遊戲"
 
 
 class _Page(QWidget):
@@ -134,6 +133,11 @@ class PanelWindow(QMainWindow):
         switchboard: 兩個功能的開關要接到誰。``None``(錄影重播、示範資料)時
             開關仍然畫出來,但是**停用**並顯示為開啟 —— 那些模式裡是命令列
             決定跑哪一條路,把開關做成可按的會讓人以為按了有效。
+        launcher: 「開始遊戲」要接到誰。``None``(重播、``--tail``、
+            ``--no-packets``)時按鈕畫成停用 —— 那些模式裡遊戲不是 MIA 開的。
+        canvas: 畫布尺寸選單要接到誰。``None`` 時選單畫成停用。
+        overlay: 要控制的 Overlay。設定頁上的三個勾選都作用在它身上;
+            ``None`` 時那三個畫成停用。
 
     Note:
         :meth:`apply` 是唯一的資料入口。ViewModel 的通知可能來自別的執行緒,
@@ -148,6 +152,9 @@ class PanelWindow(QMainWindow):
         skin: str = DEFAULT_SKIN,
         always_on_top: bool = True,
         switchboard: Switchboard | None = None,
+        launcher: GameLauncher | None = None,
+        canvas: CanvasPicker | None = None,
+        overlay: OverlayWindow | None = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle(APP_TITLE)
@@ -159,6 +166,9 @@ class PanelWindow(QMainWindow):
 
         self._viewmodel = viewmodel
         self._switchboard = switchboard
+        self._launcher = launcher
+        self._canvas = canvas
+        self._overlay = overlay
         self._switches: dict[str, ToggleSwitch] = {}
         icons = TileIcons(skin)
         self._advice = AdviceTab(icons, self)
@@ -180,6 +190,7 @@ class PanelWindow(QMainWindow):
         self._analysis_page = self._add_page("向聽分析", self._analysis)
         self._settings_page = self._add_page("設定", self._build_settings())
         self._build_advice_settings()
+        self._build_analysis_settings()
         # 開關最後加,才會排在設定列最右邊
         self._add_switch(self._advice_page, features.ADVICE)
         self._add_switch(self._analysis_page, features.VISION)
@@ -191,7 +202,7 @@ class PanelWindow(QMainWindow):
         layout = QHBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.addWidget(self._nav)
+        layout.addWidget(self._build_nav_column(central))
         layout.addWidget(_rule(central, vertical=True))
         layout.addWidget(self._stack, 1)
         self.setCentralWidget(central)
@@ -205,6 +216,40 @@ class PanelWindow(QMainWindow):
         self.apply(viewmodel.state)
 
     # ------------------------------------------------------------------ 建構
+
+    def _build_nav_column(self, parent: QWidget) -> QWidget:
+        """左側功能列 + 底下的「開始遊戲」。
+
+        按鈕放在**功能列最下面**而不是某一頁裡面:它與「現在看哪一頁」無關,
+        而且是使用者每次坐下來要做的第一件事,不該藏在某一頁後面。這個位置
+        與 MAA 的「開始」一致。
+        """
+        column = QWidget(parent)
+        layout = QVBoxLayout(column)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self._nav, 1)
+        layout.addWidget(self._build_start_button(column))
+        column.setFixedWidth(NAV_WIDTH)
+        return column
+
+    def _build_start_button(self, parent: QWidget) -> QWidget:
+        """開瀏覽器並開始錄封包。
+
+        瀏覽器**不會自己開**,理由與兩個功能預設關閉相同:開一個瀏覽器並開始
+        往磁碟寫錄影檔該是明確的動作。實際做事的是
+        :meth:`~mia.live.runtime.LiveRuntime.start_game`。
+        """
+        button = QPushButton(START_GAME, parent)
+        button.setStyleSheet(
+            "QPushButton { background: #34C759; color: white; border: none;"
+            " border-radius: 6px; padding: 9px 4px; font-weight: 600; margin: 6px; }"
+            "QPushButton:hover:enabled { background: #2FB350; }"
+            "QPushButton:disabled { background: palette(midlight); color: palette(mid); }"
+        )
+        button.clicked.connect(self._on_start_game)
+        self._start_button = button
+        return button
 
     def _add_page(self, name: str, content: QWidget) -> _Page:
         page = _Page(content, self._stack)
@@ -258,6 +303,39 @@ class PanelWindow(QMainWindow):
         self._candidate_count.valueChanged.connect(self._on_candidate_count)
         self._advice_page.add_setting("候選數", self._candidate_count)
 
+    def _build_analysis_settings(self) -> None:
+        """向聽分析頁的設定列:畫布尺寸。
+
+        放在這一頁而不是全域設定頁,因為它只影響功能 1 —— 牌桌矩形是畫面
+        辨識的座標基準,AI 建議走封包,完全不看畫面。
+
+        為什麼會有這個選單,見 :mod:`mia.calibration.canvas`:自動偵測是
+        啟發式,實測在某些視窗尺寸下會安靜地給出偏掉 0.7 張牌寬的矩形,
+        手牌辨識從 96% 掉到 29%。選一個固定尺寸之後,MIA 開瀏覽器時會把
+        viewport 調成剛好那麼大,矩形就用算的,不必猜。
+        """
+        picker = QComboBox(self._analysis_page)
+        picker.setMinimumWidth(130)
+        picker.addItem("自動偵測", None)
+        for preset in CANVAS_PRESETS:
+            picker.addItem(preset.label, preset.key)
+
+        if self._canvas is None or not self._canvas.can_pick_canvas():
+            picker.setEnabled(False)
+            picker.setToolTip(
+                "這個模式下畫布尺寸不是 MIA 決定的(重播、--no-vision、或連到別人的瀏覽器)"
+            )
+        else:
+            _select_data(picker, self._canvas.canvas())
+            picker.setToolTip(
+                "選一個尺寸,下次「開始遊戲」就會把瀏覽器視窗調成那樣,"
+                "畫面辨識不必再猜牌桌邊界"
+            )
+            picker.currentIndexChanged.connect(self._on_canvas_picked)
+
+        self._canvas_picker = picker
+        self._analysis_page.add_setting("畫布", picker)
+
     def _build_settings(self) -> QWidget:
         """全域設定頁。
 
@@ -283,8 +361,80 @@ class PanelWindow(QMainWindow):
         hint.setStyleSheet("color: palette(mid); font-size: 11px;")
         layout.addWidget(hint)
 
+        layout.addWidget(_rule(page))
+        layout.addWidget(_caption("Overlay", page))
+        self._build_overlay_settings(page, layout)
+
         layout.addStretch(1)
         return page
+
+    def _build_overlay_settings(self, page: QWidget, layout: QVBoxLayout) -> None:
+        """Overlay 的三個勾選。
+
+        **為什麼展開與鎖定的開關在這裡,而不在 Overlay 上。** Overlay 鎖定之後
+        對滑鼠是透明的 —— 擺在它自己身上的按鈕會變成死的,而使用者看得到卻按不到
+        的按鈕比沒有按鈕糟。所以控制項一律留在側邊視窗這一側。
+
+        Overlay 也**不進 features.py 的開關體系**:那兩個開關管的是「要不要花
+        130MB 載權重 / 要不要持續擷取螢幕」,而這裡只是換一種畫法,沒有任何
+        執行成本。混在一起會讓「開了但沒東西跑」變得難解釋。
+        """
+        overlay = self._overlay
+        self._overlay_shown = QCheckBox("在遊戲上顯示 Overlay", page)
+        self._overlay_expanded = QCheckBox("Overlay 顯示候選 Q 值", page)
+        self._overlay_locked = QCheckBox("鎖定位置(滑鼠可穿透)", page)
+        boxes = (self._overlay_shown, self._overlay_expanded, self._overlay_locked)
+
+        if overlay is None:
+            for box in boxes:
+                box.setEnabled(False)
+                box.setToolTip("這個模式沒有 Overlay")
+                layout.addWidget(box)
+            return
+
+        # 先把初始值設好再接訊號 —— 反過來的話 setChecked 會立刻觸發一次
+        # handler,而那一次會把「上次記住的狀態」當成使用者剛剛的操作存回去
+        self._overlay_shown.setChecked(overlay.shown)
+        self._overlay_expanded.setChecked(overlay.expanded)
+        self._overlay_locked.setChecked(overlay.locked)
+        self._overlay_shown.toggled.connect(self._on_overlay_shown)
+        self._overlay_expanded.toggled.connect(overlay.set_expanded)
+        self._overlay_locked.toggled.connect(overlay.set_locked)
+        for box in boxes:
+            layout.addWidget(box)
+
+        hint = QLabel(
+            "沒鎖定時 Overlay 可以直接拖曳,鎖定之後點擊會穿過去給遊戲。"
+            "位置會記住,下次啟動回到同一個地方。",
+            page,
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: palette(mid); font-size: 11px;")
+        layout.addWidget(hint)
+        self._sync_overlay_boxes(overlay.shown)
+
+    def _on_overlay_shown(self, on: bool) -> None:
+        assert self._overlay is not None
+        self._overlay.set_shown(on)
+        self._sync_overlay_boxes(on)
+
+    def _sync_overlay_boxes(self, shown: bool) -> None:
+        """收起來的時候「展開」與「鎖定」沒有意義,停用但保留勾選狀態。
+
+        不清掉勾選:那是使用者的偏好,下次顯示時該照舊。
+        """
+        self._overlay_expanded.setEnabled(shown)
+        self._overlay_locked.setEnabled(shown)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """關掉側邊視窗時把 Overlay 一起收掉。
+
+        少了這一段,顯示中的 Overlay 會是「最後一個還開著的視窗」,Qt 於是
+        不結束程式 —— 畫面上只剩一個關不掉的浮動 HUD,而終端機看起來一切正常。
+        """
+        if self._overlay is not None:
+            self._overlay.close()
+        super().closeEvent(event)
 
     # ------------------------------------------------------------------ 事件
 
@@ -299,6 +449,55 @@ class PanelWindow(QMainWindow):
         actual = self._switchboard.is_enabled(key)
         if actual != on:
             self._switches[key].set_initial(actual)
+        self.apply(self._viewmodel.state)
+
+    def _on_start_game(self) -> None:
+        """按下「開始遊戲」。
+
+        按完立刻重畫一次,不等 ViewModel 的下一次通知 —— 開瀏覽器要好幾秒,
+        中間按鈕若還停在可按的樣子,使用者會再按一次。狀態列上那句
+        「還沒開始」也要跟著換掉。
+        """
+        assert self._launcher is not None
+        self._launcher.start_game()
+        self.apply(self._viewmodel.state)
+
+    def _sync_start_button(self) -> None:
+        """按鈕要說現在的實情。
+
+        三種狀態:沒有可開的遊戲(重播 / ``--tail`` / ``--no-packets``)、
+        可以開、已經在跑。**已經在跑時停用而不是換成「結束遊戲」** —— 關掉
+        瀏覽器等於把那一場丟掉,不該是一個手滑就會按到的按鈕。
+        """
+        launcher = self._launcher
+        if launcher is None or not launcher.can_start_game():
+            self._start_button.setText(START_GAME)
+            self._start_button.setEnabled(False)
+            self._start_button.setToolTip(
+                "重播與示範模式不需要開遊戲"
+                if launcher is None
+                else "啟動參數裡沒有要 MIA 開遊戲(--tail / --no-packets)"
+            )
+            return
+        running = launcher.game_running()
+        self._start_button.setText("遊戲進行中" if running else START_GAME)
+        self._start_button.setEnabled(not running)
+        self._start_button.setToolTip(
+            "瀏覽器已經開著 —— 關掉它就會結束這一場"
+            if running
+            else "開一個受控的瀏覽器並開始錄封包"
+        )
+
+    def _on_canvas_picked(self, index: int) -> None:
+        """改選畫布尺寸。
+
+        瀏覽器**不會當場變大小** —— 尺寸是開視窗時下的命令。所以對局進行中改
+        的話要講清楚要按下一次「開始遊戲」才生效,否則使用者會等一個不會發生
+        的事。畫面辨識則是立刻重開,它會自己說現在對不對得上。
+        """
+        if self._canvas is None:
+            return
+        self._canvas.set_canvas(self._canvas_picker.itemData(index))
         self.apply(self._viewmodel.state)
 
     def _on_engine_picked(self, index: int) -> None:
@@ -332,22 +531,26 @@ class PanelWindow(QMainWindow):
         一瞬間的舊資料。更新一次的成本是十幾個 label,遠低於那個閃動的代價。
         """
         self._sync_engine_picker(state)
+        self._sync_start_button()
         self._advice.update_from(state, enabled=self._is_on(features.ADVICE))
         self._analysis.update_from(state, enabled=self._is_on(features.VISION))
         self._notice.setText(self._status_text(state))
 
     def _is_on(self, key: str) -> bool:
-        """這個功能現在該不該顯示內容。
-
-        沒有 switchboard(重播、示範)時一律視為開著 —— 那些模式裡是命令列
-        決定跑哪一條路,而它確實在跑。
-        """
-        if self._switchboard is None:
-            return True
-        return self._switchboard.is_enabled(key)
+        return is_on(self._switchboard, key)
 
     def _status_text(self, state: ViewState) -> str:
-        """狀態列。兩個功能都關著時要**主動說**,不然畫面上只有一片空白。"""
+        """狀態列。什麼都還沒開始時要**主動說**,不然畫面上只有一片空白。
+
+        順序是刻意的:遊戲還沒開的時候,先講那個。打開了功能卻沒有遊戲可看,
+        使用者會盯著一片空白等 —— 而該做的事其實是按左下角那顆按鈕。
+        """
+        if (
+            self._launcher is not None
+            and self._launcher.can_start_game()
+            and not self._launcher.game_running()
+        ):
+            return f"還沒開始 —— 按左下角的「{START_GAME}」開啟遊戲"
         if self._switchboard is not None and not any(
             self._switchboard.is_enabled(k) for k in (features.ADVICE, features.VISION)
         ):
@@ -383,6 +586,23 @@ def _status_text(state: ViewState) -> str:
         engines = "、".join(e.name for e in state.engines)
         return f"引擎:{engines}" if engines else "等待資料…"
     return "　|　".join(parts)
+
+
+def _select_data(picker: QComboBox, data: object) -> None:
+    """把選單切到 ``itemData`` 等於 ``data`` 的那一項。找不到就留在原地。
+
+    用 ``findData`` 而不是記索引:選項順序是 :data:`CANVAS_PRESETS` 決定的,
+    日後加一個尺寸就會讓寫死的索引指到別的地方。
+    """
+    index = picker.findData(data)
+    if index >= 0:
+        picker.setCurrentIndex(index)
+
+
+def _caption(text: str, parent: QWidget) -> QLabel:
+    label = QLabel(text, parent)
+    label.setStyleSheet("color: palette(mid); font-size: 11px;")
+    return label
 
 
 def _rule(parent: QWidget, *, vertical: bool = False) -> QFrame:

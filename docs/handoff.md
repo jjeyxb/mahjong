@@ -1,6 +1,6 @@
 # 交接文件 — MIA
 
-給接手這個專案的下一個對話 / 下一個人。**最後更新 2026-07-30,commit `4eac468`。**
+給接手這個專案的下一個對話 / 下一個人。**最後更新 2026-08-01(M7 Overlay + 開始遊戲按鈕)。**
 
 這份文件只放「接手需要知道」的東西:現況、跑法、已經決定過不要再討論的事、
 以及踩過的坑。**決策的完整理由在 [decisions.md](decisions.md)**,不在這裡重抄。
@@ -22,7 +22,10 @@ macOS 已實機驗證,Windows 程式寫好但沒機器測過。
 
 解耦是刻意的:功能 1 只吃畫面、功能 2 只吃封包,任何一個做不完不會擋住其他。
 
-**現在可以真的拿來用**(`--live`)。805 個測試、ruff + mypy 乾淨。
+**兩種呈現方式:** 側邊視窗(M6)與 Overlay(M7,疊在遊戲上的精簡 HUD)。
+兩者訂閱同一個 `ViewModel`,顯示邏輯不重複實作。
+
+**現在可以真的拿來用**(`--live`)。896 個測試、ruff + mypy 乾淨。
 
 ---
 
@@ -31,7 +34,7 @@ macOS 已實機驗證,Windows 程式寫好但沒機器測過。
 ```bash
 cd /Users/caoyunjie/project/mahjong
 
-# 實際使用:瀏覽器會自己開,登入後撥開視窗上的開關
+# 實際使用:按左下角「開始遊戲」開瀏覽器,登入後撥開視窗上的開關
 .venv/bin/python tools/ui.py --live --mortal models/mortal_298k.pth \
     --user-data-dir data/live/chrome-profile
 
@@ -71,6 +74,7 @@ cd /Users/caoyunjie/project/mahjong
 │ 主程式 (Python 3.14 · .venv)              │
 │ capture → vision → analysis → ui          │
 │ groundtruth → mjai → engine → ui          │
+│ 「開始遊戲」按鈕開下面那個子程序          │
 └───────┬──────────────────────┬───────────┘
         │ JSON-lines / stdio   │ 錄影檔 (jsonl)
         ▼                      ▼
@@ -84,9 +88,9 @@ cd /Users/caoyunjie/project/mahjong
 ### 即時模式的三條執行緒
 
 ```
-擷取執行緒(15 fps)──┐
-                      ├─▶ UpdateBus ──▶ pump()(UI 執行緒)──▶ ViewModel ──▶ 視窗
-封包執行緒(事件驅動)─┘
+擷取執行緒(15 fps)──┐                                              ┌─▶ 側邊視窗
+                      ├─▶ UpdateBus ──▶ pump()(UI 執行緒)──▶ ViewModel
+封包執行緒(事件驅動)─┘                                              └─▶ Overlay
 ```
 
 `pump()` 是**唯一**碰 ViewModel 的地方,只在 UI 執行緒跑。這件事必須成立:
@@ -110,11 +114,18 @@ Qt widget 只能在建立它的執行緒上動,而 ViewModel 自己不是執行�
 | **子程序不是為了授權隔離** | 是因為 libriichi 裝不進 3.14。因果方向不要寫反(README 有專章) |
 | **郵箱而不是佇列** | UI 卡住要掉幀,不要恢復後補播已經不成立的局面 |
 | **手牌與建議是兩個 slot** | 合併的話別人打牌的事件會蓋掉還該顯示的建議 |
-| **擷取子程序不綁在開關上** | 綁上去關掉再打開會殺掉瀏覽器,整場對局就沒了 |
+| **擷取子程序不綁在功能開關上** | 綁上去關掉再打開會殺掉瀏覽器,整場對局就沒了。它綁在「開始遊戲」按鈕上 |
+| **瀏覽器等按鈕,不自己開** | 與兩個功能預設關閉同一個原則;而且原本瀏覽器一關就沒辦法再開一場,只能重開 MIA |
+| **每按一次「開始遊戲」換一個錄影檔** | 錄影檔是 append 開的、封包是從檔頭讀的 —— 兩場疊在一起會拿著結束的牌局給建議**而且不報錯** |
+| **按鈕沒有「結束遊戲」** | 關瀏覽器等於丟掉那一場,不該是手滑按得到的東西 |
 | **兩個功能預設關閉** | 開它們會載 130MB 權重 / 開始持續擷取螢幕,該是明確動作 |
 | **peek 用「砍掉重練」復原,不做記帳式最佳化** | 記帳要猜使用者下一步,猜錯是整場拿錯局面**而且不報錯** |
 | **從錄影檔頭讀而不是從尾巴接** | 座位、寶牌、誰立直了都只在先前的事件裡 |
 | **PySide6 而非 PyQt6** | 原因(LGPL)已隨 AGPL 決定失效,但沒有換的理由 |
+| **Overlay 手動拖曳,不自動跟隨遊戲視窗** | 跟隨要一條輪詢 timer,而且 macOS 取視窗標題要螢幕錄製權限 —— 只用 AI 建議的人不該為了 HUD 定位被逼著給 |
+| **Overlay 的三個控制項都在側邊視窗** | 它鎖定後對滑鼠透明,擺在自己身上的按鈕會變成看得到卻按不到 |
+| **Overlay 不進 features.py 的開關體系** | 那兩個開關管的是 130MB 權重與持續擷取螢幕;Overlay 只是換一種畫法,沒有那個成本 |
+| **視窗位置存 `data/ui_state.json` 而非 config/** | `save_config()` 寫的是整份快照,會把當下所有預設值一起寫死,日後改預設不生效**而且沒有症狀** |
 
 ---
 
@@ -205,6 +216,15 @@ Qt widget 只能在建立它的執行緒上動,而 ViewModel 自己不是執行�
 * **`isVisible()` 對沒 show 過的視窗的子元件一律回 False。** 測試要用 `isHidden()`。
 * **QPixmap 沒有 QApplication 會 segfault**,不是拋例外。
 * **`lru_cache` 不要掛在方法上** —— 它會持有 `self`。
+* **`WA_TransparentForMouseEvents` 會偷偷改 window flag。** 設 True 時 Qt 自己把
+  `WindowTransparentForInput` 加進 flag,設回 False **不會**收回去 —— 症狀是
+  Overlay 鎖過一次就再也解不開,而「拖不動」完全不像是 flag 的事。只動
+  window flag 就好,attribute 是多餘的。
+* **`Qt.Tool` 在 macOS 上會在程式失去焦點時自動隱藏** —— 而 Overlay 的正常
+  使用情境正是「焦點在遊戲上」。要 `WA_MacAlwaysShowToolWindow`。
+* **offscreen 平台不支援 `propagateSizeHints()`** —— 用 `QLayout.SetFixedSize`
+  自動縮放的視窗,在無頭截圖裡尺寸可能不會跟著內容變。那是平台的事,不是
+  版面壞了。
 
 ### 引擎 / 協定
 
@@ -243,9 +263,11 @@ Qt widget 只能在建立它的執行緒上動,而 ViewModel 自己不是執行�
 | 7 | 沒有公開 GRP 權重 | 擋住功能 3 | 須先跑 `train_grp.py` |
 | 8 | 受入枚數略微高估 | 不知副露內容導致 | 次要,可從封包補 |
 | 9 | 單一 session 內視窗縮放 | manifest 只存一個 `table_rect` | 要改成存進每個 `FrameRecord` |
-| 10 | UI 皮膚切換 | 要重載跨 widget 的 `TileIcons` | 未實作 |
+| 10 | UI 皮膚切換 | 要重載跨 widget 的 `TileIcons` | 未實作。Overlay 又多一個 `TileIcons` 持有者 |
+| 11 | **Overlay 實機疊在對局上** | 版面與開關都測過,但沒真的疊上去打過 | 要驗兩件事:鎖定後點擊真的穿到遊戲、焦點在瀏覽器時不會被 macOS 藏起來 |
+| 12 | Overlay 自動跟隨遊戲視窗 | 現在是手動拖 | 刻意留到之後,理由見 decisions.md 第十四節 |
 
-**沒開始也沒被授權開始的:** M7 Overlay、功能 3 離線訓練。
+**沒開始也沒被授權開始的:** 功能 3 離線訓練。
 
 ---
 
@@ -273,8 +295,11 @@ src/mia/
 ├── analysis/       向聽 / 進張 / 打牌建議(mahjong 套件)
 ├── mjai/           events / tiles / handstate(HandTracker)
 ├── engine/         base / subprocess_engine / mortal / dummy / multiplex / actions
-├── live/           bus / vision / packets / runtime / source  ← 即時模式
-├── ui/             viewmodel + panel/ widgets/(tiles, advice, analysis, toggle)
+├── live/           bus / vision / packets / runtime / source(開遊戲)← 即時模式
+├── ui/             viewmodel(顯示什麼,不碰 Qt)+ state(記住的位置)
+│                   + switchboard(開關的 Protocol)
+│                   + panel/(側邊視窗) overlay/(疊在遊戲上的 HUD)
+│                   + widgets/(tiles, advice, analysis, toggle)
 ├── groundtruth/    cdp / capture_addon / dump / liqi / schema / to_mjai / stream
 ├── eval/           align / report(準確率評測,素材待補)
 └── recorder/       錄製資料集、離線回放
@@ -283,7 +308,7 @@ tools/  ui.py(側邊視窗)  gt.py(封包擷取/檢視)  advise.py(離線重播�
         evaluate.py(準確率)  record.py(畫面錄製)  roi_annotate.py  fetch_tiles.py
 
 docs/   decisions.md  ← 方向轉折與全部決策理由(最重要)
-        live.md       ← 即時模式操作手冊 + 狀態列對照表
+        live.md       ← 即時模式操作手冊 + 狀態列對照表 + Overlay 怎麼用
         recording.md  ← 錄製資料集的檢查清單
         handoff.md    ← 這一份
 ```
