@@ -35,8 +35,8 @@ macOS 已實機驗證,Windows 程式寫好但沒機器測過。
 cd /Users/caoyunjie/project/mahjong
 
 # 實際使用:按左下角「開始遊戲」開瀏覽器,登入後撥開視窗上的開關
-.venv/bin/python tools/ui.py --live --mortal models/mortal_298k.pth \
-    --user-data-dir data/live/chrome-profile
+# 登入狀態預設留在 data/live/chrome-profile,不必再加旗標
+.venv/bin/python tools/ui.py --live --mortal models/mortal_298k.pth
 
 # 不開遊戲就能看 UI(重播真實對局,引擎真的在跑)
 .venv/bin/python tools/ui.py --replay tests/fixtures/real_game_full.jsonl \

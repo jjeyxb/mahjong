@@ -54,6 +54,15 @@ from mia.ui.panel.window import PanelWindow, present
 from mia.ui.state import UiState
 from mia.ui.viewmodel import ViewModel
 from mia.utils.logging import setup_logging
+from mia.utils.paths import DATA_DIR
+
+#: 瀏覽器設定檔的預設位置 —— **有預設值是刻意的**。
+#:
+#: 這個旗標本來沒有預設,要自己在命令列補上。結果是「忘了加就每次都要重新
+#: 登入」,而那個退化沒有任何症狀可循:程式一切正常,只是雀魂不認得你。
+#: 實際使用時沒有人想要一個用完就丟的設定檔,所以預設值該是「留著」,
+#: 要乾淨的那一次用 --fresh-profile 明講。
+DEFAULT_PROFILE = DATA_DIR / "live" / "chrome-profile"
 
 DEMO_HAND = ("1m", "1m", "2m", "3s", "4m", "5pr", "6m", "8p", "8s", "8s", "9m", "E", "P")
 
@@ -176,7 +185,6 @@ def build_live_runtime(
     from mia.live import PacketWorker, UpdateBus, VisionWorker, capture_command
     from mia.live.runtime import Feature, Worker
     from mia.live.source import CaptureLauncher
-    from mia.utils.paths import DATA_DIR
     from mia.vision.tiles.classify import DEFAULT_SKIN
 
     bus = UpdateBus()
@@ -196,7 +204,7 @@ def build_live_runtime(
                     dump,
                     mode=args.capture_mode,
                     url=args.url,
-                    user_data_dir=args.user_data_dir,
+                    user_data_dir=None if args.fresh_profile else args.user_data_dir,
                     connect=args.connect,
                     # 每次開瀏覽器才讀:使用者可能在上一場結束後才改選單
                     canvas=canvas.key if canvas else None,
@@ -373,7 +381,16 @@ def main(argv: list[str] | None = None) -> int:
         help="封包擷取方式,預設 cdp(零前置設定)",
     )
     live.add_argument("--url", help="要開啟的網址,預設網頁版雀魂")
-    live.add_argument("--user-data-dir", help="持久化的瀏覽器設定檔目錄,可保留登入狀態")
+    live.add_argument(
+        "--user-data-dir",
+        default=str(DEFAULT_PROFILE),
+        help="瀏覽器設定檔目錄,登入狀態留在這裡(預設 data/live/chrome-profile)",
+    )
+    live.add_argument(
+        "--fresh-profile",
+        action="store_true",
+        help="每次都用全新的瀏覽器設定檔(不保留登入)。測第一次登入流程時才需要",
+    )
     live.add_argument("--connect", metavar="ENDPOINT", help="連到已在跑的瀏覽器")
     args = parser.parse_args(argv)
     args.seat = 0
