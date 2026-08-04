@@ -47,7 +47,7 @@ from PySide6.QtWidgets import (
 )
 
 from mia import features
-from mia.analysis import HandAnalysis
+from mia.analysis import Ukeire
 from mia.engine.actions import Candidate
 from mia.ui.state import UiState
 from mia.ui.switchboard import Switchboard, is_on
@@ -430,7 +430,7 @@ class OverlayWindow(QWidget):
             self._show_advice(None, verb="")
 
         self._show_shanten(_shanten_line(state))
-        self._show_ukeire(state.analysis)
+        self._show_ukeire(_effective_ukeire(state))
         self._show_candidates(engine if self.expanded else None)
 
     def _show_advice(
@@ -478,13 +478,9 @@ class OverlayWindow(QWidget):
         for label in self._own[len(own) :]:
             label.setVisible(False)
 
-    def _show_ukeire(self, analysis: HandAnalysis | None) -> None:
-        """畫進張的牌面。
-
-        剛摸完的手牌 ``ukeire`` 一律是空的(要先決定切哪張),那時候整排藏起來
-        —— 留著上一巡的進張會讓人照著一個已經不成立的答案打,那比空白糟。
-        """
-        tiles = analysis.ukeire if analysis is not None else ()
+    def _show_ukeire(self, tiles: tuple[Ukeire, ...]) -> None:
+        """畫進張的牌面。空的話整排藏起來 —— 留著上一巡的殘影會讓人照著一個
+        已經不成立的答案打,那比空白糟。"""
         shown = tiles[:_MAX_UKEIRE_TILES]
         for label, ukeire in zip(self._ukeire, shown, strict=False):
             label.set_tile(ukeire.tile)
@@ -524,19 +520,52 @@ class OverlayWindow(QWidget):
         self._candidates.setVisible(bool(candidates))
 
 
+def _effective_ukeire(state: ViewState) -> tuple[Ukeire, ...]:
+    """這一刻該畫哪些進張。
+
+    **摸完牌的那一瞬間 ``analysis.ukeire`` 依定義是空的** —— 手上 14 張,
+    「再摸一張會怎樣」沒有意義,要先決定切哪張(見
+    :attr:`~mia.analysis.shanten.HandAnalysis.needs_discard`)。
+
+    而那正是最需要資訊的時候。原本的寫法在那一刻把整排牌面藏起來,只剩一個
+    向聽數 —— 使用者回報的就是這個:「摸到牌的時候 overlay 顯示信息會消失」。
+
+    所以這種時候改畫**切掉最優那張之後**的進張。是切哪一張寫在
+    :func:`_shanten_line` 的括號裡,不然「進張 6」會是一個沒有前提的數字。
+    """
+    analysis = state.analysis
+    if analysis is None or analysis.is_agari:
+        # 和了的手牌 ukeire 也是空的,但那時候該做的事是**和牌**,不是切一張。
+        # 少了這個判斷,一手 123m456m789m1p1p234p 會顯示「和了(切1m)進張 10」。
+        return ()
+    if analysis.ukeire:
+        return analysis.ukeire
+    best = state.best_discard
+    return best.ukeire if best else ()
+
+
 def _shanten_line(state: ViewState) -> str:
-    """右半邊那一句:向聽 + 進張。算不出來就是空的。
+    """右半邊那一句:向聽 +(切哪張)+ 進張。算不出來就是空的。
 
     進張枚數是**估計值** —— 只扣掉自己手上看得到的,牌河與副露不在功能 1 的
     辨識範圍內。Overlay 沒有空間寫這句話,所以只寫「進張」不寫「剩餘」,
     完整的說明在側邊視窗的向聽分析頁。
+
+    要切哪張是寫成**括號裡的小字**而不是像左半邊那樣的「切 + 牌面」:左邊那個
+    是 Mortal 的建議,這邊是純速度算出來的,兩者常常不一樣。做成同樣的份量會
+    變成畫面上有兩個平起平坐的「切某張」而沒有任何說明哪個是哪個。
     """
     analysis = state.analysis
     if analysis is None:
         return ""
     text = shanten_text(analysis.shanten)
-    if analysis.total_ukeire:
-        text += f"　進張 {analysis.total_ukeire}"
+    ukeire = _effective_ukeire(state)
+    best = state.best_discard
+    if ukeire and not analysis.ukeire and best is not None:
+        text += f"(切{best.tile})"
+    total = sum(u.count for u in ukeire)
+    if total:
+        text += f"　進張 {total}"
     if state.hand_conflict:
         # 兩個來源對不上本身就是使用者該知道的事,而 Overlay 沒有狀態列
         text += "　⚠"
