@@ -53,7 +53,7 @@ from dataclasses import dataclass
 
 from mia.utils.geometry import Rect, Size
 
-__all__ = ["PRESETS", "Canvas", "CanvasChoice", "CanvasMismatchError"]
+__all__ = ["PRESETS", "Canvas", "CanvasChoice", "CanvasMismatchError", "best_fit"]
 
 #: 擷取影像寬度與畫布寬度容許差這麼多像素。
 #:
@@ -175,6 +175,33 @@ PRESETS: tuple[Canvas, ...] = (
     Canvas(1920, 1080),
     Canvas(2560, 1440),
 )
+
+
+#: 挑預設尺寸時,畫布上方要留給瀏覽器介面的邏輯像素。
+#:
+#: 實測 macOS Chrome for Testing 是 87(分頁列 + 網址列)。留 140 是給書籤列
+#: 與 Windows 的視窗標題列 —— 寧可挑小一號也不要挑一個瀏覽器裝不下的。
+_CHROME_ALLOWANCE = 140
+
+
+def best_fit(width: int, height: int) -> Canvas | None:
+    """在這個大小的桌面上放得下的**最大**畫布。全都放不下時回 ``None``。
+
+    Args:
+        width: 可用桌面寬(邏輯像素)。
+        height: 可用桌面高(邏輯像素),已扣掉選單列與 Dock。
+
+    Note:
+        這是「軟體自己決定固定尺寸」那條路的預設值。挑最大的是因為畫布越大
+        牌面像素越多,模板比對就越穩;而放不下的尺寸瀏覽器根本不會照做
+        —— 那時候 :meth:`Canvas.table_rect` 會說對不上,不是安靜地錯。
+    """
+    fits = [
+        c
+        for c in PRESETS
+        if c.width <= width and c.height + _CHROME_ALLOWANCE <= height
+    ]
+    return max(fits, key=lambda c: c.width) if fits else None
 
 
 class CanvasChoice:

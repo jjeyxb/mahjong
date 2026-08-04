@@ -44,7 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
-from mia.calibration.canvas import Canvas, CanvasChoice
+from mia.calibration.canvas import Canvas, CanvasChoice, best_fit
 from mia.engine import AIEngine, DummyEngine, EngineGroup
 from mia.live.runtime import LiveRuntime
 from mia.mjai import MjaiEvent
@@ -53,7 +53,7 @@ from mia.ui.overlay.window import OverlayWindow
 from mia.ui.panel.window import PanelWindow, present
 from mia.ui.state import UiState
 from mia.ui.viewmodel import ViewModel
-from mia.utils.logging import setup_logging
+from mia.utils.logging import logger, setup_logging
 from mia.utils.paths import DATA_DIR
 
 #: 瀏覽器設定檔的預設位置 —— **有預設值是刻意的**。
@@ -165,6 +165,8 @@ class _RememberedCanvas:
     def set_canvas(self, key: str | None) -> None:
         self._runtime.set_canvas(key)
         self._state.canvas = key
+        # 使用者自己動過了 —— 從此不再由程式挑,即使他選的是「自動偵測」
+        self._state.canvas_chosen = True
         self._state.save()
 
 
@@ -351,6 +353,36 @@ def _quit_on_signals(app: QApplication) -> None:
     signal.signal(signal.SIGTERM, quit_app)
 
 
+def _default_canvas(app: QApplication, state: UiState) -> str | None:
+    """第一次啟動時**由程式決定**一個固定畫布尺寸。
+
+    自動偵測(剝除啟發式)一直是預設值,而它會在某些視窗尺寸下安靜地鎖進一個
+    偏掉的矩形(見 :mod:`mia.calibration.canvas`)。穩的那條路不該要使用者自己
+    去選單裡找 —— 預設就該是固定尺寸,自動偵測才是例外。
+
+    挑螢幕放得下的最大的一個:畫布越大牌面像素越多,模板比對越穩。
+
+    使用者動過選單之後(``canvas_chosen``)就完全不管了,即使他選的是自動偵測
+    —— 那是他明確要的。
+    """
+    if state.canvas_chosen:
+        return state.canvas
+    screen = app.primaryScreen()
+    if screen is None:  # 無頭環境
+        return state.canvas
+    available = screen.availableGeometry()
+    canvas = best_fit(available.width(), available.height())
+    if canvas is None:
+        logger.info("桌面 {}x{} 放不下任何預設畫布,改用自動偵測",
+                    available.width(), available.height())
+        return state.canvas
+    logger.info("畫布尺寸自動選定 {}(桌面 {}x{})",
+                canvas.label, available.width(), available.height())
+    state.canvas = canvas.key
+    state.save()
+    return canvas.key
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -406,7 +438,7 @@ def main(argv: list[str] | None = None) -> int:
     # 狀態要在 runtime **之前**讀:上次選的畫布尺寸得跟著進去,不然第一次按
     # 「開始遊戲」會用自動偵測開,使用者要再改一次選單才生效。
     ui_state = UiState.load()
-    canvas = CanvasChoice(Canvas.parse(ui_state.canvas))
+    canvas = CanvasChoice(Canvas.parse(_default_canvas(app, ui_state)))
 
     # runtime 必須在視窗**之前**建好:視窗上的開關要接到它。反過來的話開關
     # 只能先畫成停用,之後再想辦法補接 —— 而那正是最容易忘記做的一步。
