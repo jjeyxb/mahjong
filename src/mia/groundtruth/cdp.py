@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any
 
 from mia.calibration.canvas import Canvas
 from mia.groundtruth.dump import DumpWriter
+from mia.live.control import ControlFile
 from mia.utils.logging import logger
 
 if TYPE_CHECKING:
@@ -101,6 +102,7 @@ class CdpCapture:
         headless: bool = False,
         user_data_dir: str | None = None,
         canvas: Canvas | None = None,
+        control: ControlFile | None = None,
         stop_check: Callable[[], bool] | None = None,
     ) -> CdpStats:
         """啟動一個受控的 Chromium 並開啟雀魂。
@@ -111,6 +113,9 @@ class CdpCapture:
             canvas: 把視窗調到讓**頁面 viewport 剛好等於**這個尺寸。
                 這是 MIA 這一端能為畫面辨識做的最有效的一件事,見
                 :mod:`mia.calibration.canvas`。
+            control: 主程式改設定時會寫這個檔案。**只有這個行程握著瀏覽器**,
+                所以「使用者在 UI 上換了畫布尺寸」只能靠它送進來,見
+                :mod:`mia.live.control`。
         """
         sync_playwright = _import_playwright()
         with sync_playwright() as playwright:
@@ -138,7 +143,7 @@ class CdpCapture:
                 _fit_canvas(page, canvas)
             logger.info("請在瀏覽器視窗中登入並開始對局。按 Ctrl-C 結束錄製。")
 
-            self._wait(context, duration, stop_check)
+            self._wait(context, duration, stop_check, control=control, page=page)
             return self.stats
 
     def run_connected(
@@ -229,8 +234,15 @@ class CdpCapture:
         context: Any,
         duration: float | None,
         stop_check: Callable[[], bool] | None,
+        *,
+        control: ControlFile | None = None,
+        page: Page | None = None,
     ) -> None:
-        """撐住主執行緒直到時間到、使用者中斷,或瀏覽器被關掉。"""
+        """撐住主執行緒直到時間到、使用者中斷,或瀏覽器被關掉。
+
+        順便輪詢控制檔 —— 這個迴圈本來就每 250 ms 醒一次,搭順風車不必多開
+        執行緒(而多一條執行緒去碰 Playwright 的同步 API 是不合法的)。
+        """
         start = time.monotonic()
         try:
             while True:
@@ -240,6 +252,8 @@ class CdpCapture:
                 if stop_check is not None and stop_check():
                     logger.info("收到停止訊號")
                     break
+                if control is not None and page is not None:
+                    self._apply_control(control, page)
                 try:
                     # 用 Playwright 自己的等待來推進事件迴圈,frame 事件才會送達。
                     context.pages[0].wait_for_timeout(250)
@@ -250,6 +264,23 @@ class CdpCapture:
             logger.info("使用者中斷")
         finally:
             self.stats.duration = time.monotonic() - start
+
+    @staticmethod
+    def _apply_control(control: ControlFile, page: Page) -> None:
+        """套用主程式送來的新設定。**吞掉所有例外** —— 這條通道壞掉的後果
+        只是視窗沒跟著調整,不該讓正在錄的那一場掛掉。"""
+        command = control.poll()
+        if command is None:
+            return
+        canvas = Canvas.parse(command.get("canvas"))
+        if canvas is None:
+            logger.info("收到指令但沒有可用的畫布尺寸,視窗維持原樣")
+            return
+        logger.info("主程式要求把畫布調成 {}", canvas.label)
+        try:
+            _fit_canvas(page, canvas)
+        except Exception as exc:  # noqa: BLE001 - 視窗可能剛好被關掉
+            logger.warning("調整視窗失敗:{}", exc)
 
 
 #: 調整視窗最多試幾次。

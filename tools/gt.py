@@ -74,6 +74,7 @@ def cmd_cdp(args: argparse.Namespace) -> int:
         CdpCapture,
         PlaywrightMissingError,
     )
+    from mia.live.control import ControlFile
 
     canvas = Canvas.parse(args.canvas)
     if args.canvas and canvas is None:
@@ -97,6 +98,7 @@ def cmd_cdp(args: argparse.Namespace) -> int:
                     headless=args.headless,
                     user_data_dir=args.user_data_dir,
                     canvas=canvas,
+                    control=ControlFile(args.control) if args.control else None,
                 )
     except PlaywrightMissingError as exc:
         print(f"\n{exc}", file=sys.stderr)
@@ -264,6 +266,9 @@ def main(argv: list[str] | None = None) -> int:
     p_cdp.add_argument("--duration", type=float, metavar="SEC", help="錄製秒數")
     p_cdp.add_argument("--headless", action="store_true", help="無頭模式(通常不要,你得看畫面打牌)")
     p_cdp.add_argument("--user-data-dir", help="持久化設定檔目錄,可保留登入狀態")
+    p_cdp.add_argument("--control", type=Path, metavar="FILE",
+                       help="主程式用來即時改設定的 JSON 檔(見 mia.live.control)。"
+                            "由 tools/ui.py 自動帶上,手動執行時不需要")
     p_cdp.add_argument("--canvas", metavar="WxH",
                        help="把視窗調到讓頁面 viewport 剛好是這個尺寸,例如 1920x1080。"
                             "畫面辨識就不必再猜牌桌邊界在哪")

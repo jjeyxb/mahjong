@@ -218,10 +218,11 @@ class LiveRuntime:
     def set_canvas(self, key: str | None) -> None:
         """改選畫布尺寸。
 
-        **畫面辨識當場重開**(它的校正器是建構時吃設定的),但**瀏覽器不會跟著
-        變大小** —— 尺寸是開視窗時下的命令,要下一次「開始遊戲」才生效。所以
-        改在對局中途的話,CV 會先進入「畫布對不上」的狀態,那是正確的:
-        它確實對不上,而說出來遠好過拿著一個偏掉的矩形繼續辨識。
+        兩件事會發生:**瀏覽器當場被調成新尺寸**(透過控制檔送給擷取子程序),
+        以及**畫面辨識重開**(它的校正器是建構時吃設定的)。
+
+        兩者之間有最多一個輪詢週期(250 ms)的空窗,那段時間 CV 會說「畫布
+        對不上」—— 那是實話,而且它會自己好。
         """
         if self._canvas is None:
             logger.warning("這個模式不支援選畫布尺寸,忽略")
@@ -229,8 +230,22 @@ class LiveRuntime:
         if not self._canvas.set(key):
             return
         logger.info("畫布尺寸改為 {}", self._canvas)
+        self._push_canvas()
         self._restart(features.VISION)
         self.pump()
+
+    def _push_canvas(self) -> None:
+        """把新尺寸推給正在跑的擷取子程序,讓瀏覽器**當場**跟著改。
+
+        只有那個子程序握著瀏覽器,而它的參數是啟動時用命令列傳的 —— 開下去
+        之後就只剩控制檔這條路(見 :mod:`mia.live.control`)。
+
+        沒有在跑就不必推:下次「開始遊戲」時新尺寸本來就會走命令列過去。
+        """
+        if self._capture is None or not self._capture.running:
+            return
+        assert self._canvas is not None
+        self._capture.control.write(canvas=self._canvas.key)
 
     def _restart(self, key: str) -> None:
         """把一個開著的功能關掉再開。關著的話什麼都不做。"""
