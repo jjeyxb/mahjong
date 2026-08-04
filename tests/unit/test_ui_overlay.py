@@ -225,6 +225,41 @@ class TestUkeireTiles:
         assert len(visible) <= 5
         assert window._ukeire_more.text().startswith("+")  # noqa: SLF001
 
+    def test_drawing_a_tile_does_not_blank_the_overlay(self, overlay) -> None:
+        """迴歸測試:使用者回報「摸到牌的時候 overlay 顯示信息會消失只剩幾向聽」。
+
+        14 張的手牌 ``analysis.ukeire`` **依定義是空的** —— 要先決定切哪張。
+        原本的寫法在那一刻把整排牌面藏起來,而那正是最需要資訊的一瞬間。
+        改成畫「切掉最優那張之後」的進張。
+        """
+        model, window = overlay
+        # tiles 本來就含摸進來那張(HandTracker.tiles 就是這樣),所以是 14 張
+        model.update_packet_hand([*TENPAI, "9s"], drawn="9s")
+        assert shown(window._ukeire[0]), "摸牌之後仍然該看得到進張"  # noqa: SLF001
+
+    def test_it_says_which_tile_that_ukeire_assumes_discarding(self, overlay) -> None:
+        """不說切哪張的話,「進張 6」是一個沒有前提的數字。"""
+        model, window = overlay
+        model.update_packet_hand([*TENPAI, "9s"], drawn="9s")
+        assert "切" in window._shanten.text()  # noqa: SLF001
+
+    def test_a_winning_hand_is_never_told_to_discard(self, overlay) -> None:
+        """和了的手牌 ukeire 也是空的,但那時候該做的事是**和牌**。
+
+        少了這個判斷,123m456m789m1p1p234p 會顯示「和了(切1m)進張 10」。
+        """
+        model, window = overlay
+        model.update_packet_hand([*TENPAI, "4p"], drawn="4p")  # 這一手其實已經和了
+        assert "和了" in window._shanten.text()  # noqa: SLF001
+        assert "切" not in window._shanten.text()  # noqa: SLF001
+        assert not any(shown(label) for label in window._ukeire)  # noqa: SLF001
+
+    def test_a_thirteen_tile_hand_has_no_discard_qualifier(self, overlay) -> None:
+        """還沒摸牌時進張就是進張,沒有「切某張之後」這個前提。"""
+        model, window = overlay
+        model.update_packet_hand(TENPAI)
+        assert "切" not in window._shanten.text()  # noqa: SLF001
+
     def test_a_short_wait_list_has_no_overflow_marker(self, overlay) -> None:
         model, window = overlay
         model.update_packet_hand(TENPAI)
