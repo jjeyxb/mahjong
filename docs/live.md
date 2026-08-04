@@ -138,11 +138,16 @@ python tools/ui.py --live --mortal models/mortal_298k.pth
 
 ### 保留登入狀態
 
-每次都要重新登入很煩。指定一個設定檔目錄就會留著:
+**預設就會留著**,在 `data/live/chrome-profile`。第一次登入之後就不必再登。
+
+這個旗標本來沒有預設值,要自己在命令列補上 —— 結果是「忘了加就每次都要重新
+登入」,而那個退化沒有任何症狀可循:程式一切正常,只是雀魂不認得你。
+
+要換一個位置,或是真的想要一個乾淨的設定檔(測第一次登入流程):
 
 ```bash
-python tools/ui.py --live --mortal models/mortal_298k.pth \
-    --user-data-dir data/live/chrome-profile
+python tools/ui.py --live --user-data-dir /somewhere/else
+python tools/ui.py --live --fresh-profile     # 用完就丟,不留登入
 ```
 
 ### 只跑其中一條路
