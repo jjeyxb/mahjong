@@ -210,6 +210,8 @@ def build_live_runtime(
                     connect=args.connect,
                     # 每次開瀏覽器才讀:使用者可能在上一場結束後才改選單
                     canvas=canvas.key if canvas else None,
+                    # 開下去之後還想改尺寸就只能靠這個檔案
+                    control=dump.parent / "control.json",
                 ),
                 root=DATA_DIR / "live",
             )

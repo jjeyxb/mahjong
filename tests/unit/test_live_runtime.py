@@ -15,6 +15,7 @@ from mia import features
 from mia.calibration.canvas import Canvas, CanvasChoice
 from mia.engine.base import Advice
 from mia.live.bus import Advices, CvHand, PacketHand, UpdateBus, WorkerStatus
+from mia.live.control import ControlFile
 from mia.live.runtime import Feature, LiveRuntime
 from mia.live.source import CaptureLauncher, CaptureProcess, capture_command
 from mia.mjai import Dahai
@@ -387,6 +388,17 @@ class TestCaptureCommand:
         )
         assert "--canvas" not in command
 
+    def test_the_control_file_reaches_the_subprocess(self) -> None:
+        """開下去之後主程式還想改設定,只能靠這個檔案。"""
+        command = capture_command("/tmp/ws.jsonl", control="/tmp/control.json")
+        assert command[command.index("--control") + 1] == "/tmp/control.json"
+
+    def test_no_control_file_when_attaching_to_someone_elses_browser(self) -> None:
+        command = capture_command(
+            "/tmp/ws.jsonl", control="/tmp/c.json", connect="http://localhost:9222"
+        )
+        assert "--control" not in command
+
     def test_canvas_is_a_cdp_only_flag(self) -> None:
         command = capture_command("/tmp/ws.jsonl", mode="proxy", canvas="1920x1080")
         assert "--canvas" not in command
@@ -603,6 +615,41 @@ class TestCanvas:
         runtime.set_canvas("1920x1080")
         assert runtime.canvas() == "1920x1080"
         assert len(spy.made) == 2, "改了畫布卻沒有重建 worker"
+        runtime.stop()
+
+    def test_a_running_browser_is_told_to_resize(self, model: ViewModel, bus: UpdateBus) -> None:
+        """改了尺寸,**正在跑的瀏覽器要當場跟著變**。
+
+        使用者的原話:「我還希望能在設定尺寸後能自動把瀏覽器視窗尺寸也跟著修改」。
+        尺寸是開子程序時用命令列傳的,開下去之後就只剩控制檔這條路。
+        """
+        feature, _ = _feature()
+        launcher = _launcher()
+        runtime = LiveRuntime(
+            model, bus, features=[feature], capture=launcher, canvas=CanvasChoice()
+        )
+        runtime.start()
+        runtime.start_game()
+        try:
+            runtime.set_canvas("1920x1080")
+            command = ControlFile(launcher.control.path).poll()
+            assert command is not None, "沒有把新尺寸送給擷取子程序"
+            assert command["canvas"] == "1920x1080"
+        finally:
+            runtime.stop()
+
+    def test_nothing_is_pushed_when_no_game_is_running(
+        self, model: ViewModel, bus: UpdateBus
+    ) -> None:
+        """沒在跑就不必推 —— 下次「開始遊戲」時新尺寸本來就會走命令列過去。"""
+        feature, _ = _feature()
+        launcher = _launcher()
+        runtime = LiveRuntime(
+            model, bus, features=[feature], capture=launcher, canvas=CanvasChoice()
+        )
+        runtime.start()
+        runtime.set_canvas("1920x1080")
+        assert not launcher.control.path.exists()
         runtime.stop()
 
     def test_setting_the_same_value_changes_nothing(
