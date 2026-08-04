@@ -45,9 +45,14 @@ class UiState:
         overlay_locked: Overlay 是否鎖定位置(鎖定 = 滑鼠穿透)。
         overlay_pos: Overlay 左上角的螢幕座標。``None`` 表示還沒拖過。
         canvas: 選定的遊戲畫布尺寸(例如 ``1920x1080``)。``None`` 為自動偵測。
+        canvas_chosen: 使用者**自己動過**那個選單沒有。
+            用來分開「還沒選過」與「選過了,而且選的就是自動偵測」——
+            兩者的 :attr:`canvas` 都是 ``None``,但前者該由程式挑一個放得下的
+            固定尺寸(那才是穩的路),後者是使用者明確要的,不能覆蓋。
     """
 
     canvas: str | None = None
+    canvas_chosen: bool = False
     overlay_visible: bool = False
     overlay_expanded: bool = False
     #: 預設**不鎖定** —— 第一次開起來一定要先拖到想要的位置,而鎖定的視窗

@@ -21,6 +21,7 @@ from mia.calibration.canvas import (
     Canvas,
     CanvasChoice,
     CanvasMismatchError,
+    best_fit,
 )
 from mia.calibration.stable import StableCalibrator
 from mia.calibration.table import TableCalibrator
@@ -223,3 +224,31 @@ class TestRefusesToLock:
         assert result is not None
         assert result.table_rect == TRUE_CANVAS
         assert stable.failure is None
+
+
+class TestBestFit:
+    """第一次啟動時由**程式**決定固定尺寸,不必使用者去選單裡找。
+
+    使用者的原話:「我要的是讓軟體自己設定固定的畫面尺寸而不是讓使用者自己拉」。
+    """
+
+    def test_picks_the_largest_that_fits(self) -> None:
+        assert best_fit(2560, 1440) == Canvas(1920, 1080)
+        assert best_fit(1920, 1080) == Canvas(1600, 900)
+
+    def test_a_retina_macbook_gets_1280x720(self) -> None:
+        """實測的桌面:3024x1964 實體 = 1512x982 邏輯,扣掉選單列約 944。"""
+        assert best_fit(1512, 944) == Canvas(1280, 720)
+
+    def test_height_matters_not_just_width(self) -> None:
+        """寬度夠但高度不夠時不能挑 —— 瀏覽器裝不下就不會照做。
+
+        桌面 2560 寬放得下 1920x1080,但高只有 900:1080 加上工具列的預留
+        (140)要 1220,裝不下,只好退到 1280x720(需要 860)。
+        """
+        assert best_fit(2560, 900) == Canvas(1280, 720)
+
+    def test_a_tiny_desktop_gets_nothing(self) -> None:
+        """全都放不下就回 None,呼叫端退回自動偵測。硬塞一個裝不下的尺寸
+        會讓 table_rect 一直說對不上,那比自動偵測還糟。"""
+        assert best_fit(1024, 640) is None
