@@ -177,6 +177,60 @@ class TestShantenLine:
         assert "⚠" in window._shanten.text()  # noqa: SLF001
 
 
+class TestUkeireTiles:
+    """進張要畫成**牌面**,不能只寫枚數。
+
+    Overlay 疊在遊戲上,手牌本來就看得到 —— 再畫一次不增加任何資訊。
+    遊戲沒告訴你的是「哪幾張牌能讓你前進」,那才是這塊面積該換來的東西。
+    使用者的原話:「overlay 沒有顯示圖示,太過無用」。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _shown(self, overlay):
+        overlay[1].set_shown(True)
+
+    def test_a_tenpai_hand_shows_the_waits_as_tiles(self, overlay) -> None:
+        model, window = overlay
+        model.update_packet_hand(TENPAI)
+        assert shown(window._ukeire[0])  # noqa: SLF001
+
+    def test_it_works_with_only_vision_running(self, qtbot, tmp_path) -> None:
+        """這正是壞掉的那個情境:只開畫面辨識時,建議那半邊整段收起來,
+        而進張以前只剩一行字 —— 整個 Overlay 一張圖都沒有。"""
+        model = ViewModel()
+        board = FakeSwitchboard({features.VISION})
+        window = OverlayWindow(
+            model, ui_state=UiState.load(tmp_path / "ui.json"), switchboard=board
+        )
+        model.subscribe(window.apply)
+        qtbot.addWidget(window)
+        window.set_shown(True)
+
+        model.update_cv_hand(TENPAI)
+        assert shown(window._ukeire[0]), "只開畫面辨識時也該看得到進張的牌面"  # noqa: SLF001
+
+    def test_unused_slots_are_hidden(self, overlay) -> None:
+        """留著上一巡的殘影會讓人照著一個已經不成立的答案打。"""
+        model, window = overlay
+        model.update_packet_hand(TENPAI)
+        model.update_packet_hand(())
+        assert not any(shown(label) for label in window._ukeire)  # noqa: SLF001
+
+    def test_too_many_waits_are_summarised(self, overlay) -> None:
+        """三向聽以上常有 8~13 種進張,全畫出來 HUD 會橫跨半個牌桌。"""
+        model, window = overlay
+        model.update_packet_hand(["1m", "4m", "7m", "1p", "4p", "7p", "1s", "4s", "7s",
+                                  "E", "S", "W", "N"])
+        visible = [label for label in window._ukeire if shown(label)]  # noqa: SLF001
+        assert len(visible) <= 5
+        assert window._ukeire_more.text().startswith("+")  # noqa: SLF001
+
+    def test_a_short_wait_list_has_no_overflow_marker(self, overlay) -> None:
+        model, window = overlay
+        model.update_packet_hand(TENPAI)
+        assert not shown(window._ukeire_more)  # noqa: SLF001
+
+
 class TestExpanding:
     @pytest.fixture(autouse=True)
     def _shown(self, overlay):

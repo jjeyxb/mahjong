@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
 )
 
 from mia import features
+from mia.analysis import HandAnalysis
 from mia.engine.actions import Candidate
 from mia.ui.state import UiState
 from mia.ui.switchboard import Switchboard, is_on
@@ -64,6 +65,16 @@ _MAX_OWN_TILES = 3
 #: 牌面圖的高度。比側邊視窗(64)小:HUD 要看得清楚,但不能占掉半個牌桌。
 _TILE_HEIGHT = 40
 _CANDIDATE_TILE_HEIGHT = 22
+
+#: 進張最多畫幾張牌面,其餘用「+N」帶過。
+#:
+#: 進張種類多的時候(三向聽以上常有 8~13 種)全部畫出來會讓 HUD 橫跨半個
+#: 牌桌,而那種局面本來就不需要盯著看哪一張 —— 真正要精確知道等什麼的是
+#: 聽牌與一向聽,那時候種類通常在 5 種以內。超過就是「還早」,枚數比種類有用。
+_MAX_UKEIRE_TILES = 5
+
+#: 進張牌面的高度。比建議那張小 —— 它是參考資訊,不是要你現在做的動作。
+_UKEIRE_TILE_HEIGHT = 26
 
 _BG = QColor(24, 26, 32, 214)
 _TEXT = "#F2F2F7"
@@ -225,6 +236,15 @@ class OverlayWindow(QWidget):
         self._shanten = QLabel("", row)
         self._shanten.setStyleSheet(f"color: {_TEXT}; font-size: 15px; font-weight: 600;")
 
+        # 進張畫成牌面而不是只寫枚數。Overlay 疊在遊戲上,**手牌本來就看得到**
+        # —— 再畫一次沒有加任何資訊。遊戲沒告訴你的是「哪幾張牌能讓你前進」,
+        # 那才是這塊面積該拿來換的東西。
+        self._ukeire = [
+            TileLabel(self._icons, _UKEIRE_TILE_HEIGHT, row) for _ in range(_MAX_UKEIRE_TILES)
+        ]
+        self._ukeire_more = QLabel("", row)
+        self._ukeire_more.setStyleSheet(f"color: {_MUTED}; font-size: 11px;")
+
         layout.addWidget(self._verb)
         layout.addWidget(self._subject)
         layout.addWidget(self._joiner)
@@ -234,6 +254,9 @@ class OverlayWindow(QWidget):
         layout.addStretch(1)
         layout.addWidget(self._separator)
         layout.addWidget(self._shanten)
+        for label in self._ukeire:
+            layout.addWidget(label)
+        layout.addWidget(self._ukeire_more)
         return row
 
     # ------------------------------------------------------------------ 開關
@@ -407,6 +430,7 @@ class OverlayWindow(QWidget):
             self._show_advice(None, verb="")
 
         self._show_shanten(_shanten_line(state))
+        self._show_ukeire(state.analysis)
         self._show_candidates(engine if self.expanded else None)
 
     def _show_advice(
@@ -453,6 +477,27 @@ class OverlayWindow(QWidget):
             label.setVisible(True)
         for label in self._own[len(own) :]:
             label.setVisible(False)
+
+    def _show_ukeire(self, analysis: HandAnalysis | None) -> None:
+        """畫進張的牌面。
+
+        剛摸完的手牌 ``ukeire`` 一律是空的(要先決定切哪張),那時候整排藏起來
+        —— 留著上一巡的進張會讓人照著一個已經不成立的答案打,那比空白糟。
+        """
+        tiles = analysis.ukeire if analysis is not None else ()
+        shown = tiles[:_MAX_UKEIRE_TILES]
+        for label, ukeire in zip(self._ukeire, shown, strict=False):
+            label.set_tile(ukeire.tile)
+            # 枚數放 tooltip:Overlay 鎖定之後滑鼠穿透,滑不到 —— 但沒鎖的時候
+            # 有用,而且完整的枚數表在側邊視窗上本來就有。
+            label.setToolTip(f"{ukeire.tile} 剩 {ukeire.count} 張")
+            label.setVisible(True)
+        for label in self._ukeire[len(shown) :]:
+            label.setVisible(False)
+
+        rest = len(tiles) - len(shown)
+        self._ukeire_more.setText(f"+{rest}" if rest > 0 else "")
+        self._ukeire_more.setVisible(rest > 0)
 
     def _show_shanten(self, text: str) -> None:
         self._shanten.setText(text)
