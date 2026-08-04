@@ -182,10 +182,19 @@ class CaptureBackend(ABC):
     # 比對強度權重。程式名稱比視窗標題可靠得多 —— 標題是使用者內容,
     # 會出現「在編輯器裡打開一個檔名含『雀魂』的檔案」這種假陽性
     # (實測就撞過:VS Code 的標題含遊戲名,且視窗比遊戲還大)。
-    _SCORE_OWNER_MATCH = 4  # 程式名就是遊戲本身,最強的訊號
-    _SCORE_TITLE_EXACT = 3
+    _SCORE_OWNER_MATCH = 8  # 程式名就是遊戲本身,最強的訊號
+    _SCORE_TITLE_EXACT = 6
+    _SCORE_TITLE_DOMINANT = 4  # pattern 佔了標題的一大半 —— 那是「標題就是遊戲名」
     _SCORE_HOST_MATCH = 2  # 瀏覽器承載,且標題已命中
     _SCORE_TITLE_SUBSTRING = 1
+
+    #: 命中的 pattern 至少要佔標題這個比例,才算 :data:`_SCORE_TITLE_DOMINANT`。
+    #:
+    #: 實測的兩個對手:遊戲視窗標題是「雀魂麻將」(pattern「雀魂」佔 50%),
+    #: 而 Safari 開著本專案的 GitHub 頁時標題有 80 幾個字(佔 2%)。
+    #: 門檻取 0.25 —— 遊戲那邊還有一倍餘裕,而「標題裡順帶提到遊戲名」的
+    #: 那類視窗(檔案路徑、網頁標題、聊天室訊息)幾乎不可能這麼短。
+    _TITLE_DOMINANT_RATIO = 0.25
 
     @classmethod
     def score_window(
@@ -205,23 +214,44 @@ class CaptureBackend(ABC):
         網頁版雀魂的 Chromium **拿到完全相同的分數**(兩者 owner 都不符,都只命中
         標題子字串),然後同分時比面積,較大的 VS Code 就贏了。瀏覽器加分正是為了
         拆開這種平手。
+
+        **但那招在對手也是瀏覽器時就沒用了。** 2026-08-04 實測撞到:Safari 開著
+        本專案的 GitHub 頁,而 repo 描述裡有「雀魂」兩個字 —— 它與真正的遊戲視窗
+        同樣拿到「標題子字串 + 瀏覽器」共 3 分,然後面積比遊戲大,於是贏了。
+        整個功能 1 對著一個網頁跑 CV,而畫面上只是「沒反應」。
+
+        所以標題分數改成**看覆蓋率**:命中的 pattern 佔標題越大一塊,越可能
+        「這個標題就是遊戲名」而不是「這個標題順帶提到遊戲名」。這個判據不必
+        列舉任何特定程式,對編輯器、瀏覽器、聊天軟體一視同仁。
         """
         score = 0
         if window.matches(owner_patterns, fields="owner"):
             score += cls._SCORE_OWNER_MATCH
 
-        title = window.title.casefold()
-        if any(p and title == p.casefold() for p in title_patterns):
-            title_score = cls._SCORE_TITLE_EXACT
-        elif window.matches(title_patterns, fields="title"):
-            title_score = cls._SCORE_TITLE_SUBSTRING
-        else:
-            title_score = 0
-        score += title_score
-
-        if title_score and window.matches(host_patterns, fields="owner"):
+        score += cls._title_score(window.title, title_patterns)
+        if score and window.matches(host_patterns, fields="owner"):
             score += cls._SCORE_HOST_MATCH
         return score
+
+    @classmethod
+    def _title_score(cls, raw_title: str, title_patterns: Sequence[str]) -> int:
+        """標題像不像「這個視窗就是遊戲」。
+
+        取**最長的**命中 pattern 來算覆蓋率:多個 pattern 都命中時,長的那個
+        說明得更多(「maj-soul」比「雀魂」更難是巧合)。
+        """
+        title = raw_title.casefold()
+        if not title:
+            return 0
+        hits = [p.casefold() for p in title_patterns if p and p.casefold() in title]
+        if not hits:
+            return 0
+        longest = max(hits, key=len)
+        if title == longest:
+            return cls._SCORE_TITLE_EXACT
+        if len(longest) >= len(title) * cls._TITLE_DOMINANT_RATIO:
+            return cls._SCORE_TITLE_DOMINANT
+        return cls._SCORE_TITLE_SUBSTRING
 
     def find_window(
         self,

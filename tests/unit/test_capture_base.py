@@ -167,6 +167,54 @@ class TestBrowserHostedWindow:
         chosen = backend.find_window(self.TITLES, self.OWNERS, self.HOSTS)
         assert chosen.handle == 2, "應選中瀏覽器裡的雀魂,而非碰巧同名的編輯器"
 
+    def test_game_beats_a_larger_browser_window_that_merely_mentions_it(self) -> None:
+        """迴歸測試:2026-08-04 實機撞到,而且是自己造成的。
+
+        本專案的 GitHub repo 描述裡有「雀魂」兩個字,於是 Safari 開著那一頁時
+        標題就命中了。它與真正的遊戲視窗**同樣**拿到「標題子字串 + 瀏覽器」,
+        然後面積比遊戲大,於是贏了 —— 功能 1 整個對著一個網頁跑 CV,而畫面上
+        只表現成「向聽分析沒反應」。
+
+        瀏覽器加分擋不住這種,因為對手也是瀏覽器。要靠的是覆蓋率:
+        「雀魂麻將」裡 pattern 佔一半,那個 80 幾字的網頁標題裡佔 2%。
+        """
+        backend = FakeBackend(
+            [
+                _win(
+                    1,
+                    "jjeyxb/mahjong: MIA — Mahjong Intelligence Assistant:"
+                    "雀魂輔助工具(螢幕擷取 + CV + Mortal AI)",
+                    "Safari",
+                    1512,
+                    870,
+                ),
+                _win(2, "雀魂麻將", "Google Chrome for Testing", 1200, 824),
+            ]
+        )
+        chosen = backend.find_window(self.TITLES, self.OWNERS, self.HOSTS)
+        assert chosen.handle == 2, "應選中遊戲,而非碰巧提到遊戲名的網頁"
+
+    def test_a_long_title_still_counts_as_a_weak_match(self) -> None:
+        """覆蓋率低不等於不算 —— 那可能真的是目標,只是標題很長。
+
+        所以仍然給分(會被選中並記一句警告),只是輸給覆蓋率高的對手。
+        """
+        window = _win(1, "關於雀魂這款遊戲的一些非常冗長的個人筆記與心得", "Notion", 800, 600)
+        assert FakeBackend([]).score_window(window, self.TITLES, self.OWNERS, self.HOSTS) > 0
+
+    def test_the_longest_matching_pattern_decides_coverage(self) -> None:
+        """多個 pattern 命中時取最長的 —— 長的那個更難是巧合。
+
+        「雀魂 majsoul」裡兩個 pattern 都命中:短的「雀魂」佔 2/12,長的
+        「majsoul」佔 7/12。取長的才過得了覆蓋率門檻。
+        """
+        long_hit = _win(1, "雀魂 majsoul", "Google Chrome", 1280, 720)
+        short_only = _win(2, "雀魂之類的一大串無關緊要的文字啊啊啊", "Google Chrome", 1280, 720)
+        backend = FakeBackend([])
+        score = backend.score_window(long_hit, self.TITLES, self.OWNERS, self.HOSTS)
+        weaker = backend.score_window(short_only, self.TITLES, self.OWNERS, self.HOSTS)
+        assert score > weaker
+
     def test_browser_bonus_requires_a_title_match(self) -> None:
         """沒有標題佐證時瀏覽器不加分,否則任何一個分頁都會被誤選。"""
         window = _win(1, "GitHub - 某個專案", "Google Chrome", 1600, 900)
