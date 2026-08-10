@@ -686,7 +686,11 @@ class FakeCanvasPicker:
 
 
 class TestCanvasPicker:
-    """向聽分析頁上的畫布尺寸選單。
+    """設定頁上的「遊戲視窗尺寸」。
+
+    **在設定頁而不是向聽分析頁。** 它同時調整瀏覽器視窗與牌桌校正基準,而
+    使用者心裡它就是「遊戲視窗要開多大」—— 那是應用程式層級的設定,不是
+    某一頁的顯示選項。
 
     它存在的理由見 :mod:`mia.calibration.canvas` —— 自動偵測在某些視窗尺寸
     下會安靜地給出偏掉 0.7 張牌寬的矩形。
@@ -696,6 +700,17 @@ class TestCanvasPicker:
         window = PanelWindow(ViewModel(), switchboard=FakeSwitchboard(), canvas=picker)
         qtbot.addWidget(window)
         return window
+
+    def test_it_lives_on_the_settings_page(self, qtbot) -> None:
+        """迴歸測試:一開始放在向聽分析頁,使用者指名要在設定頁。"""
+        from PySide6.QtWidgets import QComboBox
+
+        window = self._window(qtbot, FakeCanvasPicker())
+        picker = window._canvas_picker  # noqa: SLF001
+        on_settings = window._settings_page.findChildren(QComboBox)  # noqa: SLF001
+        on_analysis = window._analysis_page.findChildren(QComboBox)  # noqa: SLF001
+        assert picker in on_settings, "選單不在設定頁上"
+        assert picker not in on_analysis, "選單還留在向聽分析頁"
 
     def test_auto_is_the_first_option(self, qtbot) -> None:
         """自動偵測要排第一 —— 那是預設值,而預設值不該藏在清單中間。"""
