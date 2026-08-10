@@ -135,6 +135,46 @@ class TestPanel:
         model.update_advices([Advice("baseline", Dahai(actor=0, pai="1m", tsumogiri=False))])
         assert not shown(window._advice._candidates_label)  # noqa: SLF001
 
+
+class TestEmptySkeleton:
+    """功能關著時只留一句話,不留骨架。
+
+    分隔線原本是寫死加進版面的,沒有任何參照 —— 它底下那一區藏起來之後,
+    線還橫在一片空白上。畫面上看起來像「東西沒載出來」,而那是使用者最會
+    去截圖回報的一種樣子。
+    """
+
+    def test_the_advice_page_keeps_no_rules_when_it_is_off(self, panel) -> None:
+        _, window = panel
+        advice = window._advice  # noqa: SLF001
+        assert not shown(advice._candidates_rule)  # noqa: SLF001
+        assert not shown(advice._others_rule)  # noqa: SLF001
+
+    def test_the_analysis_page_keeps_no_rules_when_it_is_off(self, panel) -> None:
+        _, window = panel
+        analysis = window._analysis  # noqa: SLF001
+        for rule in (analysis._hand_rule, analysis._ukeire_rule, analysis._discard_rule):  # noqa: SLF001
+            assert not shown(rule)
+
+    def test_the_rule_comes_back_with_its_section(self, panel) -> None:
+        """藏掉容易,忘了放回來也一樣看不出來 —— 兩個方向都要釘。"""
+        model, window = panel
+        meta = {"mask_bits": 0b11, "q_values": [0.1, 0.2]}
+        model.update_advices(
+            [Advice("mortal", Dahai(actor=0, pai="1m", tsumogiri=False), meta, 1.0)]
+        )
+        assert shown(window._advice._candidates_rule)  # noqa: SLF001
+
+    def test_the_second_rule_comes_back_with_the_other_engines(self, panel) -> None:
+        model, window = panel
+        model.update_advices(
+            [
+                Advice("mortal", Dahai(actor=0, pai="1m", tsumogiri=False), None, 1.0),
+                Advice("baseline", Dahai(actor=0, pai="9p", tsumogiri=False), None, 1.0),
+            ]
+        )
+        assert shown(window._advice._others_rule)  # noqa: SLF001
+
     def test_a_conflict_shows_up_in_the_status_bar(self, panel) -> None:
         model, window = panel
         model.update_cv_hand(["1m"] * 13)
