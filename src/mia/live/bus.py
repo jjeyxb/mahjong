@@ -150,3 +150,16 @@ class WorkerStatus:
     def read(self) -> str:
         with self._lock:
             return self.message
+
+    def clear_if(self, message: str) -> bool:
+        """訊息還是 ``message`` 的話就清掉。回傳有沒有真的清掉。
+
+        用比對而不是直接清:要清的那一刻,寫的那一邊可能已經換成別的話
+        (「子程序已結束」之類),那句是壞消息,不能被一個「一切正常」蓋掉。
+        比對與清除必須在同一個鎖裡,分兩次呼叫就留了一道縫。
+        """
+        with self._lock:
+            if self.message != message:
+                return False
+            self.message = ""
+            return True

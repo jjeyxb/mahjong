@@ -32,6 +32,13 @@ GT_TOOL = PROJECT_ROOT / "tools" / "gt.py"
 #: (Playwright 沒裝、埠被佔用),不是使用者關掉瀏覽器。
 _STARTUP_GRACE = 5.0
 
+#: 子程序剛開起來時的提示。
+#:
+#: 它是**指示**而不是狀態,終點是「已經在對局了」—— 所以不能用計時器收掉:
+#: 五秒後使用者多半還在登入畫面,那時這句話還有用。真正的終點是有資料進來,
+#: 見 :meth:`CaptureProcess.settle`。
+STARTUP_HINT = "擷取子程序啟動中 —— 請在瀏覽器裡登入並開始對局"
+
 
 def capture_command(
     dump: Path | str,
@@ -111,7 +118,23 @@ class CaptureProcess:
             return
         self._started_at = time.monotonic()
         self.status.alive = True
-        self.status.say("擷取子程序啟動中 —— 請在瀏覽器裡登入並開始對局")
+        self.status.say(STARTUP_HINT)
+
+    def settle(self) -> None:
+        """已經有資料進來了 —— 把啟動提示收起來。
+
+        由 :meth:`~mia.live.runtime.LiveRuntime.pump` 在收到第一手牌時呼叫,
+        兩條路(畫面、封包)任一條都算數。
+
+        **這句話原本永遠不會消失。** :meth:`poll` 只在子程序死掉時改寫訊息,
+        所以只要它活著,「請在瀏覽器裡登入並開始對局」就一路掛到程式關掉 ——
+        打到南四局了還在叫使用者登入。而 :class:`~mia.live.bus.WorkerStatus`
+        的約定是「沒話說就留空,那個位置要給真的出問題的那個」。
+
+        用 ``clear_if`` 而不是直接清:這中間子程序可能已經結束並改寫成
+        「封包擷取已結束」,那句不能被蓋掉。
+        """
+        self.status.clear_if(STARTUP_HINT)
 
     def poll(self) -> None:
         """檢查子程序是否還活著,並把結果反映到 :attr:`status`。
@@ -233,6 +256,11 @@ class CaptureLauncher:
     def poll(self) -> None:
         if self._process is not None:
             self._process.poll()
+
+    def settle(self) -> None:
+        """見 :meth:`CaptureProcess.settle`。還沒開過就沒有提示要收。"""
+        if self._process is not None:
+            self._process.settle()
 
     def stop(self, *, timeout: float = 5.0) -> None:
         if self._process is not None:

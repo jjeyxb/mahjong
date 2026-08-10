@@ -341,11 +341,22 @@ class LiveRuntime:
                         self._viewmodel.update_cv_hand(
                             update.tiles, drawn=update.drawn, confident=update.confident
                         )
+                        self._settle_capture()
                     case PacketHand():
                         self._viewmodel.update_packet_hand(update.tiles, drawn=update.drawn)
+                        self._settle_capture()
                     case Advices():
                         self._viewmodel.update_advices(update.advices)
             self._sync_notices()
+
+    def _settle_capture(self) -> None:
+        """讀到手牌就代表對局真的開始了 —— 收掉擷取子程序那句啟動提示。
+
+        兩條路(畫面、封包)任一條都算數:``--no-packets`` 時只有畫面會有東西
+        進來,只認封包的話那句提示在那個模式下永遠收不掉。
+        """
+        if self._capture is not None:
+            self._capture.settle()
 
     # ------------------------------------------------------------------ 狀態列
 
