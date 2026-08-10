@@ -17,7 +17,12 @@ from mia.engine.base import Advice
 from mia.live.bus import Advices, CvHand, PacketHand, UpdateBus, WorkerStatus
 from mia.live.control import ControlFile
 from mia.live.runtime import Feature, LiveRuntime
-from mia.live.source import CaptureLauncher, CaptureProcess, capture_command
+from mia.live.source import (
+    STARTUP_HINT,
+    CaptureLauncher,
+    CaptureProcess,
+    capture_command,
+)
 from mia.mjai import Dahai
 from mia.ui.viewmodel import ViewModel
 
@@ -676,3 +681,87 @@ class TestCanvas:
         runtime.set_canvas("1280x720")
         assert spy.made == []
         assert not feature.enabled
+
+
+class TestStartupHint:
+    """「請在瀏覽器裡登入並開始對局」是**指示**,不是狀態。
+
+    它原本永遠不會消失:CaptureProcess.poll 只在子程序死掉時改寫訊息,所以
+    只要瀏覽器活著,那句話就一路掛到程式關掉 —— 打到南四局了還在叫人登入。
+    而 WorkerStatus 的約定是「沒話說就留空,那個位置要留給真的出問題的那個」。
+    """
+
+    def _started(self, model: ViewModel, bus: UpdateBus) -> tuple[LiveRuntime, CaptureLauncher]:
+        capture = _launcher()
+        runtime = LiveRuntime(model, bus, capture=capture)
+        capture.launch()
+        return runtime, capture
+
+    def test_it_shows_while_nothing_has_arrived(self, model: ViewModel, bus: UpdateBus) -> None:
+        runtime, capture = self._started(model, bus)
+        try:
+            runtime.pump()
+            assert model.state.notices == (f"封包擷取:{STARTUP_HINT}",)
+        finally:
+            capture.stop()
+
+    def test_a_hand_from_the_packets_clears_it(self, model: ViewModel, bus: UpdateBus) -> None:
+        runtime, capture = self._started(model, bus)
+        try:
+            bus.post(PacketHand(("1m", "1m", "1m")))
+            runtime.pump()
+            assert model.state.notices == ()
+        finally:
+            capture.stop()
+
+    def test_a_hand_from_the_screen_clears_it_too(self, model: ViewModel, bus: UpdateBus) -> None:
+        """``--no-packets`` 時只有畫面會有東西進來 —— 只認封包的話那個模式下
+        這句提示永遠收不掉。"""
+        runtime, capture = self._started(model, bus)
+        try:
+            bus.post(CvHand(("1m", "1m", "1m")))
+            runtime.pump()
+            assert model.state.notices == ()
+        finally:
+            capture.stop()
+
+    def test_it_stays_cleared(self, model: ViewModel, bus: UpdateBus) -> None:
+        runtime, capture = self._started(model, bus)
+        try:
+            bus.post(CvHand(("1m",)))
+            runtime.pump()
+            runtime.pump()
+            assert model.state.notices == ()
+        finally:
+            capture.stop()
+
+    def test_bad_news_is_not_cleared(self, model: ViewModel, bus: UpdateBus) -> None:
+        """子程序在這中間死掉的話,狀態列上是「已結束」—— 那句不能被蓋掉。"""
+        runtime, capture = self._started(model, bus)
+        capture.status.say("封包擷取已結束(exit 1),不會再有新的建議")
+        bus.post(CvHand(("1m",)))
+        runtime.pump()
+        assert model.state.notices == ("封包擷取:封包擷取已結束(exit 1),不會再有新的建議",)
+        capture.stop()
+
+    def test_settling_without_a_process_does_nothing(self) -> None:
+        """還沒按開始遊戲就有畫面進來(接已在跑的瀏覽器)—— 沒有提示要收。"""
+        _launcher().settle()
+
+
+class TestClearIf:
+    def test_it_clears_a_matching_message(self) -> None:
+        status = WorkerStatus("封包擷取", message="哈囉")
+        assert status.clear_if("哈囉")
+        assert status.read() == ""
+
+    def test_it_leaves_a_different_message_alone(self) -> None:
+        status = WorkerStatus("封包擷取", message="出事了")
+        assert not status.clear_if("哈囉")
+        assert status.read() == "出事了"
+
+    def test_clearing_twice_is_harmless(self) -> None:
+        status = WorkerStatus("封包擷取", message="哈囉")
+        status.clear_if("哈囉")
+        assert not status.clear_if("哈囉")
+        assert status.read() == ""
