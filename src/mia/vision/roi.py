@@ -60,6 +60,24 @@ class Roi:
         """從整張擷取影像切出這個區域(回傳 view,非複本)。"""
         return image[self.rect.as_slice()]
 
+    def crop_with_headroom(
+        self, image: np.ndarray, headroom: int
+    ) -> tuple[np.ndarray, int]:
+        """切出這個區域,並往上多帶一段。
+
+        Args:
+            image: 整張擷取影像。
+            headroom: 想往上多帶幾個像素。
+
+        Returns:
+            ``(影像, 實際帶到的高度)``。影像上緣不夠時會帶少一點,所以第二個
+            值必須用回傳的,不能假設就是傳進去的 —— 它是「原本的 ROI 從這張
+            影像的第幾列開始」,算錯就整個框歪掉。
+        """
+        rect = self.rect
+        top = max(0, rect.y - max(0, headroom))
+        return image[top : rect.y + rect.height, rect.x : rect.x + rect.width], rect.y - top
+
     def __str__(self) -> str:
         return f"{self.name}: {self.rect} <- {self.norm}"
 
@@ -139,6 +157,17 @@ class RoiSet:
         傳進來的必須是**整張擷取影像**,不是已經裁過的牌桌影像 ——
         ROI 的像素座標含牌桌矩形本身的偏移。
         """
+        self._check(image)
+        return self[name].crop(image)
+
+    def crop_with_headroom(
+        self, image: np.ndarray, name: str, headroom: int
+    ) -> tuple[np.ndarray, int]:
+        """切出指定區域,並往上多帶一段。見 :meth:`Roi.crop_with_headroom`。"""
+        self._check(image)
+        return self[name].crop_with_headroom(image, headroom)
+
+    def _check(self, image: np.ndarray) -> None:
         if image.shape[:2] != (self.calibration.image_size.height,
                                self.calibration.image_size.width):
             raise ValueError(
@@ -146,7 +175,6 @@ class RoiSet:
                 f"{self.calibration.image_size} 不符 —— 這份 RoiSet 不適用於這張影像。"
                 "視窗大小變了就要重新校正並重建 RoiSet。"
             )
-        return self[name].crop(image)
 
     def matches(self, calibration: Calibration) -> bool:
         """這份 RoiSet 是否仍適用於給定的校正結果。"""

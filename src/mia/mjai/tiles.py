@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 __all__ = [
+    "HONOR_NAMES",
     "HONOR_ORDER",
     "UNKNOWN",
     "TileError",
@@ -28,6 +29,7 @@ __all__ = [
     "ms_to_mjai",
     "normalize_red",
     "sort_key",
+    "tile_name",
 ]
 
 UNKNOWN = "?"
@@ -84,6 +86,30 @@ def mjai_to_ms(tile: str) -> str:
 def is_red_five(tile: str) -> bool:
     """判斷是否為赤五。接受兩種表示法。"""
     return tile in _RED_TO_MJAI or tile in _MJAI_TO_RED
+
+
+#: 字牌給人看的名字,順序同 :data:`HONOR_ORDER`。
+HONOR_NAMES = ("東", "南", "西", "北", "白", "發", "中")
+
+_TO_NAME = {
+    **{f"{i + 1}z": name for i, name in enumerate(HONOR_NAMES)},
+    **{code: name for code, name in zip(HONOR_ORDER, HONOR_NAMES, strict=True)},
+}
+
+
+def tile_name(tile: str) -> str:
+    """給人看的牌名。兩種表示法都收。
+
+    只有字牌會被換掉:``1z`` 與 ``E`` 都是「東」。數牌維持 ``3m`` ——
+    點數本來就是阿拉伯數字,換成「三萬」反而比對不上畫面上的牌。
+
+    認不得的字串原樣回傳,不拋例外:這是顯示用的,不該讓 UI 因為多了一種
+    牌就崩掉。
+
+    >>> tile_name("1z"), tile_name("E"), tile_name("3m")
+    ('東', '東', '3m')
+    """
+    return _TO_NAME.get(tile, tile)
 
 
 #: 顯示用的花色順序:萬 → 筒 → 索 → 字牌。

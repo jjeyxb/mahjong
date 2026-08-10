@@ -33,7 +33,7 @@ from mia.recorder import SessionReader
 from mia.utils.geometry import Rect, Size
 from mia.utils.logging import setup_logging
 from mia.vision.roi import RoiSet
-from mia.vision.tiles.classify import TemplateSet
+from mia.vision.tiles.classify import HOVER_HEADROOM, TemplateSet
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -92,11 +92,18 @@ def main(argv: list[str] | None = None) -> int:
     templates = TemplateSet.load(args.skin) if args.skin else TemplateSet.load()
     roi = _own_hand_roi(session)
 
+    # 與即時管線同一個 headroom,否則這份報告量的不是真的會跑的那條路
+    headroom = round(roi.height * HOVER_HEADROOM)
+    top = max(0, roi.y - headroom)
+    headroom = roi.y - top
+    print(f"牌框上方多留 {headroom}px 給滑鼠抬起來的那張牌")
+
     by_index = {r.index: r for r in session.manifest.frames}
     results = []
     for frame in paired:
         image = session.load_image(by_index[frame.index])
-        results.append(evaluate_frame(image[roi.as_slice()], frame, templates))
+        tall = image[top : roi.y + roi.height, roi.x : roi.x + roi.width]
+        results.append(evaluate_frame(tall, frame, templates, headroom=headroom))
 
     report = summarize(results)
     print()

@@ -36,7 +36,12 @@ from mia.config.models import AppConfig
 from mia.live.bus import CvHand, UpdateBus, WorkerStatus
 from mia.utils.logging import logger
 from mia.vision.roi import MissingRoiError, RoiSet
-from mia.vision.tiles.classify import DEFAULT_SKIN, TemplateSet, classify_hand
+from mia.vision.tiles.classify import (
+    DEFAULT_SKIN,
+    HOVER_HEADROOM,
+    TemplateSet,
+    classify_hand,
+)
 from mia.vision.tiles.hand import read_hand
 
 __all__ = ["HAND_ROI", "VisionWorker"]
@@ -50,6 +55,7 @@ _WINDOW_RETRY = 2.0
 #: 連續擷取失敗幾次之後放掉視窗代號重找。視窗可能已經關掉又重開,
 #: 舊的 CGWindowID 不會自己變有效。
 _REFIND_AFTER = 15
+
 
 
 class VisionWorker(threading.Thread):
@@ -168,18 +174,21 @@ class VisionWorker(threading.Thread):
                 self.status.say(f"牌桌校正中 {done}/{need}")
             return
 
-        roi = self._crop(calibration, frame.image)
-        if roi is None:
+        cropped = self._crop(calibration, frame.image)
+        if cropped is None:
             return
+        tall, headroom = cropped
 
         # 位元組完全相同就整幀跳過。這裡擋掉的是等別人打牌時的靜止畫面,
         # 佔了絕大多數的幀,而模板比對是這條路上唯一貴的一步。
-        if self._previous is not None and np.array_equal(roi, self._previous):
+        # **比的是含 headroom 的整條**:牌被滑鼠抬起來的時候手牌區的下緣其實
+        # 沒什麼變化,只比 ROI 的話那一幀會被當成沒動而跳過。
+        if self._previous is not None and np.array_equal(tall, self._previous):
             self.skipped += 1
             return
-        self._previous = roi.copy()
+        self._previous = tall.copy()
 
-        self._read(roi)
+        self._read(tall, headroom)
 
     def _ensure_window(self) -> WindowInfo | None:
         if self._window is not None:
@@ -209,8 +218,14 @@ class VisionWorker(threading.Thread):
         self.status.say("")
         return self._window
 
-    def _crop(self, calibration: Calibration, image: np.ndarray) -> np.ndarray | None:
-        """切出手牌 ROI。校正換了就重建 :class:`RoiSet`。"""
+    def _crop(
+        self, calibration: Calibration, image: np.ndarray
+    ) -> tuple[np.ndarray, int] | None:
+        """切出手牌 ROI 加上方的搜尋空間。校正換了就重建 :class:`RoiSet`。
+
+        回傳 ``(影像, headroom)``,``headroom`` 是實際多帶到的高度 ——
+        手牌 ROI 從影像的第幾列開始。
+        """
         if self._rois is None or not self._rois.matches(calibration):
             self._rois = RoiSet(self._config.roi, calibration)
             # 換了校正,上一幀的 ROI 已經不可比 —— 不清掉會拿不同座標的影像
@@ -219,13 +234,16 @@ class VisionWorker(threading.Thread):
             for warning in calibration.warnings:
                 logger.warning(warning)
         try:
-            return self._rois.crop(image, HAND_ROI)
+            roi = self._rois[HAND_ROI]
+            headroom = round(roi.rect.height * HOVER_HEADROOM)
+            return self._rois.crop_with_headroom(image, HAND_ROI, headroom)
         except (MissingRoiError, ValueError) as exc:
             self.status.say(f"切不出手牌區域:{exc}")
             return None
 
-    def _read(self, roi: np.ndarray) -> None:
+    def _read(self, tall: np.ndarray, headroom: int) -> None:
         assert self._templates is not None
+        roi = tall[headroom:]
         hand = read_hand(roi)
         if not hand.is_plausible:
             # 張數不合法幾乎都是抓在理牌或摸打的動畫中間。不辨識也不清畫面
@@ -233,7 +251,7 @@ class VisionWorker(threading.Thread):
             self.status.say(f"畫面上讀到 {len(hand)} 張,不是合法手牌(動畫中?)")
             return
 
-        concealed, drawn = classify_hand(roi, hand, self._templates)
+        concealed, drawn = classify_hand(tall, hand, self._templates, headroom=headroom)
         matches = (*concealed, *(m for m in (drawn,) if m is not None))
         confident = all(m.is_confident for m in matches)
         self.reads += 1

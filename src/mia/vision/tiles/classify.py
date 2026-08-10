@@ -52,6 +52,7 @@ from mia.vision.tiles.hand import Hand
 
 __all__ = [
     "FACE_RATIO",
+    "HOVER_HEADROOM",
     "Match",
     "TemplateSet",
     "classify",
@@ -61,6 +62,14 @@ __all__ = [
 #: 牌面佔牌框的比例。掃描 0.60~0.94 後取平均最高分的極大值。
 #: 0.78~0.92 都是 100% 正確的高原,所以這個值不是刀鋒上的巧合。
 FACE_RATIO = 0.84
+
+#: 牌框上方額外的搜尋空間,以牌框高度為單位。
+#:
+#: 滑鼠停在待選牌上時雀魂會把那張牌抬起來,實測抬 **32% 的牌高**
+#: (session 20260801-110639:65px / 205px,88 個樣本全部落在 65±5px)。
+#: 0.5 是那個值的 1.5 倍餘裕 —— 抬起來的那張整張都要留在搜尋範圍內,
+#: 少一點點就等於認不得。理由見 :func:`classify_hand`。
+HOVER_HEADROOM = 0.5
 
 #: 判定為可信所需的最低分數。實測 24 張正確答案的最低分是 0.631
 #: (那張所在的參考畫面牌底被切掉一截),取 0.55 留餘裕。
@@ -171,14 +180,19 @@ class TemplateSet:
         return f"TemplateSet({len(self._faces)} 類)"
 
 
-def classify(tile: np.ndarray, templates: TemplateSet) -> Match:
+def classify(
+    tile: np.ndarray, templates: TemplateSet, *, tile_height: int | None = None
+) -> Match:
     """判斷一張牌是什麼。
 
     Args:
-        tile: 一張牌的 BGR 影像,就是 :class:`~mia.vision.tiles.hand.Hand`
-            給的牌框裁出來的那塊(**含上緣斜面**,不要自己先裁掉 —— 對齊是
-            :func:`cv2.matchTemplate` 的工作)。
+        tile: 要搜尋的 BGR 影像。通常就是一張牌的牌框(**含上緣斜面**,不要
+            自己先裁掉 —— 對齊是 :func:`cv2.matchTemplate` 的工作),但也可以
+            是一條更高的直條,見 ``tile_height``。
         templates: 對應目前牌面皮膚的模板集。
+        tile_height: 牌框本身的高度。``None`` 表示 ``tile`` 就是牌框。
+            給值時代表 ``tile`` 是一條含額外搜尋空間的直條,模板仍然依牌框
+            大小縮放 —— 拿整條的高度去縮模板會把牌面拉長,那比搜不到還糟。
 
     Returns:
         最像的牌與診斷資訊。**永遠會回傳一個結果**,不會拋錯 —— 用
@@ -189,10 +203,11 @@ def classify(tile: np.ndarray, templates: TemplateSet) -> Match:
         raise ValueError(f"需要 BGR 三通道影像,拿到 shape={tile.shape}")
 
     height, width = tile.shape[:2]
-    size = (int(width * FACE_RATIO), int(height * FACE_RATIO))
+    face_height = tile_height if tile_height is not None else height
+    size = (int(width * FACE_RATIO), int(face_height * FACE_RATIO))
     if min(size) < MIN_TEMPLATE_PX or size[0] >= width or size[1] >= height:
         raise ValueError(
-            f"牌框 {width}x{height} 太小 —— 模板會縮成 {size[0]}x{size[1]},"
+            f"牌框 {width}x{face_height} 太小 —— 模板會縮成 {size[0]}x{size[1]},"
             f"每邊至少要 {MIN_TEMPLATE_PX} 像素,且要留得下平移搜尋的餘裕"
         )
 
@@ -208,22 +223,46 @@ def classify(tile: np.ndarray, templates: TemplateSet) -> Match:
 
 
 def classify_hand(
-    roi: np.ndarray, hand: Hand, templates: TemplateSet
+    roi: np.ndarray, hand: Hand, templates: TemplateSet, *, headroom: int = 0
 ) -> tuple[tuple[Match, ...], Match | None]:
     """一次判斷整手牌。
 
     Args:
-        roi: ``own_hand`` ROI 的 BGR 影像。
-        hand: :func:`~mia.vision.tiles.hand.read_hand` 的結果。
+        roi: ``own_hand`` ROI 的 BGR 影像。``headroom`` 不為 0 時,是上緣往上
+            多切了 ``headroom`` 個像素的版本 —— 見下。
+        hand: :func:`~mia.vision.tiles.hand.read_hand` 的結果。牌框座標相對
+            **原本的 ROI**,這裡會自己加上 ``headroom`` 的偏移。
         templates: 模板集。
+        headroom: 牌框上方額外的搜尋高度,單位是像素。
 
     Returns:
         ``(暗手牌的比對結果, 摸牌那張的比對結果或 None)``。
         摸牌那張刻意分開回傳 —— 對應 MJAI 的 ``tsumo``,「手上有這張牌」與
         「這一巡摸到這張牌」是兩件事。
+
+    Note:
+        **為什麼需要 headroom。** 滑鼠停在待選牌上時,雀魂會把那張牌往上抬 ——
+        實測(session 20260801-110639)抬 **65 px / 牌高 205 px,約 32%**。
+        ROI 是貼著手牌量的,抬起來的那張有三分之一跑到 ROI 外面,留在框裡的
+        是牌的下半截加一片桌布,於是那一張比對不出來或比對錯,而**整手牌的
+        向聽數就跟著錯**。使用者滑到某張牌的時機,正是他在看建議的時機。
+
+        給了 headroom 之後,同一張牌在抬起狀態下的相關係數實測回到 0.99。
     """
     concealed = tuple(
-        classify(roi[box.as_slice()], templates) for box in hand.concealed
+        classify(
+            roi[: headroom + box.y + box.height, box.x : box.x + box.width],
+            templates,
+            tile_height=box.height,
+        )
+        for box in hand.concealed
     )
-    drawn = classify(roi[hand.drawn.as_slice()], templates) if hand.drawn else None
+    drawn = None
+    if hand.drawn is not None:
+        box = hand.drawn
+        drawn = classify(
+            roi[: headroom + box.y + box.height, box.x : box.x + box.width],
+            templates,
+            tile_height=box.height,
+        )
     return concealed, drawn

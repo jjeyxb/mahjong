@@ -128,20 +128,23 @@ class TileReport:
 
 
 def evaluate_frame(
-    image: np.ndarray, frame: AlignedFrame, templates: TemplateSet
+    image: np.ndarray, frame: AlignedFrame, templates: TemplateSet, *, headroom: int = 0
 ) -> FrameResult:
     """對一幀跑完整的手牌辨識,與標準答案比對。
 
     Args:
-        image: ``own_hand`` ROI 的 BGR 影像。
+        image: ``own_hand`` ROI 的 BGR 影像;``headroom`` 不為 0 時是上緣多切
+            了一段的版本。
         frame: :func:`~mia.eval.align.align` 配好的幀。
         templates: 牌面模板集。
+        headroom: 牌框上方額外的搜尋高度。**要與即時管線用同一個值** ——
+            不然這份報告量的就不是真的會跑的那條路。
 
     Returns:
         這一幀的比對結果。
     """
-    hand = read_hand(image)
-    concealed, drawn = classify_hand(image, hand, templates)
+    hand = read_hand(image[headroom:])
+    concealed, drawn = classify_hand(image, hand, templates, headroom=headroom)
     matches = [*concealed, *([drawn] if drawn is not None else [])]
 
     # classify 回的是雀魂記法(0m/1z),標準答案是 MJAI 記法(5mr/E)

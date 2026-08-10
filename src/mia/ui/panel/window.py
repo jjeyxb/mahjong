@@ -48,6 +48,7 @@ from PySide6.QtWidgets import (
 from mia import APP_TITLE, features
 from mia.calibration.canvas import PRESETS as CANVAS_PRESETS
 from mia.calibration.canvas import Canvas
+from mia.ui.style import CAPTION, MUTED, MUTED_COLOR
 from mia.ui.switchboard import CanvasPicker, GameLauncher, Switchboard, is_on
 from mia.ui.viewmodel import ViewModel, ViewState
 from mia.ui.widgets.advice import AdviceTab
@@ -104,7 +105,7 @@ class _Page(QWidget):
         """在設定列加一個「說明 + 控制項」。加在伸縮元件之前,所以會靠左排。"""
         index = self._settings_layout.count() - 1
         caption = QLabel(label, self._settings)
-        caption.setStyleSheet("color: palette(mid); font-size: 11px;")
+        caption.setStyleSheet(CAPTION)
         self._settings_layout.insertWidget(index, caption)
         self._settings_layout.insertWidget(index + 1, widget)
         self._reveal()
@@ -208,7 +209,7 @@ class PanelWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self._notice = QLabel("", self)
-        self._notice.setStyleSheet("color: palette(mid);")
+        self._notice.setStyleSheet(MUTED)
         status = QStatusBar(self)
         status.addWidget(self._notice, 1)
         self.setStatusBar(status)
@@ -245,7 +246,8 @@ class PanelWindow(QMainWindow):
             "QPushButton { background: #34C759; color: white; border: none;"
             " border-radius: 6px; padding: 9px 4px; font-weight: 600; margin: 6px; }"
             "QPushButton:hover:enabled { background: #2FB350; }"
-            "QPushButton:disabled { background: palette(midlight); color: palette(mid); }"
+            "QPushButton:disabled { background: palette(midlight);"
+            f" color: {MUTED_COLOR}; }}"
         )
         button.clicked.connect(self._on_start_game)
         self._start_button = button
@@ -359,7 +361,7 @@ class PanelWindow(QMainWindow):
             page,
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: palette(mid); font-size: 11px;")
+        hint.setStyleSheet(CAPTION)
         layout.addWidget(hint)
 
     def _build_settings(self) -> QWidget:
@@ -384,7 +386,7 @@ class PanelWindow(QMainWindow):
             page,
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: palette(mid); font-size: 11px;")
+        hint.setStyleSheet(CAPTION)
         layout.addWidget(hint)
 
         layout.addWidget(_rule(page))
@@ -439,7 +441,7 @@ class PanelWindow(QMainWindow):
             page,
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: palette(mid); font-size: 11px;")
+        hint.setStyleSheet(CAPTION)
         layout.addWidget(hint)
         self._sync_overlay_boxes(overlay.shown)
 
@@ -663,7 +665,7 @@ def _select_data(picker: QComboBox, data: object) -> None:
 
 def _caption(text: str, parent: QWidget) -> QLabel:
     label = QLabel(text, parent)
-    label.setStyleSheet("color: palette(mid); font-size: 11px;")
+    label.setStyleSheet(CAPTION)
     return label
 
 

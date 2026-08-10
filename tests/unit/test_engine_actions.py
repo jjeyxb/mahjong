@@ -204,8 +204,27 @@ class TestCallLabels:
         label = action_label(Kakan(actor=0, pai="5p", consumed=["5pr", "5p", "5p"]))
         assert label == "槓 5p"
 
-    def test_a_discard_is_unchanged(self) -> None:
-        assert action_label(Dahai(actor=0, pai="E", tsumogiri=False)) == "切 E"
+    def test_a_discard_names_the_tile(self) -> None:
+        assert action_label(Dahai(actor=0, pai="3s", tsumogiri=False)) == "切 3s"
+
+    def test_honours_are_written_in_chinese(self) -> None:
+        """``E`` 與 ``1z`` 都要在腦裡再 translate 一次才對得上畫面上那張牌。"""
+        assert action_label(Dahai(actor=0, pai="E", tsumogiri=False)) == "切 東"
+        assert action_label(Pon(actor=0, target=1, pai="F", consumed=["F", "F"])) == (
+            "碰 發 ← 發 發"
+        )
+
+    def test_number_tiles_keep_their_notation(self) -> None:
+        """「三萬」比 ``3m`` 長,而且點數本來就是阿拉伯數字 —— 換了反而難對。"""
+        assert action_label(Chi(actor=0, target=3, pai="3m", consumed=["1m", "2m"])) == (
+            "吃 3m ← 1m 2m"
+        )
+
+    def test_renaming_still_tells_two_calls_apart(self) -> None:
+        """這個字串同時用來判斷各引擎有沒有分歧,對應必須維持一對一。"""
+        plain = action_label(Pon(actor=0, target=1, pai="5m", consumed=["5m", "5m"]))
+        red = action_label(Pon(actor=0, target=1, pai="5m", consumed=["5mr", "5m"]))
+        assert plain != red
 
 
 class TestActionTiles:

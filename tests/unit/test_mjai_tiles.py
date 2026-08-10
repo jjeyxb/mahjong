@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from mia.mjai.tiles import (
+    HONOR_NAMES,
     HONOR_ORDER,
     UNKNOWN,
     TileError,
@@ -13,6 +14,7 @@ from mia.mjai.tiles import (
     ms_to_mjai,
     normalize_red,
     sort_key,
+    tile_name,
 )
 
 
@@ -102,3 +104,28 @@ class TestSortKey:
     def test_an_unrecognised_tile_does_not_raise(self) -> None:
         """排序是顯示用的,不該讓 UI 崩掉。"""
         assert sorted(["99z", "1m"], key=sort_key) == ["1m", "99z"]
+
+
+class TestTileName:
+    """給人看的牌名。``1z`` 與 ``E`` 都要在腦裡再 translate 一次才對得上畫面。"""
+
+    def test_both_notations_give_the_same_name(self) -> None:
+        assert tile_name("1z") == tile_name("E") == "東"
+
+    def test_every_honour_has_a_name(self) -> None:
+        names = [tile_name(f"{i}z") for i in range(1, 8)]
+        assert names == ["東", "南", "西", "北", "白", "發", "中"]
+
+    def test_the_two_notations_agree_on_all_seven(self) -> None:
+        assert [tile_name(c) for c in HONOR_ORDER] == list(HONOR_NAMES)
+
+    def test_number_tiles_are_left_alone(self) -> None:
+        """點數本來就是阿拉伯數字,換成「三萬」反而比對不上畫面上的牌。"""
+        assert tile_name("3m") == "3m"
+        assert tile_name("0p") == "0p"
+        assert tile_name("5sr") == "5sr"
+
+    def test_an_unrecognised_tile_comes_back_unchanged(self) -> None:
+        """這是顯示用的,不該讓 UI 因為多了一種牌就崩掉。"""
+        assert tile_name("99z") == "99z"
+        assert tile_name("?") == "?"

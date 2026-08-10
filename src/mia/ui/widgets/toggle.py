@@ -27,6 +27,8 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor, QPainter, QPalette, QPen
 from PySide6.QtWidgets import QAbstractButton, QWidget
 
+from mia.ui.style import off_track
+
 __all__ = ["ToggleSwitch"]
 
 #: 軌道尺寸。iOS 是 51x31;這裡縮到能塞進設定列的一行,比例維持不變。
@@ -158,10 +160,13 @@ class ToggleSwitch(QAbstractButton):
     def _track_color(self) -> QColor:
         """關 → 開之間做線性混色。
 
-        關的顏色取自 palette 而不是寫死的灰:深色模式下寫死的淺灰會亮得
+        關的顏色由 palette 推出來而不是寫死的灰:深色模式下寫死的淺灰會亮得
         像是「開著」。開的顏色固定用 Apple 的綠 —— 那是這個開關的識別。
+
+        推法見 :func:`~mia.ui.style.off_track`。原本直接取 ``Mid``,而那個角色
+        在深色模式下比視窗背景還暗(21 對 30),關著的開關會整個消失。
         """
-        off = self.palette().color(QPalette.ColorRole.Mid)
+        off = off_track(self.palette())
         colour = _blend(off, ON_COLOR, self._position)
         if not self.isEnabled():
             colour.setAlphaF(0.4)
