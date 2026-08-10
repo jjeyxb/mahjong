@@ -204,7 +204,11 @@ class AdviceTab(QWidget):
 
         self._headline = _Headline(icons, self)
         layout.addWidget(self._headline)
-        layout.addWidget(_rule(self))
+
+        # 分隔線要**留住參照**,才能跟著它底下那一區一起隱藏。寫死加進版面的話,
+        # 功能關著時會剩下兩條橫線橫在一片空白上,看起來像東西沒載出來。
+        self._candidates_rule = _rule(self)
+        layout.addWidget(self._candidates_rule)
 
         self._candidates_label = QLabel("其他候選", self)
         self._candidates_label.setStyleSheet(CAPTION)
@@ -216,7 +220,8 @@ class AdviceTab(QWidget):
         self._candidates_layout.setSpacing(3)
         layout.addWidget(self._candidates)
 
-        layout.addWidget(_rule(self))
+        self._others_rule = _rule(self)
+        layout.addWidget(self._others_rule)
         self._others = QWidget(self)
         self._others_layout = QGridLayout(self._others)
         self._others_layout.setContentsMargins(0, 0, 0, 0)
@@ -236,6 +241,7 @@ class AdviceTab(QWidget):
         candidates = engine.candidates[: self.max_candidates] if engine else ()
         # 沒有 Q 值的引擎(規則式 baseline)不該留著上一手的長條
         self._candidates_label.setVisible(bool(candidates))
+        self._candidates_rule.setVisible(bool(candidates))
 
         while len(self._rows) < len(candidates):
             row = _CandidateRow(self._icons, self._candidates)
@@ -255,6 +261,7 @@ class AdviceTab(QWidget):
     def _update_others(self, state: ViewState) -> None:
         primary = state.primary
         others = [e for e in state.engines if e is not primary]
+        self._others_rule.setVisible(bool(others))
         while len(self._other_labels) < len(others):
             index = len(self._other_labels)
             name = QLabel("", self._others)
