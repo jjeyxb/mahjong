@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import sys
 import time
+from dataclasses import replace
 
 import cv2
 import numpy as np
@@ -33,7 +34,7 @@ from mia.capture.base import (
 from mia.utils.geometry import Rect
 from mia.utils.logging import logger
 
-__all__ = ["MacOSCaptureBackend", "list_windows"]
+__all__ = ["MacOSCaptureBackend", "list_windows", "window_bounds"]
 
 try:  # pragma: no cover - 只有 macOS 會走到 import 成功的分支
     import Quartz
@@ -84,6 +85,28 @@ def list_windows(*, include_all: bool = False) -> list[WindowInfo]:
             )
         )
     return windows
+
+
+def window_bounds(handle: int) -> Rect | None:
+    """查一個視窗**此刻**的位置與大小(邏輯像素)。查不到回 ``None``。
+
+    只問一個視窗,不列舉整個桌面 —— 這是每一幀都會走的路。
+    """
+    if not _QUARTZ_AVAILABLE:
+        return None
+    raw = Quartz.CGWindowListCopyWindowInfo(
+        Quartz.kCGWindowListOptionIncludingWindow, handle
+    )
+    for entry in raw or []:
+        bounds = entry.get("kCGWindowBounds")
+        if bounds:
+            return Rect(
+                int(bounds.get("X", 0)),
+                int(bounds.get("Y", 0)),
+                int(bounds.get("Width", 0)),
+                int(bounds.get("Height", 0)),
+            )
+    return None
 
 
 def _cgimage_to_bgr(image: object) -> np.ndarray | None:
@@ -208,6 +231,15 @@ class MacOSCaptureBackend(CaptureBackend):
                 "  常見原因:視窗已關閉、被最小化,或移到其他桌面(Space)。"
             )
 
-        logical_width = window.bounds.width
+        # 用**現在**的邊界算 scale,不能用傳進來那個 WindowInfo 裡的。
+        # 呼叫端(VisionWorker)找到視窗之後就一直沿用同一個物件,而使用者改了
+        # 畫布尺寸、瀏覽器當場被調整之後,那份邊界就過期了。影像是新的、邊界是
+        # 舊的,scale 就會算成 1.0 —— 然後 Canvas.table_rect 說「影像寬 2560 與
+        # 畫布 1280×720 @1x 差了 1280px」,而視窗其實完全正確。實測 2026-08-10。
+        current = window
+        fresh = window_bounds(window.handle)
+        if fresh is not None and fresh != window.bounds:
+            current = replace(window, bounds=fresh)
+        logical_width = current.bounds.width
         scale = array.shape[1] / logical_width if logical_width else 1.0
-        return Frame(image=array, window=window, scale=scale, captured_at=captured_at)
+        return Frame(image=array, window=current, scale=scale, captured_at=captured_at)

@@ -83,6 +83,7 @@ class MSSCaptureBackend(CaptureBackend):
         return self._list(include_all=include_all)
 
     def capture(self, window: WindowInfo) -> Frame:
+        window = self._refresh(window)
         bounds = window.bounds
         if bounds.width <= 0 or bounds.height <= 0:
             raise CaptureFailedError(f"視窗尺寸無效: {window}")
@@ -105,6 +106,22 @@ class MSSCaptureBackend(CaptureBackend):
         array = cv2.cvtColor(np.asarray(shot, dtype=np.uint8), cv2.COLOR_BGRA2BGR)
         scale = array.shape[1] / bounds.width if bounds.width else 1.0
         return Frame(image=array, window=window, scale=scale, captured_at=captured_at)
+
+    def _refresh(self, window: WindowInfo) -> WindowInfo:
+        """把邊界更新成此刻的值,查不到就沿用舊的。
+
+        這裡的後果比 macOS 後端嚴重:mss 抓的是**螢幕的一塊矩形**,邊界過期
+        代表抓錯位置,而畫面上還是會有東西 —— 錯得完全無聲。呼叫端找到視窗
+        之後會一直沿用同一個 :class:`WindowInfo`,而視窗會被拖曳、會被畫布
+        尺寸設定當場調整。
+
+        代價是每一幀列舉一次整個桌面。這條路本來就是最後手段(見模組
+        docstring),抓整片螢幕再裁切的成本遠高於這個查詢。
+        """
+        for candidate in self._list(include_all=True):
+            if candidate.handle == window.handle:
+                return candidate
+        return window
 
     def close(self) -> None:
         if self._sct is not None:
