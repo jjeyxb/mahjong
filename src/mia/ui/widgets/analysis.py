@@ -22,7 +22,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mia.mjai.tiles import ms_to_mjai, sort_key
+from mia.mjai.tiles import ms_to_mjai, sort_key, tile_name
+from mia.ui.style import CAPTION
 from mia.ui.viewmodel import ViewState, shanten_text
 from mia.ui.widgets.tiles import HandStrip, TileIcons, TileLabel
 
@@ -70,7 +71,7 @@ class AnalysisTab(QWidget):
         layout.addWidget(self._shanten)
 
         self._source = QLabel("", self)
-        self._source.setStyleSheet("color: palette(mid); font-size: 11px;")
+        self._source.setStyleSheet(CAPTION)
         layout.addWidget(self._source)
 
         # 分隔線要**留住參照**,才能跟著它底下那一區一起隱藏。寫死加進版面
@@ -89,7 +90,7 @@ class AnalysisTab(QWidget):
         self._ukeire = HandStrip(icons, height=32, parent=self)
         layout.addWidget(self._ukeire)
         self._ukeire_text = QLabel("", self)
-        self._ukeire_text.setStyleSheet("color: palette(mid); font-size: 11px;")
+        self._ukeire_text.setStyleSheet(CAPTION)
         self._ukeire_text.setWordWrap(True)
         layout.addWidget(self._ukeire_text)
 
@@ -154,7 +155,7 @@ class AnalysisTab(QWidget):
             return
         self._ukeire.set_tiles(tuple(_to_mjai(u.tile) for u in ukeire))
         total = analysis.total_ukeire if analysis else 0
-        detail = "  ".join(f"{u.tile}×{u.count}" for u in ukeire)
+        detail = "  ".join(f"{tile_name(u.tile)}×{u.count}" for u in ukeire)
         self._ukeire_text.setText(f"共 {total} 枚　{detail}")
 
     def _update_discards(self, state: ViewState) -> None:
@@ -214,6 +215,6 @@ def _rule(parent: QWidget) -> QFrame:
 
 def _caption(text: str, parent: QWidget) -> QLabel:
     label = QLabel(text, parent)
-    label.setStyleSheet("color: palette(mid); font-size: 11px;")
+    label.setStyleSheet(CAPTION)
     label.setAlignment(Qt.AlignmentFlag.AlignLeft)
     return label

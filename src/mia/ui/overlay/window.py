@@ -49,6 +49,7 @@ from PySide6.QtWidgets import (
 from mia import features
 from mia.analysis import Ukeire
 from mia.engine.actions import Candidate
+from mia.mjai.tiles import tile_name
 from mia.ui.state import UiState
 from mia.ui.switchboard import Switchboard, is_on
 from mia.ui.viewmodel import EngineView, ViewModel, ViewState, q_fraction, shanten_text
@@ -486,7 +487,7 @@ class OverlayWindow(QWidget):
             label.set_tile(ukeire.tile)
             # 枚數放 tooltip:Overlay 鎖定之後滑鼠穿透,滑不到 —— 但沒鎖的時候
             # 有用,而且完整的枚數表在側邊視窗上本來就有。
-            label.setToolTip(f"{ukeire.tile} 剩 {ukeire.count} 張")
+            label.setToolTip(f"{tile_name(ukeire.tile)} 剩 {ukeire.count} 張")
             label.setVisible(True)
         for label in self._ukeire[len(shown) :]:
             label.setVisible(False)
@@ -562,7 +563,7 @@ def _shanten_line(state: ViewState) -> str:
     ukeire = _effective_ukeire(state)
     best = state.best_discard
     if ukeire and not analysis.ukeire and best is not None:
-        text += f"(切{best.tile})"
+        text += f"(切{tile_name(best.tile)})"
     total = sum(u.count for u in ukeire)
     if total:
         text += f"　進張 {total}"

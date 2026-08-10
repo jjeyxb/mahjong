@@ -54,7 +54,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from mia.mjai.events import MjaiEvent
-from mia.mjai.tiles import HONOR_ORDER
+from mia.mjai.tiles import HONOR_ORDER, tile_name
 
 __all__ = [
     "ACTION_SPACE",
@@ -114,18 +114,23 @@ def action_label(event: MjaiEvent) -> str:
     使用者看到 actor 編號這種與決策無關的東西。
 
     Returns:
-        像「切 1z」、「立直」、「吃 3m ← 1m 2m」這樣。認不得的型別回 ``type``
+        像「切 東」、「立直」、「吃 3m ← 1m 2m」這樣。認不得的型別回 ``type``
         本身,不會拋例外 —— UI 在畫的時候不該因為多了一種動作就崩掉。
+
+        字牌寫成東南西北白發中,不是 ``E`` 也不是 ``1z``:那兩個都要在腦裡再
+        translate 一次才對得上畫面上的牌。數牌維持 ``3m`` —— 點數本來就是
+        阿拉伯數字。
 
     Note:
         回傳值也用來比較各引擎有沒有分歧,所以**不同動作必須給出不同字串**。
         鳴牌要帶上「用手上哪幾張」正是為了這個:``吃 3m`` 可以是 1m2m、2m4m
         或 4m5m 三種吃法,只寫「吃 3m」的話兩個引擎選了不同吃法會被當成一致。
         碰也一樣 —— ``碰 5m`` 用不用掉赤五是兩個不同的決定。
+        換成中文名不影響這件事:對應是一對一的。
     """
     kind = event.TYPE
-    pai = getattr(event, "pai", None)
-    consumed = tuple(getattr(event, "consumed", ()) or ())
+    pai = tile_name(getattr(event, "pai", None) or "")
+    consumed = tuple(tile_name(t) for t in getattr(event, "consumed", ()) or ())
 
     if kind == "dahai":
         return f"切 {pai}"

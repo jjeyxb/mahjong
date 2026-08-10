@@ -188,3 +188,105 @@ class TestMatch:
 
     def test_a_wide_margin_on_a_low_score_is_not_confident_either(self) -> None:
         assert not Match("3m", 0.30, "8m", 0.01).is_confident
+
+
+#: 桌布的顏色。實際值不重要 —— 這裡只需要「不是一張牌」的東西來填抬起來之後
+#: 空出來的位置,重點在牌面有沒有被搜尋到,不在背景長什麼樣。
+_FELT = 60
+
+
+def _lift(strip: np.ndarray, box, pixels: int) -> None:
+    """把某一個槽位的內容往上搬 ``pixels`` 個像素,原本的位置填成桌布。
+
+    模擬滑鼠停在待選牌上時雀魂把那張牌抬起來的動作。實測抬 32% 的牌高。
+    """
+    column = strip[:, box.x : box.x + box.width]
+    column[:-pixels] = column[pixels:]
+    column[-pixels:] = _FELT
+
+
+class TestHoverHeadroom:
+    """滑鼠停在待選牌上時,雀魂會把那張牌往上抬 —— 實測 65px / 牌高 205px。
+
+    ROI 是貼著手牌量的,抬起來的那張有三分之一跑到框外,留在框裡的是牌的
+    下半截加一片桌布。而使用者滑到某張牌的時機,正是他在看建議的時機。
+    """
+
+    HEADROOM = 100
+    LIFT = 65
+    SLOT = 6  # EXPECTED 裡沒列的槽位也無妨,這裡比的是「抬起來前後一不一樣」
+
+    def _tall(self, name: str) -> tuple[np.ndarray, list]:
+        roi, boxes = _tiles(name)
+        pad = np.full((self.HEADROOM, roi.shape[1], 3), _FELT, np.uint8)
+        return np.vstack([pad, roi]), boxes
+
+    def test_headroom_alone_changes_nothing(self, templates: TemplateSet) -> None:
+        """沒有牌被抬起來的時候,多給的搜尋空間不該讓任何一張牌改變答案。"""
+        roi, _boxes = _tiles("hand_13_full")
+        tall, _ = self._tall("hand_13_full")
+        hand = read_hand(roi)
+
+        plain, _ = classify_hand(roi, hand, templates)
+        padded, _ = classify_hand(tall, hand, templates, headroom=self.HEADROOM)
+
+        assert [m.label for m in padded] == [m.label for m in plain]
+
+    def test_a_lifted_tile_is_still_recognised(self, templates: TemplateSet) -> None:
+        roi, boxes = _tiles("hand_13_full")
+        hand = read_hand(roi)
+        expected = classify_hand(roi, hand, templates)[0][self.SLOT]
+
+        tall, _ = self._tall("hand_13_full")
+        _lift(tall, boxes[self.SLOT], self.LIFT)
+        lifted = classify_hand(tall, hand, templates, headroom=self.HEADROOM)[0][self.SLOT]
+
+        assert lifted.label == expected.label
+        assert lifted.is_confident
+
+    def test_without_headroom_the_same_tile_is_lost(self, templates: TemplateSet) -> None:
+        """這是修之前的行為 —— 釘住它,不然哪天 headroom 被拿掉沒人會發現。"""
+        roi, boxes = _tiles("hand_13_full")
+        hand = read_hand(roi)
+        expected = classify_hand(roi, hand, templates)[0][self.SLOT]
+
+        tall, _ = self._tall("hand_13_full")
+        _lift(tall, boxes[self.SLOT], self.LIFT)
+        tight = tall[self.HEADROOM :]
+        blind = classify_hand(tight, hand, templates)[0][self.SLOT]
+
+        assert blind.label != expected.label or not blind.is_confident
+
+    def test_the_lifted_tile_does_not_disturb_its_neighbours(
+        self, templates: TemplateSet
+    ) -> None:
+        """一次只會抬一張。旁邊那幾張跟著變答案的話,問題比原本那個還大。"""
+        roi, boxes = _tiles("hand_13_full")
+        hand = read_hand(roi)
+        plain = [m.label for m in classify_hand(roi, hand, templates)[0]]
+
+        tall, _ = self._tall("hand_13_full")
+        _lift(tall, boxes[self.SLOT], self.LIFT)
+        after = [
+            m.label
+            for m in classify_hand(tall, hand, templates, headroom=self.HEADROOM)[0]
+        ]
+
+        assert after == plain
+
+
+class TestTileHeight:
+    def test_the_template_is_sized_by_the_tile_not_the_strip(
+        self, templates: TemplateSet
+    ) -> None:
+        """拿整條的高度去縮模板會把牌面拉長 —— 那比搜不到還糟,因為它仍然會
+        給出一個答案。"""
+        roi, boxes = _tiles("hand_13_full")
+        box = boxes[0]
+        tight = roi[box.as_slice()]
+        pad = np.full((100, box.width, 3), _FELT, np.uint8)
+        tall = np.vstack([pad, tight])
+
+        assert classify(tall, templates, tile_height=box.height).label == (
+            classify(tight, templates).label
+        )

@@ -122,3 +122,63 @@ class TestAgainstProjectConfig:
         """實測摸牌那張的右緣在 0.8218,框沒蓋到就會漏掉剛摸進來的牌。"""
         own_hand = RoiSet(load_config().roi, make_calibration())["own_hand"].norm
         assert own_hand.x + own_hand.width > 0.8218
+
+
+class TestHeadroom:
+    """比對牌面時要往 ROI 上方多切一段,給滑鼠抬起來的那張牌。
+
+    第二個回傳值是「原本的 ROI 從第幾列開始」—— 算錯就整個牌框歪掉,
+    而歪掉的結果看起來仍然像一副正常的手牌。
+    """
+
+    def _set(self, roi: tuple[float, float, float, float]) -> RoiSet:
+        return RoiSet(RoiConfig(own_hand=roi), make_calibration())
+
+    def test_it_takes_the_extra_rows_from_above(self) -> None:
+        rois = self._set((0.0, 0.5, 1.0, 0.4))
+        image = np.zeros((DEFAULT_IMAGE.height, DEFAULT_IMAGE.width, 3), np.uint8)
+        plain = rois.crop(image, "own_hand")
+
+        tall, headroom = rois.crop_with_headroom(image, "own_hand", 40)
+
+        assert headroom == 40
+        assert tall.shape[0] == plain.shape[0] + 40
+        assert tall.shape[1] == plain.shape[1]
+
+    def test_the_original_roi_starts_at_the_reported_offset(self) -> None:
+        rois = self._set((0.0, 0.5, 1.0, 0.4))
+        image = np.zeros((DEFAULT_IMAGE.height, DEFAULT_IMAGE.width, 3), np.uint8)
+        # 讓 ROI 那一塊帶標記,才看得出偏移對不對
+        rect = rois["own_hand"].rect
+        image[rect.as_slice()] = 200
+
+        tall, headroom = rois.crop_with_headroom(image, "own_hand", 40)
+
+        assert (tall[headroom:] == 200).all()
+        assert (tall[:headroom] == 0).all()
+
+    def test_it_stops_at_the_top_of_the_image(self) -> None:
+        """ROI 貼近影像上緣時要帶少一點,而且要**說**帶了多少 ——
+        假設就是傳進去的那個值會讓牌框整個往上錯位。"""
+        rois = self._set((0.0, 0.0, 1.0, 0.4))
+        image = np.zeros((DEFAULT_IMAGE.height, DEFAULT_IMAGE.width, 3), np.uint8)
+        top = rois["own_hand"].rect.y
+
+        tall, headroom = rois.crop_with_headroom(image, "own_hand", 10_000)
+
+        assert headroom == top
+        assert tall.shape[0] == rois["own_hand"].rect.height + top
+
+    def test_zero_headroom_is_just_a_crop(self) -> None:
+        rois = self._set((0.0, 0.5, 1.0, 0.4))
+        image = np.zeros((DEFAULT_IMAGE.height, DEFAULT_IMAGE.width, 3), np.uint8)
+
+        tall, headroom = rois.crop_with_headroom(image, "own_hand", 0)
+
+        assert headroom == 0
+        assert tall.shape == rois.crop(image, "own_hand").shape
+
+    def test_a_wrong_sized_image_is_still_rejected(self) -> None:
+        rois = self._set((0.0, 0.5, 1.0, 0.4))
+        with pytest.raises(ValueError, match="不適用"):
+            rois.crop_with_headroom(np.zeros((10, 10, 3), np.uint8), "own_hand", 40)

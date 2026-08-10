@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from mia.engine.actions import Candidate
+from mia.ui.style import CAPTION, MUTED
 from mia.ui.viewmodel import EngineView, ViewState, q_fraction
 from mia.ui.widgets.tiles import TileIcons, TileLabel
 
@@ -35,6 +36,9 @@ __all__ = ["AdviceTab"]
 MAX_CANDIDATES = 8
 
 _BAR_RANGE = 1000
+
+#: 大字那個動詞。牌交給圖去講,所以這一行只有動詞。
+_VERB = "font-size: 26px; font-weight: 600;"
 
 
 #: 「自己要拿出來的牌」最多幾張。吃碰是 2、大明槓是 3。
@@ -59,17 +63,17 @@ class _Headline(QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
 
         self._verb = QLabel("—", self)
-        self._verb.setStyleSheet("font-size: 26px; font-weight: 600;")
+        self._verb.setStyleSheet(_VERB)
         #: 動作在講的那張。鳴牌時是**別家打出來的**那張,不在自己手上。
         self._subject = TileLabel(icons, 64, self)
         #: 分隔詞。它是唯一讓「桌上那張」與「自己手上那幾張」分得開的東西
         #: —— 三張一樣大小排在一起,使用者看不出該點哪幾張。
         self._joiner = QLabel("", self)
-        self._joiner.setStyleSheet("color: palette(mid); font-size: 15px;")
+        self._joiner.setStyleSheet(MUTED + "font-size: 15px;")
         #: 自己要拿出來的那幾張。
         self._own = [TileLabel(icons, 64, self) for _ in range(_MAX_OWN_TILES)]
         self._detail = QLabel("", self)
-        self._detail.setStyleSheet("color: palette(mid);")
+        self._detail.setStyleSheet(MUTED)
 
         layout.addWidget(self._verb)
         layout.addWidget(self._subject)
@@ -104,7 +108,7 @@ class _Headline(QWidget):
             self._verb.setText("未開啟")
             self._show_tiles()
             self._detail.setText("用右上角的開關打開")
-            self._verb.setStyleSheet("font-size: 26px; font-weight: 600; color: palette(mid);")
+            self._verb.setStyleSheet(_VERB + MUTED)
             return
         if engine is None:
             self._verb.setText("等待引擎…")
@@ -118,7 +122,7 @@ class _Headline(QWidget):
             self._verb.setText(engine.verb)
             self._show_tiles()
             self._detail.setText(f"{engine.name}")
-            self._verb.setStyleSheet("font-size: 26px; font-weight: 600; color: palette(mid);")
+            self._verb.setStyleSheet(_VERB + MUTED)
             return
 
         # 大字是動詞,牌交給圖去講 —— 文字與圖同時寫一次會又長又重複。
@@ -139,10 +143,7 @@ class _Headline(QWidget):
             # 而手上沒有 3s 時,要知道那是剛剛打掉了,不是程式算錯。
             detail += "   ·已打出"
         self._detail.setText(detail)
-        self._verb.setStyleSheet(
-            "font-size: 26px; font-weight: 600;"
-            + ("color: palette(mid);" if stale else "")
-        )
+        self._verb.setStyleSheet(_VERB + (MUTED if stale else ""))
 
 
 class _CandidateRow(QWidget):
@@ -206,7 +207,7 @@ class AdviceTab(QWidget):
         layout.addWidget(_rule(self))
 
         self._candidates_label = QLabel("其他候選", self)
-        self._candidates_label.setStyleSheet("color: palette(mid); font-size: 11px;")
+        self._candidates_label.setStyleSheet(CAPTION)
         layout.addWidget(self._candidates_label)
 
         self._candidates = QWidget(self)
@@ -257,7 +258,7 @@ class AdviceTab(QWidget):
         while len(self._other_labels) < len(others):
             index = len(self._other_labels)
             name = QLabel("", self._others)
-            name.setStyleSheet("color: palette(mid);")
+            name.setStyleSheet(MUTED)
             value = QLabel("", self._others)
             self._others_layout.addWidget(name, index, 0)
             self._others_layout.addWidget(value, index, 1)
