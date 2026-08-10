@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
 
 from mia import APP_TITLE, features
 from mia.calibration.canvas import PRESETS as CANVAS_PRESETS
+from mia.calibration.canvas import Canvas
 from mia.ui.switchboard import CanvasPicker, GameLauncher, Switchboard, is_on
 from mia.ui.viewmodel import ViewModel, ViewState
 from mia.ui.widgets.advice import AdviceTab
@@ -319,22 +320,33 @@ class PanelWindow(QMainWindow):
         row_layout.setContentsMargins(0, 0, 0, 0)
         row_layout.setSpacing(8)
 
+        # 可編輯:常用的尺寸放下拉,其餘直接打。**沒有「自動偵測」這個選項** ——
+        # 那條路是猜的,實測會安靜地鎖進偏掉 0.7 張牌寬的矩形。它仍然存在
+        # (螢幕小到放不下任何尺寸時的退路、--connect 模式),但不該擺在選單上
+        # 邀請使用者去選一個已知比較差的做法。
         picker = QComboBox(row)
         picker.setMinimumWidth(150)
-        picker.addItem("自動偵測", None)
+        picker.setEditable(True)
+        picker.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         for preset in CANVAS_PRESETS:
             picker.addItem(preset.label, preset.key)
 
+        self._canvas_picker = picker
         if self._canvas is None or not self._canvas.can_pick_canvas():
             picker.setEnabled(False)
             picker.setToolTip(
                 "這個模式下視窗尺寸不是 MIA 決定的(重播、--no-vision、或連到別人的瀏覽器)"
             )
         else:
-            _select_data(picker, self._canvas.canvas())
+            self._show_canvas(self._canvas.canvas())
+            picker.setToolTip("可以直接輸入,格式是 1440x810")
             picker.currentIndexChanged.connect(self._on_canvas_picked)
-
-        self._canvas_picker = picker
+            # 打字要等**輸入結束**才套用,不能用 currentTextChanged ——
+            # 那個每按一個鍵就觸發一次,「1440x810」打到一半的「14」會先
+            # 被當成一個尺寸送出去,瀏覽器就跟著閃。
+            edit = picker.lineEdit()
+            if edit is not None:
+                edit.editingFinished.connect(self._on_canvas_typed)
         row_layout.addWidget(picker)
         row_layout.addStretch(1)
         layout.addWidget(row)
@@ -506,6 +518,36 @@ class PanelWindow(QMainWindow):
             else "開一個受控的瀏覽器並開始錄封包"
         )
 
+    def _show_canvas(self, key: str | None) -> None:
+        """把選單顯示成這個尺寸,**不觸發任何 handler**。
+
+        選單是可編輯的,所以「顯示什麼」是文字而不是索引 —— 使用者手打的
+        尺寸根本不在清單裡。擋掉訊號是必要的:setCurrentText 會讓
+        currentIndexChanged 觸發,而那個 handler 又會回頭呼叫這裡。
+        """
+        canvas = Canvas.parse(key)
+        blocker = QSignalBlocker(self._canvas_picker)
+        self._canvas_picker.setCurrentText(canvas.label if canvas else "")
+        del blocker
+
+    def _on_canvas_typed(self) -> None:
+        """使用者自己打了一個尺寸。看不懂就退回原本的值。
+
+        看不懂時**不能留著那串字** —— 選單上顯示 1440x81o 而實際跑的是
+        1280x720,那是最糟的一種:畫面說一套、程式做另一套。
+        """
+        if self._canvas is None:
+            return
+        text = self._canvas_picker.currentText()
+        canvas = Canvas.parse(text)
+        if canvas is None:
+            self._show_canvas(self._canvas.canvas())
+            self._notice.setText(f"看不懂的尺寸「{text}」—— 格式是 1440x810")
+            return
+        self._canvas.set_canvas(canvas.key)
+        self._show_canvas(canvas.key)  # 正規化成 1440×810
+        self.apply(self._viewmodel.state)
+
     def _on_canvas_picked(self, index: int) -> None:
         """改選遊戲視窗尺寸。
 
@@ -516,7 +558,8 @@ class PanelWindow(QMainWindow):
         """
         if self._canvas is None:
             return
-        self._canvas.set_canvas(self._canvas_picker.itemData(index))
+        key = self._canvas_picker.itemData(index)
+        self._canvas.set_canvas(key)
         self.apply(self._viewmodel.state)
 
     def _on_engine_picked(self, index: int) -> None:
