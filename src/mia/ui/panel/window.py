@@ -190,7 +190,6 @@ class PanelWindow(QMainWindow):
         self._analysis_page = self._add_page("向聽分析", self._analysis)
         self._settings_page = self._add_page("設定", self._build_settings())
         self._build_advice_settings()
-        self._build_analysis_settings()
         # 開關最後加,才會排在設定列最右邊
         self._add_switch(self._advice_page, features.ADVICE)
         self._add_switch(self._analysis_page, features.VISION)
@@ -303,19 +302,25 @@ class PanelWindow(QMainWindow):
         self._candidate_count.valueChanged.connect(self._on_candidate_count)
         self._advice_page.add_setting("候選數", self._candidate_count)
 
-    def _build_analysis_settings(self) -> None:
-        """向聽分析頁的設定列:畫布尺寸。
+    def _build_canvas_settings(self, page: QWidget, layout: QVBoxLayout) -> None:
+        """遊戲視窗尺寸。
 
-        放在這一頁而不是全域設定頁,因為它只影響功能 1 —— 牌桌矩形是畫面
-        辨識的座標基準,AI 建議走封包,完全不看畫面。
+        **放在全域設定頁而不是向聽分析頁。** 它同時做兩件事 —— 調整瀏覽器
+        視窗、決定牌桌校正的基準 —— 而使用者心裡它就是「遊戲視窗要開多大」,
+        那是一個應用程式層級的設定,不是某一頁的顯示選項。
 
-        為什麼會有這個選單,見 :mod:`mia.calibration.canvas`:自動偵測是
-        啟發式,實測在某些視窗尺寸下會安靜地給出偏掉 0.7 張牌寬的矩形,
-        手牌辨識從 96% 掉到 29%。選一個固定尺寸之後,MIA 開瀏覽器時會把
-        viewport 調成剛好那麼大,矩形就用算的,不必猜。
+        為什麼需要它,見 :mod:`mia.calibration.canvas`:自動偵測是啟發式,
+        實測在某些視窗尺寸下會安靜地給出偏掉 0.7 張牌寬的矩形,手牌辨識從
+        96% 掉到 29%。指定一個尺寸之後 MIA 直接把瀏覽器調成那樣,牌桌矩形
+        就用算的,不必猜。
         """
-        picker = QComboBox(self._analysis_page)
-        picker.setMinimumWidth(130)
+        row = QWidget(page)
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(8)
+
+        picker = QComboBox(row)
+        picker.setMinimumWidth(150)
         picker.addItem("自動偵測", None)
         for preset in CANVAS_PRESETS:
             picker.addItem(preset.label, preset.key)
@@ -323,18 +328,27 @@ class PanelWindow(QMainWindow):
         if self._canvas is None or not self._canvas.can_pick_canvas():
             picker.setEnabled(False)
             picker.setToolTip(
-                "這個模式下畫布尺寸不是 MIA 決定的(重播、--no-vision、或連到別人的瀏覽器)"
+                "這個模式下視窗尺寸不是 MIA 決定的(重播、--no-vision、或連到別人的瀏覽器)"
             )
         else:
             _select_data(picker, self._canvas.canvas())
-            picker.setToolTip(
-                "選一個尺寸,下次「開始遊戲」就會把瀏覽器視窗調成那樣,"
-                "畫面辨識不必再猜牌桌邊界"
-            )
             picker.currentIndexChanged.connect(self._on_canvas_picked)
 
         self._canvas_picker = picker
-        self._analysis_page.add_setting("畫布", picker)
+        row_layout.addWidget(picker)
+        row_layout.addStretch(1)
+        layout.addWidget(row)
+
+        hint = QLabel(
+            "這是「遊戲畫布」的大小,瀏覽器視窗會再高一點(多出工具列那一截)。"
+            "選了之後瀏覽器會立刻跟著調整,向聽分析的牌桌校正也直接用這個尺寸算,"
+            "不再靠猜邊界 —— 猜錯過一次就是整手牌都認錯。"
+            "第一次啟動時程式會自己挑螢幕放得下的最大值,你動過之後就照你選的。",
+            page,
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: palette(mid); font-size: 11px;")
+        layout.addWidget(hint)
 
     def _build_settings(self) -> QWidget:
         """全域設定頁。
@@ -360,6 +374,10 @@ class PanelWindow(QMainWindow):
         hint.setWordWrap(True)
         hint.setStyleSheet("color: palette(mid); font-size: 11px;")
         layout.addWidget(hint)
+
+        layout.addWidget(_rule(page))
+        layout.addWidget(_caption("遊戲視窗尺寸", page))
+        self._build_canvas_settings(page, layout)
 
         layout.addWidget(_rule(page))
         layout.addWidget(_caption("Overlay", page))
@@ -489,11 +507,12 @@ class PanelWindow(QMainWindow):
         )
 
     def _on_canvas_picked(self, index: int) -> None:
-        """改選畫布尺寸。
+        """改選遊戲視窗尺寸。
 
-        瀏覽器**不會當場變大小** —— 尺寸是開視窗時下的命令。所以對局進行中改
-        的話要講清楚要按下一次「開始遊戲」才生效,否則使用者會等一個不會發生
-        的事。畫面辨識則是立刻重開,它會自己說現在對不對得上。
+        兩件事同時發生:**瀏覽器當場被調成新尺寸**(透過控制檔送給擷取子程序,
+        見 :mod:`mia.live.control`),以及**畫面辨識重開**去用新的校正基準。
+        中間有最多一個輪詢週期(250 ms)的空窗,那段時間狀態列會說「畫布
+        對不上」—— 那是實話,而且它會自己好。
         """
         if self._canvas is None:
             return
