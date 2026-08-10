@@ -712,10 +712,40 @@ class TestCanvasPicker:
         assert picker in on_settings, "選單不在設定頁上"
         assert picker not in on_analysis, "選單還留在向聽分析頁"
 
-    def test_auto_is_the_first_option(self, qtbot) -> None:
-        """自動偵測要排第一 —— 那是預設值,而預設值不該藏在清單中間。"""
+    def test_auto_detect_is_not_offered(self, qtbot) -> None:
+        """自動偵測是猜的,實測會安靜地鎖進偏掉 0.7 張牌寬的矩形。
+
+        它仍然是螢幕放不下任何尺寸時的退路,但不該擺在選單上邀請使用者去選
+        一個已知比較差的做法。
+        """
         window = self._window(qtbot, FakeCanvasPicker())
-        assert window._canvas_picker.itemData(0) is None  # noqa: SLF001
+        picker = window._canvas_picker  # noqa: SLF001
+        assert all(picker.itemData(i) is not None for i in range(picker.count()))
+        assert "自動" not in " ".join(picker.itemText(i) for i in range(picker.count()))
+
+    def test_a_typed_size_is_accepted(self, qtbot) -> None:
+        """預設清單只有四個,而使用者的螢幕未必剛好是那幾種。"""
+        picker = FakeCanvasPicker()
+        window = self._window(qtbot, picker)
+        window._canvas_picker.setCurrentText("1440x810")  # noqa: SLF001
+        window._on_canvas_typed()  # noqa: SLF001
+        assert picker.calls == ["1440x810"]
+
+    def test_a_typed_size_is_normalised_for_display(self, qtbot) -> None:
+        window = self._window(qtbot, FakeCanvasPicker())
+        window._canvas_picker.setCurrentText(" 1440 X 810 ")  # noqa: SLF001
+        window._on_canvas_typed()  # noqa: SLF001
+        assert window._canvas_picker.currentText() == "1440×810"  # noqa: SLF001
+
+    def test_nonsense_reverts_instead_of_sticking(self, qtbot) -> None:
+        """看不懂時**不能留著那串字** —— 選單顯示 1440x81o 而實際跑
+        1280x720,那是最糟的一種:畫面說一套、程式做另一套。"""
+        picker = FakeCanvasPicker(current="1280x720")
+        window = self._window(qtbot, picker)
+        window._canvas_picker.setCurrentText("大一點")  # noqa: SLF001
+        window._on_canvas_typed()  # noqa: SLF001
+        assert picker.calls == []
+        assert window._canvas_picker.currentText() == "1280×720"  # noqa: SLF001
 
     def test_every_preset_is_offered(self, qtbot) -> None:
         window = self._window(qtbot, FakeCanvasPicker())
@@ -732,20 +762,16 @@ class TestCanvasPicker:
         上次的設定沒存到而再選一次 —— 那次選擇會被當成「沒有改變」忽略掉。
         """
         window = self._window(qtbot, FakeCanvasPicker(current="1920x1080"))
-        assert window._canvas_picker.currentData() == "1920x1080"  # noqa: SLF001
+        assert window._canvas_picker.currentText() == "1920×1080"  # noqa: SLF001
 
     def test_picking_forwards_the_key(self, qtbot) -> None:
-        picker = FakeCanvasPicker()
-        window = self._window(qtbot, picker)
-        index = window._canvas_picker.findData("1280x720")  # noqa: SLF001
-        window._canvas_picker.setCurrentIndex(index)  # noqa: SLF001
-        assert picker.calls == ["1280x720"]
-
-    def test_going_back_to_auto_forwards_none(self, qtbot) -> None:
+        # 起始值刻意不是要選的那個 —— 選同一項不會觸發 currentIndexChanged,
+        # 那樣測到的是 Qt 的去重,不是我們的接線。
         picker = FakeCanvasPicker(current="1280x720")
         window = self._window(qtbot, picker)
-        window._canvas_picker.setCurrentIndex(0)  # noqa: SLF001
-        assert picker.calls == [None]
+        index = window._canvas_picker.findData("1920x1080")  # noqa: SLF001
+        window._canvas_picker.setCurrentIndex(index)  # noqa: SLF001
+        assert picker.calls == ["1920x1080"]
 
     def test_it_is_disabled_when_nobody_can_act_on_it(self, qtbot) -> None:
         """重播與 ``--no-vision``:可按而按了沒事發生,看起來就是壞掉。"""

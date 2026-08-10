@@ -73,12 +73,17 @@ class AnalysisTab(QWidget):
         self._source.setStyleSheet("color: palette(mid); font-size: 11px;")
         layout.addWidget(self._source)
 
-        layout.addWidget(_rule(self))
-        layout.addWidget(_caption("手牌", self))
+        # 分隔線要**留住參照**,才能跟著它底下那一區一起隱藏。寫死加進版面
+        # 的話,功能關著時會剩下三條橫線橫在一片空白上,看起來像東西沒載出來。
+        self._hand_rule = _rule(self)
+        self._hand_caption = _caption("手牌", self)
+        layout.addWidget(self._hand_rule)
+        layout.addWidget(self._hand_caption)
         self._hand = HandStrip(icons, height=44, parent=self)
         layout.addWidget(self._hand)
 
-        layout.addWidget(_rule(self))
+        self._ukeire_rule = _rule(self)
+        layout.addWidget(self._ukeire_rule)
         self._ukeire_caption = _caption("進張(估計值,未扣牌河與副露)", self)
         layout.addWidget(self._ukeire_caption)
         self._ukeire = HandStrip(icons, height=32, parent=self)
@@ -88,7 +93,8 @@ class AnalysisTab(QWidget):
         self._ukeire_text.setWordWrap(True)
         layout.addWidget(self._ukeire_text)
 
-        layout.addWidget(_rule(self))
+        self._discard_rule = _rule(self)
+        layout.addWidget(self._discard_rule)
         self._discard_caption = _caption("打牌選項(只看聽牌速度)", self)
         layout.addWidget(self._discard_caption)
         self._discards = QWidget(self)
@@ -105,6 +111,12 @@ class AnalysisTab(QWidget):
             state = ViewState()
         self._update_headline(state, enabled=enabled)
         self._hand.set_tiles(_concealed(state), drawn=state.drawn)
+        # 沒有手牌就整區收起來(連標題與分隔線)。留一個空的牌條加一條橫線
+        # 只是在畫一個骨架,而骨架看起來像「載到一半」。
+        has_hand = bool(state.hand)
+        self._hand_rule.setVisible(has_hand)
+        self._hand_caption.setVisible(has_hand)
+        self._hand.setVisible(has_hand)
         self._update_ukeire(state)
         self._update_discards(state)
 
@@ -134,6 +146,7 @@ class AnalysisTab(QWidget):
         analysis = state.analysis
         ukeire = analysis.ukeire[:MAX_UKEIRE] if analysis else ()
         show = bool(ukeire)
+        self._ukeire_rule.setVisible(show)
         self._ukeire_caption.setVisible(show)
         self._ukeire.setVisible(show)
         self._ukeire_text.setVisible(show)
@@ -146,6 +159,7 @@ class AnalysisTab(QWidget):
 
     def _update_discards(self, state: ViewState) -> None:
         options = state.discards[:MAX_DISCARDS]
+        self._discard_rule.setVisible(bool(options))
         self._discard_caption.setVisible(bool(options))
 
         while len(self._discard_rows) < len(options):
