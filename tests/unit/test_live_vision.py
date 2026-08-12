@@ -166,7 +166,27 @@ class TestReadingAHand:
             assert tile[-1] in "mpsz", f"{tile} 不是雀魂記法"
 
 
-class TestSkippingUnchangedFrames:
+def _moving_frame(window: WindowInfo, offset: int) -> Frame:
+    """手牌往右挪 ``offset`` 個像素 —— 每一幀都與前一幀不同,模擬動畫中途。"""
+    hand = _hand_image()
+    frame, _ = _frame_with_hand(window, hand)
+    image = frame.image.copy()
+    hand_h, hand_w = hand.shape[:2]
+    image[PASTE.y : PASTE.y + hand_h, PASTE.x : PASTE.x + hand_w] = (40, 90, 40)
+    image[
+        PASTE.y : PASTE.y + hand_h, PASTE.x + offset : PASTE.x + offset + hand_w
+    ] = hand
+    return Frame(image, window, scale=1.0)
+
+
+class TestOnlyClassifyingWhatHasStopped:
+    """動的時候不認,停下來才認。
+
+    動畫中途的畫面沒有正確答案 —— 牌是半透明、位移中的,模板比對只會給出一個
+    沒有意義的結果,而它仍然會被投到 UI 上。離線評測從一開始就把轉場的幀整段
+    丟掉(見 eval.align.SETTLE),即時這條路原本沒有對應的機制。
+    """
+
     def test_an_identical_frame_is_not_classified_twice(self, window: WindowInfo) -> None:
         """這是省下九成模板比對的地方 —— 等別人打牌時畫面是靜止的。"""
         frame, roi = _frame_with_hand(window, _hand_image())
@@ -178,18 +198,47 @@ class TestSkippingUnchangedFrames:
         assert worker.reads == 1, f"同一張畫面認了 {worker.reads} 次"
         assert worker.skipped >= 3
 
-    def test_a_changed_frame_is_classified_again(self, window: WindowInfo) -> None:
+    def test_a_frame_that_settles_is_classified_again(self, window: WindowInfo) -> None:
         first, roi = _frame_with_hand(window, _hand_image())
         second, _ = _frame_with_hand(window, _hand_image("hand_14_with_draw.png"))
         bus = UpdateBus()
         worker = VisionWorker(
             bus,
             config=_config(roi),
-            backend=FakeBackend(window, [first, second]),
+            # first 要出現兩次才算停下來過;second 之後由 FakeBackend 一直重複
+            backend=FakeBackend(window, [first, first, second]),
             window=window,
         )
         _run_until(worker, lambda: worker.reads >= 2)
         assert worker.reads >= 2
+
+    def test_a_frame_that_never_settles_is_not_classified(self, window: WindowInfo) -> None:
+        """動畫中途每一幀都不一樣,那些幀一張都不該認 —— 認了就是把
+        半透明、位移中的牌投到畫面上。"""
+        roi = _frame_with_hand(window, _hand_image())[1]
+        moving = [_moving_frame(window, offset) for offset in range(1, 8)]
+        bus = UpdateBus()
+        worker = VisionWorker(
+            bus,
+            config=_config(roi),
+            backend=FakeBackend(window, moving),
+            window=window,
+        )
+        _run_until(worker, lambda: worker.skipped >= len(moving), timeout=3.0)
+        assert worker.reads == 0, f"動畫中途認了 {worker.reads} 次"
+        assert len(bus) == 0
+
+    def test_something_that_never_stops_still_gets_read(self, window: WindowInfo) -> None:
+        """ROI 裡有東西永遠在動的話(會呼吸的牌背皮膚、擷取雜訊),寧可退回
+        舊行為也不要讓整個功能安靜地停擺。"""
+        roi = _frame_with_hand(window, _hand_image())[1]
+        forever = [_moving_frame(window, offset) for offset in range(1, 60)]
+        bus = UpdateBus()
+        worker = VisionWorker(
+            bus, config=_config(roi), backend=FakeBackend(window, forever), window=window
+        )
+        _run_until(worker, lambda: worker.reads >= 1, timeout=5.0)
+        assert worker.reads >= 1
 
 
 class TestDegradedConditions:

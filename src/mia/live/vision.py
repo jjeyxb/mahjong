@@ -4,11 +4,23 @@
 所以整個迴圈的原則是**任何一步不成立就報一句話然後繼續轉**,不是拋例外結束。
 使用者要的是「現在為什麼沒東西」,而一個死掉的執行緒什麼都不會說。
 
-跳過沒變的幀
-------------
-每幀對 14 張牌各做一次 37 個模板的比對,是這條路上唯一貴的地方。但畫面在
-一巡之內大部分時間是靜止的(等別人打牌),所以先比一次 ROI 的**位元組是否
-完全相同**,相同就整幀跳過。
+**動的時候不辨識,停下來才辨識**
+---------------------------------
+每幀對 14 張牌各做一次 37 個模板的比對,是這條路上唯一貴的地方
+(實測 653 ms / 手,2560 牌桌)。所以先比一次手牌區的**位元組是否完全相同**,
+再決定要不要認。
+
+判斷的方向是「**這一幀跟上一幀一樣**」才認,不是「不一樣」才認。兩個理由:
+
+1. **動畫中途的畫面本來就沒有正確答案。** 摸打動畫實測約一秒
+   (見 :data:`~mia.eval.align.SETTLE` 的量測),期間牌是半透明、位移中的,
+   模板比對只會給出一個沒有意義的答案 —— 而它仍然會被投到 UI 上。
+   離線評測從一開始就把轉場的幀整段丟掉,即時這條路卻沒有對應的機制,
+   所以**畫面上看到的準確率比報告上的差**,而報告沒有錯。
+2. 順便省掉絕大部分的比對。一秒的動畫在 15 fps 下是十幾幀,原本每一幀都要
+   認一次(而且每次都認錯)。
+
+代價是停下來之後多等一幀才出答案,15 fps 下約 67 ms。
 
 刻意用完全相等而不是「差異小於門檻」:門檻要靠實測資料訂,而門檻訂高了會漏掉
 真的變化 —— 那個錯誤表現成「手牌卡在上一巡」,非常難察覺。完全相等沒有這個
@@ -56,6 +68,14 @@ _WINDOW_RETRY = 2.0
 #: 舊的 CGWindowID 不會自己變有效。
 _REFIND_AFTER = 15
 
+#: 畫面連續變動這麼多幀之後,即使還沒停下來也認一次。
+#:
+#: 15 fps 下約一秒,也就是一段摸打動畫的長度。正常情況碰不到這個上限 ——
+#: 手牌區停下來就會位元組相同。它擋的是「ROI 裡有東西永遠在動」那種情況
+#: (換了會呼吸的牌背皮膚、擷取本身帶雜訊):真發生的話寧可退回舊行為
+#: (每幀都認、動畫中途偶爾認錯),也不要讓整個功能安靜地停擺。
+_MAX_UNSETTLED = 15
+
 
 
 class VisionWorker(threading.Thread):
@@ -93,6 +113,8 @@ class VisionWorker(threading.Thread):
         self._rois: RoiSet | None = None
         self._templates: TemplateSet | None = None
         self._previous: np.ndarray | None = None
+        #: 手牌區連續變動了幾幀。0 表示現在這個畫面已經認過了。
+        self._unsettled = 0
         self._failures = 0
         #: 認過幾手、跳過幾幀。用來回答「CV 到底有沒有在動」。
         self.reads = 0
@@ -179,15 +201,23 @@ class VisionWorker(threading.Thread):
             return
         tall, headroom = cropped
 
-        # 位元組完全相同就整幀跳過。這裡擋掉的是等別人打牌時的靜止畫面,
-        # 佔了絕大多數的幀,而模板比對是這條路上唯一貴的一步。
+        # 停下來才認,理由見模組說明。
         # **比的是含 headroom 的整條**:牌被滑鼠抬起來的時候手牌區的下緣其實
-        # 沒什麼變化,只比 ROI 的話那一幀會被當成沒動而跳過。
-        if self._previous is not None and np.array_equal(tall, self._previous):
+        # 沒什麼變化,只比 ROI 的話那一幀會被當成沒動,抬起來的過程就看不見。
+        if self._previous is None or not np.array_equal(tall, self._previous):
+            self._previous = tall.copy()
+            self._unsettled += 1
+            if self._unsettled < _MAX_UNSETTLED:
+                self.skipped += 1
+                return
+            # 一直在動 —— 還是給個答案,不要整個安靜下來
+            logger.debug("手牌區連續變動 {} 幀,不再等它停", self._unsettled)
+        elif self._unsettled == 0:
+            # 這個畫面上一輪已經認過了
             self.skipped += 1
             return
-        self._previous = tall.copy()
 
+        self._unsettled = 0
         self._read(tall, headroom)
 
     def _ensure_window(self) -> WindowInfo | None:
@@ -231,6 +261,7 @@ class VisionWorker(threading.Thread):
             # 換了校正,上一幀的 ROI 已經不可比 —— 不清掉會拿不同座標的影像
             # 去做「位元組相同」的判斷,結果是永遠判定為變化(不致命,但白做工)
             self._previous = None
+            self._unsettled = 0
             for warning in calibration.warnings:
                 logger.warning(warning)
         try:
