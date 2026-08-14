@@ -31,6 +31,7 @@ from dataclasses import dataclass, replace
 from mia.analysis import (
     AGARI,
     TENPAI,
+    DangerReport,
     DiscardOption,
     HandAnalysis,
     HandError,
@@ -199,6 +200,9 @@ class ViewState:
         cv_hand: CV 認到的手牌。與 :attr:`hand` 分開存,才比較得出衝突。
         packet_hand: 封包推出來的手牌。
         analysis: 向聽與進張。手牌不合法時是 ``None``。
+        dangers: 每張牌切出去的放銃危險度。**只有封包那條路能提供** ——
+            它要的是別家的牌河與副露,而 CV 一張都看不到。功能關著或還沒
+            進對局時是 ``None``,那與「都很安全」是兩件不同的事。
         discards: 純以聽牌速度而言的打牌選項,最好的在前。
         engines: 各引擎的建議,加入順序 —— 那個順序就是 :attr:`primary` 的優先序。
         preferred_engine: 使用者點名要當主角的引擎;``None`` 表示照順序取。
@@ -214,6 +218,7 @@ class ViewState:
     packet_drawn: str | None = None
     analysis: HandAnalysis | None = None
     discards: tuple[DiscardOption, ...] = ()
+    dangers: DangerReport | None = None
     engines: tuple[EngineView, ...] = ()
     preferred_engine: str | None = None
     notices: tuple[str, ...] = ()
@@ -379,6 +384,15 @@ class ViewModel:
         """
         views = tuple(_to_view(a) for a in advices)
         self._emit(replace(self._state, engines=views))
+
+    def update_dangers(self, report: DangerReport | None) -> None:
+        """放銃危險度。
+
+        ``None`` 表示「沒有這份資訊」(功能關著、還沒進對局),與一份
+        **空的**報告不同 —— 後者代表算過了但手上沒牌可評。UI 對這兩種
+        情況該說不一樣的話。
+        """
+        self._emit(replace(self._state, dangers=report))
 
     def set_preferred_engine(self, name: str | None) -> None:
         """點名哪個引擎當主角。``None`` 回到照 :attr:`ViewState.engines` 順序取。"""

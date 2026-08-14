@@ -27,9 +27,10 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass, field
 
+from mia.analysis.danger import DangerReport
 from mia.engine.base import Advice
 
-__all__ = ["Advices", "CvHand", "PacketHand", "Update", "UpdateBus"]
+__all__ = ["Advices", "CvHand", "Dangers", "PacketHand", "Update", "UpdateBus"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,7 +64,19 @@ class Advices:
     advices: tuple[Advice, ...]
 
 
-Update = CvHand | PacketHand | Advices
+@dataclass(frozen=True, slots=True)
+class Dangers:
+    """手上每一張牌切出去的放銃危險度。
+
+    與 :class:`Advices` 分成兩個 slot,理由同上:兩者的節奏不一樣。危險度
+    每一張捨牌都會變(別人打了一張,安全牌就多一張),而建議只在輪到自己
+    時才有。塞在一起會讓其中一個被另一個蓋掉。
+    """
+
+    report: DangerReport
+
+
+Update = CvHand | PacketHand | Advices | Dangers
 
 
 @dataclass

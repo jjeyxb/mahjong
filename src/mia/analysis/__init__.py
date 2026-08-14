@@ -4,6 +4,13 @@
 (功能 2)都可以餵進來。
 """
 
+from mia.analysis.danger import (
+    DangerLevel,
+    DangerReport,
+    SeatDanger,
+    TileDanger,
+    assess,
+)
 from mia.analysis.shanten import (
     AGARI,
     TENPAI,
@@ -18,10 +25,15 @@ from mia.analysis.shanten import (
 __all__ = [
     "AGARI",
     "TENPAI",
+    "DangerLevel",
+    "DangerReport",
     "DiscardOption",
     "HandAnalysis",
     "HandError",
+    "SeatDanger",
+    "TileDanger",
     "Ukeire",
     "analyse",
+    "assess",
     "suggest_discards",
 ]
