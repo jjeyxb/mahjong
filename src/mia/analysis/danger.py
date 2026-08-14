@@ -42,9 +42,10 @@
 對「每一家」都要算,不是只算立直的
 ------------------------------------
 這一節是被真實牌譜逼出來的。``tests/fixtures/real_game_full.jsonl`` 裡有三次
-榮和,**和牌的人一個都沒有立直**。第一版只評估立直家,結果對其中一次給出
-「8s 安全 —— 現物」,而那張牌正是放銃牌 —— 它對立直的 0 家確實是現物,
-榮和的卻是沒立直的 3 家。模組沒說錯話,但畫面上寫「安全」就是在騙人。
+榮和,**其中兩次和牌的人沒有立直**(一次三副露、一次兩副露,第三次才是
+立直家)。第一版只評估立直家,結果對其中一次給出「8s 安全 —— 現物」,而那張
+牌正是放銃牌 —— 它對立直的 0 家確實是現物,榮和的卻是沒立直的 3 家。
+模組沒說錯話,但畫面上寫「安全」就是在騙人。
 
 關鍵是把規則想窄了。上面那四條排除法,**只有一條是立直專屬的**:
 
@@ -58,6 +59,21 @@
 
 沒立直的人危險度會偏高,因為我們不知道他到底聽不聽牌。**那是誠實的**:
 不知道就是不知道,而把不知道畫成安全正是這個模組要避免的事。
+
+三副露與立直平起平坐
+--------------------
+上面那三次榮和裡最重的一次,是一個**三副露、沒立直**的人和的。而三副露的
+曝光量與立直是同一個量級(那場東風戰裡 53 對 59 個捨牌時點)。所以
+:data:`~mia.mjai.table.MELD_THREAT` 把三副露也算成威脅。
+
+**平起平坐的是「要不要指名他」,不是等級。** 等級仍然只由「還剩幾種待牌型」
+決定 —— 那條鏈是這個模組唯一的賣點,把它為了一個估計而拉斷,畫面上就會出現
+「非常危險」配著「還有 2 型」這種自相矛盾的東西。
+
+而且等級本來就不需要拉。立直在這裡**沒有**加分,它只解鎖一條規則:宣告之後
+別人打過的牌對他安全。那份安全牌一路累積,所以立直家越到後面越好防;三副露
+的人拿不到這個扣抵,他的危險度到中盤通常**已經高於**立直家了。真正缺的是
+他根本沒被指名 —— 有人坐在三副露上,標題卻寫著「沒有人立直」。
 """
 
 from __future__ import annotations
@@ -66,13 +82,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import IntEnum
 
-from mia.mjai.table import TableTracker
+from mia.mjai.table import MELD_THREAT, TableTracker
 from mia.mjai.tiles import normalize_red, tile_name
 
 __all__ = [
     "DangerLevel",
     "DangerReport",
     "SeatDanger",
+    "Threat",
     "TileDanger",
     "Wait",
     "assess",
@@ -144,16 +161,40 @@ class SeatDanger:
         furiten: 他打過這張牌 —— 振聽,規則保證的安全。
         reach: 他有沒有立直。立直代表**確定聽牌**;沒立直不代表沒聽,
             只代表我們不知道。
+        melds: 他副露幾組。到 :data:`~mia.mjai.table.MELD_THREAT` 組就算
+            **推定聽牌**(見模組說明)。
     """
 
     seat: int
     waits: tuple[Wait, ...]
     furiten: bool = False
     reach: bool = False
+    melds: int = 0
 
     @property
     def level(self) -> DangerLevel:
         return _level(len(self.waits))
+
+    @property
+    def threat(self) -> bool:
+        """值不值得指名他。立直(確定聽牌)或三副露(推定聽牌)。
+
+        **不影響 :attr:`level`。** 等級是排除法數出來的,而這個是估計 ——
+        混進去會讓等級失去它唯一的意思。
+        """
+        return self.reach or self.melds >= MELD_THREAT
+
+    @property
+    def stance(self) -> str:
+        """指名他的時候要加的那個括號。不是威脅就是空字串。
+
+        立直排在前面:兩者都成立時,「確定聽牌」比「大概聽了」值得寫出來。
+        """
+        if self.reach:
+            return "立直"
+        if self.melds >= MELD_THREAT:
+            return f"{self.melds}副露"
+        return ""
 
     @property
     def reason(self) -> str:
@@ -188,13 +229,16 @@ class TileDanger:
         return max((s.level for s in self.seats), default=DangerLevel.SAFE)
 
     @property
-    def against_reach(self) -> DangerLevel:
-        """只看已立直的家。沒有人立直時是 :attr:`DangerLevel.SAFE`。
+    def against_threats(self) -> DangerLevel:
+        """只看**確定或推定聽牌**的家(立直、三副露)。都沒有時是
+        :attr:`DangerLevel.SAFE`。
 
-        比 :attr:`level` 銳利,因為立直是**確定聽牌**。兩個一起看才完整:
+        比 :attr:`level` 銳利,因為那幾家大概真的在聽。兩個一起看才完整:
         「對立直家安全、對其他家危險」與「對誰都危險」是很不一樣的處境。
+
+        **只認立直會漏掉三副露那一家**,而實測那場最重的一次放銃正是給他的。
         """
-        return max((s.level for s in self.seats if s.reach), default=DangerLevel.SAFE)
+        return max((s.level for s in self.seats if s.threat), default=DangerLevel.SAFE)
 
     @property
     def waits(self) -> int:
@@ -219,18 +263,36 @@ class TileDanger:
 
 
 @dataclass(frozen=True, slots=True)
+class Threat:
+    """一個值得指名的對手,與他憑什麼被指名。
+
+    做成一個型別而不是一串座位號碼:UI 要寫「對家立直、下家三副露」,
+    只給座位的話那句話寫不出來,而「有人三副露卻只說沒人立直」正是這一輪
+    要修掉的東西。
+    """
+
+    seat: int
+    reach: bool = False
+    melds: int = 0
+
+    @property
+    def label(self) -> str:
+        return "立直" if self.reach else f"{self.melds}副露"
+
+
+@dataclass(frozen=True, slots=True)
 class DangerReport:
     """一次評估的結果。
 
     Attributes:
-        reached: 已宣告立直的家。空的**不代表安全** —— 只代表沒有人確定聽牌,
-            而實測放銃給沒立直的人比給立直的人更常見。
+        threats: 確定或推定聽牌的家(立直、三副露)。空的**不代表安全** ——
+            只代表沒有人露出馬腳,而實測放銃給這種人一樣會發生。
         tiles: 手上每一張牌一份,由安全到危險排序。
         seat: 自己坐哪。UI 要靠它把絕對座位換成「上家 / 對家 / 下家」——
             「對 3 家危險」要在腦裡換算,「對下家危險」直接就能用。
     """
 
-    reached: tuple[int, ...]
+    threats: tuple[Threat, ...]
     tiles: tuple[TileDanger, ...]
     seat: int | None = None
 
@@ -238,18 +300,20 @@ class DangerReport:
         return bool(self.tiles)
 
     def __str__(self) -> str:
-        who = "".join(f"{s}家" for s in self.reached) or "無人"
-        return f"立直 {who}:" + " ".join(str(t) for t in self.tiles[:5])
+        who = "".join(f"{t.seat}家{t.label}" for t in self.threats) or "無人"
+        return f"{who}:" + " ".join(str(t) for t in self.tiles[:5])
 
 
 def _worst(seats: Sequence[SeatDanger]) -> SeatDanger:
     """最該提的那一家。
 
-    平手時**優先講立直的那個**:危險度一樣的時候,「確定聽牌的人」比「可能
-    根本沒聽的人」值得寫在那一行上。不寫死的話 ``max`` 會回第一個,而那只是
-    座位編號的順序 —— 看起來有道理,其實是巧合。
+    平手時**優先講露出馬腳的那個**:危險度一樣的時候,「大概真的在聽的人」
+    比「可能根本沒聽的人」值得寫在那一行上。三副露與立直在這裡同一階
+    (見模組說明),兩者都成立時再優先立直 —— 確定聽牌比推定聽牌硬。
+    不寫死的話 ``max`` 會回第一個,而那只是座位編號的順序 —— 看起來有道理,
+    其實是巧合。
     """
-    return max(seats, key=lambda s: (s.level, len(s.waits), s.reach))
+    return max(seats, key=lambda s: (s.level, len(s.waits), s.threat, s.reach))
 
 
 def _ranks(tile: str) -> tuple[int, str] | None:
@@ -333,18 +397,23 @@ def assess(
         seats = []
         for seat in seats_to_check:
             player = table.players[seat]
+            reach, melds = player.reach, player.melded
             if tile in player.safe:
-                seats.append(SeatDanger(seat, (), furiten=True, reach=player.reach))
+                seats.append(SeatDanger(seat, (), True, reach, melds))
                 continue
             waits = (
                 *_sequence_waits(tile, player.safe, remaining),
                 *_pair_waits(tile, remaining),
             )
-            seats.append(SeatDanger(seat, tuple(waits), reach=player.reach))
+            seats.append(SeatDanger(seat, tuple(waits), reach=reach, melds=melds))
         report.append(TileDanger(tile, tuple(seats)))
 
-    report.sort(key=lambda d: (d.level, d.against_reach, d.waits, d.tile))
-    return DangerReport(tuple(table.threats), tuple(report), table.seat)
+    report.sort(key=lambda d: (d.level, d.against_threats, d.waits, d.tile))
+    threats = tuple(
+        Threat(i, reach=table.players[i].reach, melds=table.players[i].melded)
+        for i in table.threats
+    )
+    return DangerReport(threats, tuple(report), table.seat)
 
 
 def _candidate_tiles(tiles: list[str]) -> set[str]:

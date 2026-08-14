@@ -51,13 +51,25 @@ from mia.mjai.events import (
 )
 from mia.mjai.tiles import normalize_red
 
-__all__ = ["SEATS", "Player", "TableTracker"]
+__all__ = ["MELD_THREAT", "SEATS", "Player", "TableTracker"]
 
 #: 四人麻將。三麻不在範圍內 —— 北拔きドラ 與座位數都不一樣。
 SEATS = 4
 
 #: 一種牌總共幾張。
 COPIES = 4
+
+#: 幾組副露之後視為**推定聽牌**。
+#:
+#: 三組是有理由的:副露三組之後暗手牌只剩四張,能組的東西已經很少,而且
+#: 願意鳴到第三下的人手上通常有役、正在趕聽。實測那場東風戰裡三副露的曝光量
+#: 與立直是同一個量級(53 對 59 個捨牌時點),而三次榮和裡最重的那一次
+#: 正是一個三副露、沒立直的人和的。
+#:
+#: 這**是估計不是推論**,與這個模組其他部分不同。所以它只影響「要不要把他
+#: 當成威脅」(標題、排序、對誰),不影響危險度等級 —— 等級仍然只由「還剩
+#: 幾種待牌型」決定,那條鏈不能斷。
+MELD_THREAT = 3
 
 
 @dataclass(slots=True)
@@ -92,13 +104,25 @@ class Player:
     safe: set[str] = field(default_factory=set)
 
     @property
-    def is_threat(self) -> bool:
-        """需不需要防他。
+    def melded(self) -> int:
+        """副露幾組。"""
+        return len(self.melds)
 
-        目前只認立直 —— 那是封包直接宣告的,毫無歧義。副露聽牌的判斷要靠
-        捨牌與副露去推,那是估計,混進來會讓「安全」這兩個字失去意義。
+    @property
+    def is_threat(self) -> bool:
+        """需不需要防他:立直,或副露到 :data:`MELD_THREAT` 組。
+
+        立直是封包直接宣告的,毫無歧義;三副露是估計(見 :data:`MELD_THREAT`)。
+        兩者混在同一個屬性裡是刻意的 —— 它回答的是「防不防他」,而那個答案
+        兩種情況都是要。**「安全」兩個字的意思不受影響**:那是由振聽與排除法
+        決定的,與他聽不聽牌無關。
+
+        Note:
+            立直家會隨著局面推進**越來越好防** —— 宣告之後別人打過的牌對他
+            都安全,那份安全牌一路累積。三副露的人拿不到這個扣抵,所以到中盤
+            之後他每一張牌的危險度通常**高於**立直家,不只是持平。
         """
-        return self.reach
+        return self.reach or self.melded >= MELD_THREAT
 
 
 @dataclass(slots=True)
@@ -211,10 +235,12 @@ class TableTracker:
 
     @property
     def threats(self) -> list[int]:
-        """**已宣告立直**的座位。自己不算 —— 不會放銃給自己。
+        """**確定或推定聽牌**的座位(立直、或三副露)。自己不算。
 
-        這不等於「要防的人」:沒立直的人一樣會榮和,而且實測比立直的還常見
-        (見 ``docs/decisions.md`` 第十八節)。這個屬性回答的是「誰確定聽牌」。
+        這仍然不等於「要防的人」:沒立直也沒副露的人一樣會榮和,而實測三次
+        榮和裡有兩次是沒立直的人和的(見 ``docs/decisions.md`` 第十八節)。
+        這個屬性回答的是「誰值得被指名」,不是「只有這些人要防」——
+        :func:`~mia.analysis.danger.assess` 一律評估三家。
         """
         return [i for i in self.opponents if self.players[i].is_threat]
 

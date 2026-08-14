@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from mia.analysis.danger import DangerLevel, assess
+from mia.analysis.danger import DangerLevel, _worst, assess
 from mia.groundtruth.stream import MjaiDecoder
-from mia.mjai import Dahai, Reach, StartGame, StartKyoku
+from mia.mjai import Dahai, Pon, Reach, StartGame, StartKyoku
 from mia.mjai.table import TableTracker
 from mia.mjai.tiles import normalize_red
 
@@ -31,6 +31,13 @@ def _table(seat: int = 0) -> TableTracker:
         )
     )
     return t
+
+
+def _meld(table: TableTracker, seat: int, count: int) -> TableTracker:
+    """讓某一家碰到 ``count`` 組。用字牌,免得順手動到數牌的壁與筋。"""
+    for pai in ("1z", "2z", "3z", "4z")[:count]:
+        table.handle(Pon(actor=seat, target=(seat + 3) % 4, pai=pai, consumed=[pai, pai]))
+    return table
 
 
 def _danger(table: TableTracker, tile: str):
@@ -151,20 +158,66 @@ class TestReachIsSharperNotBroader:
         t = _table()
         t.handle(Reach(actor=2))
         t.handle(Dahai(actor=2, pai="1z", tsumogiri=False))
-        assert assess(["3m"], t).reached == (2,)
+        threats = assess(["3m"], t).threats
+        assert [(x.seat, x.label) for x in threats] == [(2, "立直")]
 
-    def test_against_reach_only_looks_at_reachers(self) -> None:
+    def test_against_threats_only_looks_at_the_named(self) -> None:
         """對立直家是現物、對別家全新 —— 兩個數字要分得開,
         因為「對立直家安全」與「對誰都安全」是很不一樣的處境。"""
         t = _table()
         t.handle(Reach(actor=1))
         t.handle(Dahai(actor=1, pai="3m", tsumogiri=False))
         danger = _danger(t, "3m")
-        assert danger.against_reach is DangerLevel.SAFE
+        assert danger.against_threats is DangerLevel.SAFE
         assert danger.level is not DangerLevel.SAFE
 
+
+class TestMeldsCountAsThreats:
+    """三副露與立直平起平坐 —— **在指名這件事上**,不在等級上。
+
+    實測那場最重的一次榮和,和牌的是一個三副露、沒立直的人;而三副露的
+    曝光量與立直是同一個量級(53 對 59 個捨牌時點)。
+    """
+
+    def test_three_melds_gets_named(self) -> None:
+        t = _meld(_table(), seat=2, count=3)
+        assert [(x.seat, x.label) for x in assess(["3m"], t).threats] == [(2, "3副露")]
+
+    def test_two_melds_does_not(self) -> None:
+        """門檻在三組。兩組還在「可能只是想做個役」的範圍。"""
+        t = _meld(_table(), seat=2, count=2)
+        assert assess(["3m"], t).threats == ()
+
+    def test_melds_do_not_change_the_level(self) -> None:
+        """**這一條是這個設計的界線。** 等級由排除法數出來,副露是估計 ——
+        混進去的話畫面上會出現「非常危險」配著「還有 2 型」,而「每一條都能
+        指回它憑什麼」是這個模組唯一的賣點。
+        """
+        plain = _danger(_table(), "3m").level
+        melded = _danger(_meld(_table(), seat=2, count=3), "3m").level
+        assert melded is plain
+
+    def test_it_sharpens_against_threats(self) -> None:
+        """三副露的家要算進那個銳利指標。只認立直會把他整個漏掉。"""
+        t = _meld(_table(), seat=2, count=3)
+        assert _danger(t, "3m").against_threats is not DangerLevel.SAFE
+
+    def test_a_reach_outranks_melds_when_both_apply(self) -> None:
+        """兩者都成立時寫立直 —— 確定聽牌比推定聽牌硬。"""
+        t = _meld(_table(), seat=2, count=3)
+        t.handle(Reach(actor=2))
+        assert assess(["3m"], t).threats[0].label == "立直"
+
+    def test_the_melded_seat_is_the_one_worth_naming(self) -> None:
+        """平手時要講露出馬腳的那個,不是座位編號最小的那個 —— 三家的待牌型
+        數一樣時,``max`` 預設會回 1 家,而那只是編號順序。"""
+        t = _meld(_table(), seat=3, count=3)
+        assert _worst(_danger(t, "3m").seats).seat == 3
+
+
+class TestNoReach:
     def test_no_reach_still_produces_a_report(self) -> None:
-        """沒有人立直**不代表安全** —— 實測放銃給沒立直的人更常見。"""
+        """沒有人立直**不代表安全** —— 實測三次榮和裡兩次是沒立直的人和的。"""
         assert assess(["3m"], _table()).tiles
 
 

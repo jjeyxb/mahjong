@@ -650,14 +650,17 @@ class OverlayWindow(QWidget):
 def _danger_headline(report: DangerReport) -> str:
     """清單上面那一行小字。
 
-    沒人立直時**不能只寫「無人立直」** —— 那會被讀成「可以隨便打」,而實測
-    那一場三次放銃的對象一個都沒立直(見 ``docs/decisions.md`` 第十八節)。
+    誰值得指名要寫出來,而且**立直與三副露同一階** —— 有人坐在三副露上卻
+    只說「沒人立直」,那是畫面說沒事而實際有事(實測那場最重的一次放銃,
+    和牌的就是一個三副露、沒立直的人)。
+
+    都沒有的時候也**不能只寫「無人立直」** —— 那會被讀成可以隨便打。
     HUD 塞不下側邊視窗那整段說明,所以濃縮成一句提醒。
     """
-    if report.reached:
-        who = "、".join(seat_name(report.seat, s) for s in report.reached)
-        return f"放銃危險度 —— {who}立直,安全的在上"
-    return "放銃危險度 —— 沒人立直不代表安全,安全的在上"
+    if report.threats:
+        who = "、".join(f"{seat_name(report.seat, t.seat)}{t.label}" for t in report.threats)
+        return f"放銃危險度 —— {who},安全的在上"
+    return "放銃危險度 —— 沒人立直也不代表安全,安全的在上"
 
 
 def _effective_ukeire(state: ViewState) -> tuple[Ukeire, ...]:

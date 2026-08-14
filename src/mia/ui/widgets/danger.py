@@ -16,6 +16,12 @@
 座位寫成上家 / 對家 / 下家
 --------------------------
 「對 3 家危險」要在腦裡換算一次才知道是誰。相對稱呼直接對得上牌桌。
+
+指名的理由要寫出來
+------------------
+「對家(立直)」與「下家(3副露)」在畫面上是同一階 —— 兩者都是「大概真的
+在聽」。等級不因此改變(那是排除法數出來的),但**指名要指到**:有人坐在
+三副露上,標題卻寫著「沒有人立直」,那是畫面說沒事而實際有事。
 """
 
 from __future__ import annotations
@@ -99,11 +105,7 @@ def _detail(danger: TileDanger, seat: int | None) -> str:
     """
     if all(s.furiten for s in danger.seats):
         return "三家都是現物"
-    worst = _worst(danger)
-    who = seat_name(seat, worst.seat)
-    if worst.reach:
-        who += "(立直)"
-    return f"對{who}:{worst.reason}"
+    return f"對{_who(danger, seat)}:{_worst(danger).reason}"
 
 
 def danger_note(danger: TileDanger, seat: int | None) -> str:
@@ -124,10 +126,18 @@ def danger_note(danger: TileDanger, seat: int | None) -> str:
     if danger.level is DangerLevel.SAFE:
         return "對三家都排除了"
     worst = _worst(danger)
+    return f"對{_who(danger, seat)}・還 {len(worst.waits)} 型"
+
+
+def _who(danger: TileDanger, seat: int | None) -> str:
+    """指名最危險的那一家,附上他憑什麼被指名(立直 / 三副露)。
+
+    括號裡那個字**不能省**:「對下家危險」與「對下家(3副露)危險」是不同
+    份量的話,而使用者要靠那個份量決定要不要繞路。
+    """
+    worst = _worst(danger)
     who = seat_name(seat, worst.seat)
-    if worst.reach:
-        who += "(立直)"
-    return f"對{who}・還 {len(worst.waits)} 型"
+    return f"{who}({worst.stance})" if worst.stance else who
 
 
 def _worst(danger: TileDanger) -> SeatDanger:
@@ -192,16 +202,18 @@ class AnalysisDangerTab(QWidget):
             row.setVisible(False)
 
     def _show(self, report: DangerReport) -> None:
-        if report.reached:
-            who = "、".join(seat_name(report.seat, s) for s in report.reached)
-            self._headline.setText(f"{who}立直")
+        if report.threats:
+            who = "、".join(
+                f"{seat_name(report.seat, t.seat)}{t.label}" for t in report.threats
+            )
+            self._headline.setText(who)
             note = "以下是排除法的結果:還剩幾種待牌型沒被排除。"
         else:
-            self._headline.setText("沒有人立直")
-            # 這句話很重要。沒人立直**不等於安全** —— 實測那場三次放銃,
-            # 和牌的人一個都沒立直。
+            self._headline.setText("沒有人立直或三副露")
+            # 這句話很重要。沒人露出馬腳**不等於安全** —— 實測那場三次榮和,
+            # 有兩次是沒立直的人和的。
             note = (
-                "沒有人立直不代表安全 —— 沒立直的人一樣會榮和,"
+                "沒有人立直或三副露不代表安全 —— 一樣會有人榮和,"
                 "只是我們無法確定他聽不聽牌。以下仍然是排除法的結果。"
             )
         self._source.setText(note)
