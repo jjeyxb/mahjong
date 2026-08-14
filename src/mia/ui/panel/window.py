@@ -53,6 +53,7 @@ from mia.ui.switchboard import CanvasPicker, GameLauncher, Switchboard, is_on
 from mia.ui.viewmodel import ViewModel, ViewState
 from mia.ui.widgets.advice import AdviceTab
 from mia.ui.widgets.analysis import AnalysisTab
+from mia.ui.widgets.danger import AnalysisDangerTab
 from mia.ui.widgets.tiles import DEFAULT_SKIN, TileIcons
 from mia.ui.widgets.toggle import ToggleSwitch
 
@@ -175,6 +176,7 @@ class PanelWindow(QMainWindow):
         icons = TileIcons(skin)
         self._advice = AdviceTab(icons, self)
         self._analysis = AnalysisTab(icons, self)
+        self._danger = AnalysisDangerTab(icons, self)
 
         self._nav = QListWidget(self)
         self._nav.setFixedWidth(NAV_WIDTH)
@@ -190,11 +192,13 @@ class PanelWindow(QMainWindow):
 
         self._advice_page = self._add_page("AI 建議", self._advice)
         self._analysis_page = self._add_page("向聽分析", self._analysis)
+        self._danger_page = self._add_page("放銃分析", self._danger)
         self._settings_page = self._add_page("設定", self._build_settings())
         self._build_advice_settings()
         # 開關最後加,才會排在設定列最右邊
         self._add_switch(self._advice_page, features.ADVICE)
         self._add_switch(self._analysis_page, features.VISION)
+        self._add_switch(self._danger_page, features.DANGER)
 
         self._nav.currentRowChanged.connect(self._stack.setCurrentIndex)
         self._nav.setCurrentRow(0)
@@ -598,6 +602,7 @@ class PanelWindow(QMainWindow):
         self._sync_start_button()
         self._advice.update_from(state, enabled=self._is_on(features.ADVICE))
         self._analysis.update_from(state, enabled=self._is_on(features.VISION))
+        self._danger.update_from(state, enabled=self._is_on(features.DANGER))
         self._notice.setText(self._status_text(state))
 
     def _is_on(self, key: str) -> bool:
