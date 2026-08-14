@@ -47,12 +47,13 @@ from PySide6.QtWidgets import (
 )
 
 from mia import features
-from mia.analysis import Ukeire
+from mia.analysis import DangerReport, TileDanger, Ukeire
 from mia.engine.actions import Candidate
 from mia.mjai.tiles import tile_name
 from mia.ui.state import UiState
 from mia.ui.switchboard import Switchboard, is_on
 from mia.ui.viewmodel import EngineView, ViewModel, ViewState, q_fraction, shanten_text
+from mia.ui.widgets.danger import LEVEL_COLORS, danger_note, seat_name
 from mia.ui.widgets.tiles import DEFAULT_SKIN, TileIcons, TileLabel
 
 __all__ = ["OverlayWindow"]
@@ -76,6 +77,14 @@ _MAX_UKEIRE_TILES = 5
 
 #: 進張牌面的高度。比建議那張小 —— 它是參考資訊,不是要你現在做的動作。
 _UKEIRE_TILE_HEIGHT = 26
+
+#: 放銃危險度最多列幾張 —— 一手牌就是這麼多,所以這不是「只列前幾名」,
+#: 而是一個防呆上限。使用者要的就是**每一張都列出來**:挑要切哪一張的時候,
+#: 被截掉的那幾張正好是最危險的那幾張,而那是最需要看到的。
+_MAX_DANGER_ROWS = 14
+
+#: 危險度那一列的牌面高度。比進張再小一階 —— 它一次要疊十四列。
+_DANGER_TILE_HEIGHT = 22
 
 _BG = QColor(24, 26, 32, 214)
 _TEXT = "#F2F2F7"
@@ -143,6 +152,40 @@ class _CandidateRow(QWidget):
         )
 
 
+class _DangerLine(QWidget):
+    """危險度那一列:牌面圖 / 等級 / 對誰。
+
+    比側邊視窗那一列少了待牌型的清單 —— 那一串在 HUD 上會橫跨半個牌桌
+    (理由見 :func:`~mia.ui.widgets.danger.danger_note`)。
+    """
+
+    def __init__(self, icons: TileIcons, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        self._tile = TileLabel(icons, _DANGER_TILE_HEIGHT, self)
+        self._level = QLabel("", self)
+        self._level.setMinimumWidth(56)
+        self._note = QLabel("", self)
+        self._note.setStyleSheet(f"color: {_MUTED}; font-size: 11px;")
+
+        layout.addWidget(self._tile)
+        layout.addWidget(self._level)
+        layout.addWidget(self._note, 1)
+
+    def update_from(self, danger: TileDanger, seat: int | None) -> None:
+        # 牌名已經是 MJAI 記法(這條路的資料來自 MJAI 事件流),不要再轉一次
+        # —— 數牌轉得過去、字牌會拋 TileError,所以那種錯只有摸到字牌才會爆。
+        self._tile.set_tile(danger.tile)
+        self._level.setText(danger.level.label)
+        self._level.setStyleSheet(
+            f"color: {LEVEL_COLORS[danger.level]}; font-size: 12px; font-weight: 600;"
+        )
+        self._note.setText(danger_note(danger, seat))
+
+
 class OverlayWindow(QWidget):
     """疊在遊戲上的精簡 HUD。
 
@@ -156,8 +199,8 @@ class OverlayWindow(QWidget):
 
     Note:
         自己**不決定要不要顯示** —— 那是側邊視窗設定頁上的勾選。這裡只提供
-        :meth:`set_shown` / :meth:`set_expanded` / :meth:`set_locked` 三個動作,
-        每一個都會順手把狀態寫回磁碟。
+        :meth:`set_shown` / :meth:`set_expanded` / :meth:`set_danger_shown` /
+        :meth:`set_locked` 四個動作,每一個都會順手把狀態寫回磁碟。
     """
 
     def __init__(
@@ -174,6 +217,7 @@ class OverlayWindow(QWidget):
         self._state = viewmodel.state
         self._icons = TileIcons(skin)
         self._rows: list[_CandidateRow] = []
+        self._danger_rows: list[_DangerLine] = []
         self._drag_offset: QPoint | None = None
 
         # window flag 必須在第一次 show() **之前**設定。show 之後再改,Qt 會把
@@ -205,6 +249,7 @@ class OverlayWindow(QWidget):
         self._candidates_layout.setContentsMargins(0, 2, 0, 0)
         self._candidates_layout.setSpacing(3)
         layout.addWidget(self._candidates)
+        layout.addWidget(self._build_dangers())
 
         self._hint = QLabel("拖曳移動 —— 擺好之後到設定頁鎖定", self)
         self._hint.setStyleSheet(f"color: {_ACCENT}; font-size: 11px;")
@@ -260,6 +305,34 @@ class OverlayWindow(QWidget):
         layout.addWidget(self._ukeire_more)
         return row
 
+    def _build_dangers(self) -> QWidget:
+        """危險度那一段:一行標題 + 每張牌一列。
+
+        **為什麼是往下長一段,而不是擠進上面那一行。** 上面那一行回答的是
+        「現在做什麼」(切哪張、還差幾向聽);這一段回答的是「哪些不能切」,
+        而那是一份要逐張掃過去的清單,壓成一行就沒有用了。
+
+        全部列出來、安全的在最上面 —— 決定要切哪一張的時候,眼睛從上往下
+        找到第一張不影響進張的牌就停,不需要再去對照另一個視窗。
+        """
+        block = QWidget(self)
+        layout = QVBoxLayout(block)
+        layout.setContentsMargins(0, 4, 0, 0)
+        layout.setSpacing(3)
+
+        self._danger_head = QLabel("", block)
+        self._danger_head.setStyleSheet(f"color: {_MUTED}; font-size: 11px;")
+        layout.addWidget(self._danger_head)
+
+        self._danger_list = QWidget(block)
+        self._danger_layout = QVBoxLayout(self._danger_list)
+        self._danger_layout.setContentsMargins(0, 0, 0, 0)
+        self._danger_layout.setSpacing(2)
+        layout.addWidget(self._danger_list)
+
+        self._dangers = block
+        return block
+
     # ------------------------------------------------------------------ 開關
 
     @property
@@ -271,6 +344,11 @@ class OverlayWindow(QWidget):
     @property
     def expanded(self) -> bool:
         return self._ui_state.overlay_expanded
+
+    @property
+    def danger_shown(self) -> bool:
+        """放銃危險度要不要一起列在 HUD 上。"""
+        return self._ui_state.overlay_danger
 
     @property
     def locked(self) -> bool:
@@ -292,6 +370,17 @@ class OverlayWindow(QWidget):
         """展開 / 收起候選 Q 值。開關在側邊視窗的設定頁,不在 Overlay 上
         —— Overlay 鎖定之後點不到,那個按鈕會變成死的。"""
         self._ui_state.overlay_expanded = on
+        self._ui_state.save()
+        self._render()
+
+    def set_danger_shown(self, on: bool) -> None:
+        """把放銃危險度加進 HUD(往下長一段)或收起來。
+
+        與 ``features.DANGER`` 是兩個不同的問題:那個決定**有沒有在算**,
+        這個決定**要不要占用畫面**。功能關著的時候勾這個不會有東西出現
+        —— 那是對的,沒有資料可畫。
+        """
+        self._ui_state.overlay_danger = on
         self._ui_state.save()
         self._render()
 
@@ -412,9 +501,19 @@ class OverlayWindow(QWidget):
         state = self._state
         advice_on = is_on(self._switchboard, features.ADVICE)
         vision_on = is_on(self._switchboard, features.VISION)
+        # 兩個條件都要:功能開著代表有在算,勾選代表使用者要看。
+        danger_on = self.danger_shown and is_on(self._switchboard, features.DANGER)
+        self._show_dangers(state.dangers if danger_on else None)
 
         if not advice_on and not vision_on:
-            # 兩個都關著時要**主動說**,不然畫面上是一個空的黑框蓋在牌桌上,
+            if danger_on:
+                # 危險度自己就是內容了。這時候再喊一次「未開啟」會變成
+                # 一個蓋在清單上面、說著相反的話的標題。
+                self._show_advice(None, verb="")
+                self._show_shanten("")
+                self._show_candidates(None)
+                return
+            # 全部關著時要**主動說**,不然畫面上是一個空的黑框蓋在牌桌上,
             # 看起來像程式壞了。
             self._show_advice(None, muted=True, verb="未開啟", mark="用側邊視窗的開關打開")
             self._show_shanten("")
@@ -496,6 +595,33 @@ class OverlayWindow(QWidget):
         self._ukeire_more.setText(f"+{rest}" if rest > 0 else "")
         self._ukeire_more.setVisible(rest > 0)
 
+    def _show_dangers(self, report: DangerReport | None) -> None:
+        """畫危險度清單。``None``(沒開、或還沒有資料)時整段收起來。
+
+        整段收起來而不是留一句「等待對局…」:HUD 的高度是直接從牌桌上拿走的,
+        沒有內容的時候就該把那塊還回去。要知道為什麼沒東西,側邊視窗那一頁
+        寫得清楚。
+        """
+        tiles = report.tiles[:_MAX_DANGER_ROWS] if report else ()
+        if not tiles:
+            self._dangers.setVisible(False)
+            return
+
+        assert report is not None
+        while len(self._danger_rows) < len(tiles):
+            row = _DangerLine(self._icons, self._danger_list)
+            self._danger_layout.addWidget(row)
+            self._danger_rows.append(row)
+
+        for row, danger in zip(self._danger_rows, tiles, strict=False):
+            row.update_from(danger, report.seat)
+            row.setVisible(True)
+        for row in self._danger_rows[len(tiles) :]:
+            row.setVisible(False)
+
+        self._danger_head.setText(_danger_headline(report))
+        self._dangers.setVisible(True)
+
     def _show_shanten(self, text: str) -> None:
         self._shanten.setText(text)
         self._shanten.setVisible(bool(text))
@@ -519,6 +645,19 @@ class OverlayWindow(QWidget):
         for row in self._rows[len(candidates) :]:
             row.setVisible(False)
         self._candidates.setVisible(bool(candidates))
+
+
+def _danger_headline(report: DangerReport) -> str:
+    """清單上面那一行小字。
+
+    沒人立直時**不能只寫「無人立直」** —— 那會被讀成「可以隨便打」,而實測
+    那一場三次放銃的對象一個都沒立直(見 ``docs/decisions.md`` 第十八節)。
+    HUD 塞不下側邊視窗那整段說明,所以濃縮成一句提醒。
+    """
+    if report.reached:
+        who = "、".join(seat_name(report.seat, s) for s in report.reached)
+        return f"放銃危險度 —— {who}立直,安全的在上"
+    return "放銃危險度 —— 沒人立直不代表安全,安全的在上"
 
 
 def _effective_ukeire(state: ViewState) -> tuple[Ukeire, ...]:
