@@ -205,11 +205,18 @@ class TableTracker:
     # ------------------------------------------------------------------ 查詢
 
     @property
+    def opponents(self) -> list[int]:
+        """除了自己以外的座位。座位未知時是全部四家。"""
+        return [i for i in range(SEATS) if i != self.seat]
+
+    @property
     def threats(self) -> list[int]:
-        """需要防的座位。自己不算 —— 不會放銃給自己。"""
-        return [
-            i for i, p in enumerate(self.players) if p.is_threat and i != self.seat
-        ]
+        """**已宣告立直**的座位。自己不算 —— 不會放銃給自己。
+
+        這不等於「要防的人」:沒立直的人一樣會榮和,而且實測比立直的還常見
+        (見 ``docs/decisions.md`` 第十八節)。這個屬性回答的是「誰確定聽牌」。
+        """
+        return [i for i in self.opponents if self.players[i].is_threat]
 
     def visible(self, own_hand: list[str] | tuple[str, ...] = ()) -> Counter[str]:
         """場上看得見的每種牌各幾張。
