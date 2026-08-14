@@ -185,6 +185,7 @@ def build_live_runtime(
     from mia import features
     from mia.config.loader import load_config
     from mia.live import PacketWorker, UpdateBus, VisionWorker, capture_command
+    from mia.live.danger import DangerWorker
     from mia.live.runtime import Feature, Worker
     from mia.live.source import CaptureLauncher
     from mia.vision.tiles.classify import DEFAULT_SKIN
@@ -228,6 +229,13 @@ def build_live_runtime(
             return PacketWorker(bus, dump=dump_path(), engines=build_engines(args), from_start=True)
 
         feature_list.append(Feature(features.ADVICE, make_packets))
+
+        def make_danger() -> Worker:
+            # 同樣 from_start=True,而且理由更硬:安全牌是整局累積出來的,
+            # 從中途接上會少掉前面所有的捨牌
+            return DangerWorker(bus, dump=dump_path(), from_start=True)
+
+        feature_list.append(Feature(features.DANGER, make_danger))
 
     if not args.no_vision:
         config = load_config()

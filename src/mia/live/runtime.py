@@ -37,7 +37,7 @@ from typing import Protocol
 from mia import features
 from mia.calibration.canvas import CanvasChoice
 from mia.features import NAMES
-from mia.live.bus import Advices, CvHand, PacketHand, UpdateBus, WorkerStatus
+from mia.live.bus import Advices, CvHand, Dangers, PacketHand, UpdateBus, WorkerStatus
 from mia.live.source import CaptureLauncher
 from mia.ui.viewmodel import ViewModel
 from mia.utils.logging import logger
@@ -314,6 +314,10 @@ class LiveRuntime:
             elif key == features.ADVICE:
                 self._viewmodel.update_packet_hand(())
                 self._viewmodel.update_advices([])
+            elif key == features.DANGER:
+                # None 而不是空報告:「沒有這份資訊」與「算過了但沒有危險」
+                # 是兩件事,而後者會讓人以為現在很安全
+                self._viewmodel.update_dangers(None)
 
     def __enter__(self) -> LiveRuntime:
         self.start()
@@ -347,6 +351,8 @@ class LiveRuntime:
                         self._settle_capture()
                     case Advices():
                         self._viewmodel.update_advices(update.advices)
+                    case Dangers():
+                        self._viewmodel.update_dangers(update.report)
             self._sync_notices()
 
     def _settle_capture(self) -> None:

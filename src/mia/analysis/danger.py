@@ -197,8 +197,14 @@ class TileDanger:
 
     @property
     def waits(self) -> int:
-        """所有要防的家加起來還有幾型。排序用。"""
+        """三家加起來還有幾型。**排序用的總數**,不是等級的依據 ——
+        等級取的是最危險那一家(放銃只需要中一個人)。"""
         return sum(len(s.waits) for s in self.seats)
+
+    @property
+    def worst_waits(self) -> int:
+        """最危險那一家還有幾型。這個才與 :attr:`level` 對得起來。"""
+        return max((len(s.waits) for s in self.seats), default=0)
 
     @property
     def reason(self) -> str:
@@ -209,7 +215,7 @@ class TileDanger:
         return worst.reason
 
     def __str__(self) -> str:
-        return f"{tile_name(self.tile)} {self.level.label}({self.waits} 型)"
+        return f"{tile_name(self.tile)} {self.level.label}(最多 {self.worst_waits} 型)"
 
 
 @dataclass(frozen=True, slots=True)
