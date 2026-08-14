@@ -228,10 +228,11 @@ class TestPresent:
 class TestNavigation:
     """左側功能列。"""
 
-    def test_there_are_three_pages(self, panel) -> None:
+    def test_there_is_one_page_per_feature_plus_settings(self, panel) -> None:
         _, window = panel
-        assert window._nav.count() == 3  # noqa: SLF001
-        assert window._stack.count() == 3  # noqa: SLF001
+        expected = len(features.NAMES) + 1
+        assert window._nav.count() == expected  # noqa: SLF001
+        assert window._stack.count() == expected  # noqa: SLF001
 
     def test_selecting_a_page_switches_the_stack(self, panel) -> None:
         _, window = panel
@@ -241,13 +242,13 @@ class TestNavigation:
     def test_the_settings_strip_is_hidden_when_empty(self, panel) -> None:
         """設定頁的內容本身就是設定,頂端不該再留一條空白的橫線。"""
         _, window = panel
-        settings_page = window._stack.widget(2)  # noqa: SLF001
+        settings_page = window._stack.widget(len(features.NAMES))  # noqa: SLF001
         assert not shown(settings_page._settings)  # noqa: SLF001
 
-    def test_both_feature_pages_show_their_strip(self, panel) -> None:
-        """兩個功能頁都有開關,所以設定列一定看得到。"""
+    def test_every_feature_page_shows_its_strip(self, panel) -> None:
+        """功能頁都有開關,所以設定列一定看得到。"""
         _, window = panel
-        for index in (0, 1):
+        for index in range(len(features.NAMES)):
             page = window._stack.widget(index)  # noqa: SLF001
             assert shown(page._settings), f"第 {index} 頁的設定列不見了"  # noqa: SLF001
 
@@ -349,12 +350,12 @@ class TestFeatureSwitches:
         qtbot.addWidget(window)
         return board, window
 
-    def test_both_switches_exist(self, wired) -> None:
+    def test_every_feature_has_a_switch(self, wired) -> None:
         _, window = wired
-        assert set(window._switches) == {features.ADVICE, features.VISION}  # noqa: SLF001
+        assert set(window._switches) == set(features.NAMES)  # noqa: SLF001
 
-    def test_both_default_to_off(self, wired) -> None:
-        """使用者要求的:預設兩個都不執行。"""
+    def test_all_default_to_off(self, wired) -> None:
+        """使用者要求的:預設都不執行。"""
         _, window = wired
         for switch in window._switches.values():  # noqa: SLF001
             assert not switch.isChecked()

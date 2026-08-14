@@ -62,6 +62,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import IntEnum
 
@@ -211,8 +212,7 @@ class TileDanger:
         """最危險那一家的理由。全部安全時說為什麼安全。"""
         if not self.seats:
             return "沒有人需要防"
-        worst = max(self.seats, key=lambda s: (s.level, len(s.waits)))
-        return worst.reason
+        return _worst(self.seats).reason
 
     def __str__(self) -> str:
         return f"{tile_name(self.tile)} {self.level.label}(最多 {self.worst_waits} 型)"
@@ -226,10 +226,13 @@ class DangerReport:
         reached: 已宣告立直的家。空的**不代表安全** —— 只代表沒有人確定聽牌,
             而實測放銃給沒立直的人比給立直的人更常見。
         tiles: 手上每一張牌一份,由安全到危險排序。
+        seat: 自己坐哪。UI 要靠它把絕對座位換成「上家 / 對家 / 下家」——
+            「對 3 家危險」要在腦裡換算,「對下家危險」直接就能用。
     """
 
     reached: tuple[int, ...]
     tiles: tuple[TileDanger, ...]
+    seat: int | None = None
 
     def __bool__(self) -> bool:
         return bool(self.tiles)
@@ -237,6 +240,16 @@ class DangerReport:
     def __str__(self) -> str:
         who = "".join(f"{s}家" for s in self.reached) or "無人"
         return f"立直 {who}:" + " ".join(str(t) for t in self.tiles[:5])
+
+
+def _worst(seats: Sequence[SeatDanger]) -> SeatDanger:
+    """最該提的那一家。
+
+    平手時**優先講立直的那個**:危險度一樣的時候,「確定聽牌的人」比「可能
+    根本沒聽的人」值得寫在那一行上。不寫死的話 ``max`` 會回第一個,而那只是
+    座位編號的順序 —— 看起來有道理,其實是巧合。
+    """
+    return max(seats, key=lambda s: (s.level, len(s.waits), s.reach))
 
 
 def _ranks(tile: str) -> tuple[int, str] | None:
@@ -331,7 +344,7 @@ def assess(
         report.append(TileDanger(tile, tuple(seats)))
 
     report.sort(key=lambda d: (d.level, d.against_reach, d.waits, d.tile))
-    return DangerReport(tuple(table.threats), tuple(report))
+    return DangerReport(tuple(table.threats), tuple(report), table.seat)
 
 
 def _candidate_tiles(tiles: list[str]) -> set[str]:
