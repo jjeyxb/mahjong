@@ -42,6 +42,10 @@ class UiState:
     Attributes:
         overlay_visible: 上次關掉程式時 Overlay 是開著的嗎。
         overlay_expanded: Overlay 要不要展開候選 Q 值。
+        overlay_danger: Overlay 要不要把放銃危險度一起列出來。與功能開關
+            **是兩件事**:功能開著代表有在算,這個只決定要不要占用 HUD 的
+            高度 —— 一整手 14 列會把 Overlay 拉得比牌桌還長,不是每個人
+            都想一直看著。
         overlay_locked: Overlay 是否鎖定位置(鎖定 = 滑鼠穿透)。
         overlay_pos: Overlay 左上角的螢幕座標。``None`` 表示還沒拖過。
         canvas: 選定的遊戲畫布尺寸(例如 ``1920x1080``)。``None`` 為自動偵測。
@@ -55,6 +59,7 @@ class UiState:
     canvas_chosen: bool = False
     overlay_visible: bool = False
     overlay_expanded: bool = False
+    overlay_danger: bool = False
     #: 預設**不鎖定** —— 第一次開起來一定要先拖到想要的位置,而鎖定的視窗
     #: 拖不動。鎖上了才點得到底下的遊戲,那是使用者自己該做的下一個動作。
     overlay_locked: bool = False

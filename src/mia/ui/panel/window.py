@@ -139,8 +139,8 @@ class PanelWindow(QMainWindow):
         launcher: 「開始遊戲」要接到誰。``None``(重播、``--tail``、
             ``--no-packets``)時按鈕畫成停用 —— 那些模式裡遊戲不是 MIA 開的。
         canvas: 畫布尺寸選單要接到誰。``None`` 時選單畫成停用。
-        overlay: 要控制的 Overlay。設定頁上的三個勾選都作用在它身上;
-            ``None`` 時那三個畫成停用。
+        overlay: 要控制的 Overlay。設定頁上的四個勾選都作用在它身上;
+            ``None`` 時那四個畫成停用。
 
     Note:
         :meth:`apply` 是唯一的資料入口。ViewModel 的通知可能來自別的執行緒,
@@ -405,7 +405,7 @@ class PanelWindow(QMainWindow):
         return page
 
     def _build_overlay_settings(self, page: QWidget, layout: QVBoxLayout) -> None:
-        """Overlay 的三個勾選。
+        """Overlay 的四個勾選。
 
         **為什麼展開與鎖定的開關在這裡,而不在 Overlay 上。** Overlay 鎖定之後
         對滑鼠是透明的 —— 擺在它自己身上的按鈕會變成死的,而使用者看得到卻按不到
@@ -418,8 +418,17 @@ class PanelWindow(QMainWindow):
         overlay = self._overlay
         self._overlay_shown = QCheckBox("在遊戲上顯示 Overlay", page)
         self._overlay_expanded = QCheckBox("Overlay 顯示候選 Q 值", page)
+        # 放銃分析**要不要跟著上 HUD 是分開問的**:那是一手 14 列,會把
+        # Overlay 往下拉長一大段。想一直看著的人與只想要一行建議的人是
+        # 兩種用法,而後者不該被迫接受前者的高度。
+        self._overlay_danger = QCheckBox("Overlay 顯示放銃危險度(會往下變長)", page)
         self._overlay_locked = QCheckBox("鎖定位置(滑鼠可穿透)", page)
-        boxes = (self._overlay_shown, self._overlay_expanded, self._overlay_locked)
+        boxes = (
+            self._overlay_shown,
+            self._overlay_expanded,
+            self._overlay_danger,
+            self._overlay_locked,
+        )
 
         if overlay is None:
             for box in boxes:
@@ -432,16 +441,19 @@ class PanelWindow(QMainWindow):
         # handler,而那一次會把「上次記住的狀態」當成使用者剛剛的操作存回去
         self._overlay_shown.setChecked(overlay.shown)
         self._overlay_expanded.setChecked(overlay.expanded)
+        self._overlay_danger.setChecked(overlay.danger_shown)
         self._overlay_locked.setChecked(overlay.locked)
         self._overlay_shown.toggled.connect(self._on_overlay_shown)
         self._overlay_expanded.toggled.connect(overlay.set_expanded)
+        self._overlay_danger.toggled.connect(overlay.set_danger_shown)
         self._overlay_locked.toggled.connect(overlay.set_locked)
         for box in boxes:
             layout.addWidget(box)
 
         hint = QLabel(
             "沒鎖定時 Overlay 可以直接拖曳,鎖定之後點擊會穿過去給遊戲。"
-            "位置會記住,下次啟動回到同一個地方。",
+            "位置會記住,下次啟動回到同一個地方。"
+            "放銃危險度還要「放銃分析」那一頁的開關也打開才會有資料。",
             page,
         )
         hint.setWordWrap(True)
@@ -460,6 +472,7 @@ class PanelWindow(QMainWindow):
         不清掉勾選:那是使用者的偏好,下次顯示時該照舊。
         """
         self._overlay_expanded.setEnabled(shown)
+        self._overlay_danger.setEnabled(shown)
         self._overlay_locked.setEnabled(shown)
 
     def closeEvent(self, event: QCloseEvent) -> None:

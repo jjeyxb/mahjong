@@ -562,12 +562,14 @@ class TestOverlayControls:
         """收起來的時候「展開」與「鎖定」沒有東西可以作用。"""
         _, window = wired
         assert not window._overlay_expanded.isEnabled()  # noqa: SLF001
+        assert not window._overlay_danger.isEnabled()  # noqa: SLF001
         assert not window._overlay_locked.isEnabled()  # noqa: SLF001
 
     def test_showing_it_enables_the_other_two(self, wired) -> None:
         _, window = wired
         window._overlay_shown.setChecked(True)  # noqa: SLF001
         assert window._overlay_expanded.isEnabled()  # noqa: SLF001
+        assert window._overlay_danger.isEnabled()  # noqa: SLF001
         assert window._overlay_locked.isEnabled()  # noqa: SLF001
 
     def test_expanding_reaches_the_overlay(self, wired) -> None:
@@ -575,6 +577,13 @@ class TestOverlayControls:
         window._overlay_shown.setChecked(True)  # noqa: SLF001
         window._overlay_expanded.setChecked(True)  # noqa: SLF001
         assert overlay.expanded
+
+    def test_the_danger_list_reaches_the_overlay(self, wired) -> None:
+        """放銃分析上不上 HUD 是**另外問**的:它會把 Overlay 往下拉長一整手。"""
+        overlay, window = wired
+        window._overlay_shown.setChecked(True)  # noqa: SLF001
+        window._overlay_danger.setChecked(True)  # noqa: SLF001
+        assert overlay.danger_shown
 
     def test_locking_reaches_the_overlay(self, wired) -> None:
         overlay, window = wired
@@ -614,6 +623,7 @@ class TestWithoutAnOverlay:
         _, window = panel
         assert not window._overlay_shown.isEnabled()  # noqa: SLF001
         assert not window._overlay_expanded.isEnabled()  # noqa: SLF001
+        assert not window._overlay_danger.isEnabled()  # noqa: SLF001
         assert not window._overlay_locked.isEnabled()  # noqa: SLF001
 
     def test_the_tooltip_explains_why(self, panel) -> None:

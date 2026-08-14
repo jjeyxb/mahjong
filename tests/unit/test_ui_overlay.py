@@ -14,8 +14,10 @@ from __future__ import annotations
 import pytest
 
 from mia import features
+from mia.analysis import assess
 from mia.engine.base import Advice
-from mia.mjai import Chi, Dahai
+from mia.mjai import Chi, Dahai, Reach, StartGame, StartKyoku
+from mia.mjai.table import TableTracker
 from mia.mjai.tiles import UNKNOWN
 from mia.ui.state import UiState
 from mia.ui.viewmodel import ViewModel
@@ -27,6 +29,31 @@ from PySide6.QtCore import QPoint, Qt
 from mia.ui.overlay.window import OverlayWindow
 
 TENPAI = ["1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "1p", "2p", "3p"]
+
+#: 危險度那一段用的手牌。一整手 13 張,MJAI 記法(封包那條路的原生記法)。
+#: 刻意混著中張、么九與字牌 —— 三者能被打中的型數差很多,排序才有東西可排。
+REACH_HAND = [
+    "2m", "3m", "4m", "5m", "6m", "7p", "8p", "3s", "4s", "5s", "9s", "E", "S",
+]
+
+
+def _table(seat: int = 0) -> TableTracker:
+    t = TableTracker()
+    t.handle(StartGame(id=seat))
+    t.handle(
+        StartKyoku(
+            bakaze="E", kyoku=1, honba=0, kyotaku=0, oya=0, dora_marker="1z",
+            tehais=[["?"] * 13 for _ in range(4)], scores=[25000] * 4,
+        )
+    )
+    return t
+
+
+def _report(hand):
+    """上家立直之後的一份報告。"""
+    table = _table(seat=0)
+    table.handle(Reach(actor=3))
+    return assess(hand, table)
 
 #: 碰 / 槓 / 跳過:三個位元,最高分落在「跳過」。
 SKIP_META = {"mask_bits": (1 << 41) | (1 << 42) | (1 << 45), "q_values": [-6.3, -6.55, -0.15]}
@@ -405,6 +432,99 @@ class TestFeatureSwitches:
     def test_advice_on_but_no_engine_yet_says_waiting(self, qtbot, tmp_path) -> None:
         _, window = self.build(qtbot, tmp_path, {features.ADVICE})
         assert window._verb.text() == "等待引擎…"  # noqa: SLF001
+
+
+class TestDangerSection:
+    """危險度那一段。
+
+    使用者要的是**每一張都列出來、安全的在上** —— 挑要切哪張的時候,眼睛
+    從上往下掃到第一張不影響進張的牌就停。所以這裡驗的是「有沒有全列」與
+    「順序對不對」,還有那段話有沒有把「沒人立直 ≠ 安全」講清楚。
+    """
+
+    @staticmethod
+    def build(qtbot, tmp_path, *, on=None, danger=True):
+        model = ViewModel()
+        window = OverlayWindow(
+            model,
+            switchboard=FakeSwitchboard({features.DANGER} if on is None else on),
+            ui_state=UiState.load(tmp_path / "ui.json"),
+        )
+        model.subscribe(window.apply)
+        qtbot.addWidget(window)
+        window.set_shown(True)
+        window.set_danger_shown(danger)
+        return model, window
+
+    def rows(self, window):
+        return [r for r in window._danger_rows if shown(r)]  # noqa: SLF001
+
+    def test_it_is_off_until_asked_for(self, qtbot, tmp_path) -> None:
+        """預設不佔那段高度 —— 一整手 14 列是很大一塊牌桌。"""
+        _, window = self.build(qtbot, tmp_path, danger=False)
+        assert not window.danger_shown
+        assert not shown(window._dangers)  # noqa: SLF001
+
+    def test_every_tile_is_listed(self, qtbot, tmp_path) -> None:
+        """不是「最安全的前幾張」。被截掉的正好是最危險的那幾張。"""
+        model, window = self.build(qtbot, tmp_path)
+        model.update_dangers(_report(REACH_HAND))
+        assert len(self.rows(window)) == len(set(REACH_HAND))
+
+    def test_the_safest_are_on_top(self, qtbot, tmp_path) -> None:
+        model, window = self.build(qtbot, tmp_path)
+        report = _report(REACH_HAND)
+        model.update_dangers(report)
+        levels = [d.level for d in report.tiles]
+        assert levels == sorted(levels)
+        assert self.rows(window)[0]._level.text() == report.tiles[0].level.label  # noqa: SLF001
+
+    def test_a_row_says_who_it_is_dangerous_against(self, qtbot, tmp_path) -> None:
+        """只寫「安全」是那個坑本身:一張牌對立直的家是現物、對別家全新。"""
+        model, window = self.build(qtbot, tmp_path)
+        model.update_dangers(_report(REACH_HAND))
+        assert any("家" in r._note.text() for r in self.rows(window))  # noqa: SLF001
+
+    def test_nobody_reached_still_warns(self, qtbot, tmp_path) -> None:
+        """實測那一場三次放銃,和牌的人一個都沒立直。"""
+        model, window = self.build(qtbot, tmp_path)
+        model.update_dangers(assess(REACH_HAND, _table()))
+        assert "不代表安全" in window._danger_head.text()  # noqa: SLF001
+
+    def test_a_reach_is_named_in_the_headline(self, qtbot, tmp_path) -> None:
+        model, window = self.build(qtbot, tmp_path)
+        model.update_dangers(_report(REACH_HAND))
+        assert "上家立直" in window._danger_head.text()  # noqa: SLF001
+
+    def test_no_data_collapses_the_section(self, qtbot, tmp_path) -> None:
+        """HUD 的高度是從牌桌上拿走的 —— 沒內容就該還回去,不是留一句「等待中」。"""
+        model, window = self.build(qtbot, tmp_path)
+        model.update_dangers(_report(REACH_HAND))
+        model.update_dangers(None)
+        assert not shown(window._dangers)  # noqa: SLF001
+
+    def test_the_feature_being_off_hides_it_even_when_checked(self, qtbot, tmp_path) -> None:
+        """勾了但功能沒開:沒有資料可畫,不該留上一局的殘影。"""
+        model, window = self.build(qtbot, tmp_path, on=set())
+        model.update_dangers(_report(REACH_HAND))
+        assert not shown(window._dangers)  # noqa: SLF001
+
+    def test_it_does_not_shout_not_enabled_over_the_list(self, qtbot, tmp_path) -> None:
+        """只開放銃分析時,上面那行「未開啟」會與底下的清單互相矛盾。"""
+        model, window = self.build(qtbot, tmp_path, on={features.DANGER})
+        model.update_dangers(_report(REACH_HAND))
+        assert not shown(window._verb)  # noqa: SLF001
+        assert shown(window._dangers)  # noqa: SLF001
+
+    def test_honour_tiles_do_not_blow_up(self, qtbot, tmp_path) -> None:
+        """牌名已經是 MJAI 記法。再轉一次只有字牌會炸 —— 數牌剛好轉得過去。"""
+        model, window = self.build(qtbot, tmp_path)
+        model.update_dangers(_report(["S", "1z", "5m"]))
+        assert len(self.rows(window)) == 3
+
+    def test_the_choice_is_remembered(self, qtbot, tmp_path) -> None:
+        self.build(qtbot, tmp_path, danger=True)
+        assert UiState.load(tmp_path / "ui.json").overlay_danger
 
 
 def _press(point: QPoint):

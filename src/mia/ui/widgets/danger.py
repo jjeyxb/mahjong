@@ -28,19 +28,22 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mia.analysis import DangerLevel, DangerReport, TileDanger
+from mia.analysis import DangerLevel, DangerReport, SeatDanger, TileDanger
 from mia.ui.style import CAPTION, MUTED
 from mia.ui.viewmodel import ViewState
 from mia.ui.widgets.tiles import TileIcons, TileLabel
 
-__all__ = ["AnalysisDangerTab"]
+__all__ = ["LEVEL_COLORS", "AnalysisDangerTab", "danger_note", "seat_name"]
 
 #: 最多列幾張。手牌 14 張全列會把整頁撐得很長,而使用者真正在挑的是最安全的
 #: 那幾張與最危險的那幾張 —— 中間那些幾乎不看。
 MAX_ROWS = 14
 
 #: 等級的顏色。只有「安全」用綠色 —— 它是規則保證的,與其他三級不是同一種東西。
-_LEVEL_COLORS = {
+#:
+#: Overlay 也用這一份。兩邊各寫一組的話,遲早會有一邊改了另一邊沒改,而
+#: 「同一張牌在側邊視窗是橘的、在 HUD 上是紅的」會讓人不知道該信哪一個。
+LEVEL_COLORS = {
     DangerLevel.SAFE: "#34C759",
     DangerLevel.LIKELY_SAFE: "#8E8E93",
     DangerLevel.RISKY: "#FF9500",
@@ -82,7 +85,7 @@ class _DangerRow(QWidget):
         # (``ms_to_mjai("S")`` 不認得),而數牌剛好轉得過去,所以只有摸到
         # 字牌時才會發現。
         self._tile.set_tile(danger.tile)
-        colour = _LEVEL_COLORS[danger.level]
+        colour = LEVEL_COLORS[danger.level]
         self._level.setText(danger.level.label)
         self._level.setStyleSheet(f"color: {colour}; font-weight: 600;")
         self._detail.setText(_detail(danger, seat))
@@ -96,11 +99,41 @@ def _detail(danger: TileDanger, seat: int | None) -> str:
     """
     if all(s.furiten for s in danger.seats):
         return "三家都是現物"
-    worst = max(danger.seats, key=lambda s: (s.level, len(s.waits), s.reach))
+    worst = _worst(danger)
     who = seat_name(seat, worst.seat)
     if worst.reach:
         who += "(立直)"
     return f"對{who}:{worst.reason}"
+
+
+def danger_note(danger: TileDanger, seat: int | None) -> str:
+    """同一句話的 **Overlay 版**:只寫對誰,不列待牌型。
+
+    為什麼要短:HUD 疊在牌桌上,寬度是直接搶走的畫面。
+    「両面(4s5s)、辺張(1s2s)、嵌張(2s4s)、単騎(3s)、雙碰(3s3s)」那一串
+    會把 Overlay 撐到橫跨半個牌桌 —— 而要看型的人本來就會去側邊視窗。
+
+    **但「對誰」不能省。** 一張牌對立直的那家是現物、對另一家全新,只寫
+    「安全」使用者就會照著打 —— 那是實測踩過的坑(見模組說明),換成 HUD
+    也還是同一個坑。所以砍掉的是型的清單,不是對象。
+    """
+    if not danger.seats:
+        return "沒有人需要防"
+    if all(s.furiten for s in danger.seats):
+        return "三家都是現物"
+    if danger.level is DangerLevel.SAFE:
+        return "對三家都排除了"
+    worst = _worst(danger)
+    who = seat_name(seat, worst.seat)
+    if worst.reach:
+        who += "(立直)"
+    return f"對{who}・還 {len(worst.waits)} 型"
+
+
+def _worst(danger: TileDanger) -> SeatDanger:
+    """最該提的那一家。與 :func:`mia.analysis.danger._worst` 同一個排序 ——
+    平手時優先講立直的那個,不然 ``max`` 回的是座位編號最小的那家。"""
+    return max(danger.seats, key=lambda s: (s.level, len(s.waits), s.reach))
 
 
 class AnalysisDangerTab(QWidget):
