@@ -8,6 +8,7 @@ from mia.analysis.danger import (
     DangerLevel,
     DangerReport,
     SeatDanger,
+    Threat,
     TileDanger,
     assess,
 )
@@ -31,6 +32,7 @@ __all__ = [
     "HandAnalysis",
     "HandError",
     "SeatDanger",
+    "Threat",
     "TileDanger",
     "Ukeire",
     "analyse",

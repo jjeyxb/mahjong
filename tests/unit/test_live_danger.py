@@ -66,10 +66,12 @@ class TestReplayingARealGame:
         _worker, reports = driven
         assert all(1 <= len(r.tiles) <= 14 for r in reports)
 
-    def test_reach_is_picked_up(self, driven) -> None:
-        """那場有四次立直,而立直的家會被列進 reached。"""
+    def test_threats_are_picked_up(self, driven) -> None:
+        """那場有四次立直、也有人副露到三組,兩種都該被指名。"""
         _worker, reports = driven
-        assert any(r.reached for r in reports)
+        labels = {t.label for r in reports for t in r.threats}
+        assert "立直" in labels
+        assert "3副露" in labels
 
     def test_every_report_is_sorted_safest_first(self, driven) -> None:
         _worker, reports = driven

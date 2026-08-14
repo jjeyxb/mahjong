@@ -16,7 +16,7 @@ import pytest
 from mia import features
 from mia.analysis import assess
 from mia.engine.base import Advice
-from mia.mjai import Chi, Dahai, Reach, StartGame, StartKyoku
+from mia.mjai import Chi, Dahai, Pon, Reach, StartGame, StartKyoku
 from mia.mjai.table import TableTracker
 from mia.mjai.tiles import UNKNOWN
 from mia.ui.state import UiState
@@ -485,8 +485,8 @@ class TestDangerSection:
         model.update_dangers(_report(REACH_HAND))
         assert any("家" in r._note.text() for r in self.rows(window))  # noqa: SLF001
 
-    def test_nobody_reached_still_warns(self, qtbot, tmp_path) -> None:
-        """實測那一場三次放銃,和牌的人一個都沒立直。"""
+    def test_nobody_named_still_warns(self, qtbot, tmp_path) -> None:
+        """實測那場三次榮和,兩次是沒立直的人和的。"""
         model, window = self.build(qtbot, tmp_path)
         model.update_dangers(assess(REACH_HAND, _table()))
         assert "不代表安全" in window._danger_head.text()  # noqa: SLF001
@@ -495,6 +495,15 @@ class TestDangerSection:
         model, window = self.build(qtbot, tmp_path)
         model.update_dangers(_report(REACH_HAND))
         assert "上家立直" in window._danger_head.text()  # noqa: SLF001
+
+    def test_a_melded_seat_is_named_too(self, qtbot, tmp_path) -> None:
+        """三副露與立直在標題上同一階 —— 只說「沒人立直」會讓人以為沒事。"""
+        model, window = self.build(qtbot, tmp_path)
+        table = _table(seat=0)
+        for pai in ("1z", "2z", "3z"):
+            table.handle(Pon(actor=1, target=0, pai=pai, consumed=[pai, pai]))
+        model.update_dangers(assess(REACH_HAND, table))
+        assert "下家3副露" in window._danger_head.text()  # noqa: SLF001
 
     def test_no_data_collapses_the_section(self, qtbot, tmp_path) -> None:
         """HUD 的高度是從牌桌上拿走的 —— 沒內容就該還回去,不是留一句「等待中」。"""

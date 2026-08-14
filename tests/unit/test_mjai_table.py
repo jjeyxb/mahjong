@@ -107,6 +107,31 @@ class TestAfterReach:
         assert t.threats == []
 
 
+class TestMeldsAreThreatsToo:
+    """三副露也算威脅。實測那場最重的一次榮和,和牌的就是一個三副露、
+    沒立直的人,而三副露的曝光量與立直是同一個量級。"""
+
+    @staticmethod
+    def _pon(t, seat: int, count: int):
+        for pai in ("1z", "2z", "3z")[:count]:
+            t.handle(Pon(actor=seat, target=(seat + 3) % 4, pai=pai, consumed=[pai, pai]))
+        return t
+
+    def test_three_melds_is_a_threat(self) -> None:
+        t = self._pon(_tracker(), 2, 3)
+        assert t.threats == [2]
+
+    def test_two_melds_is_not(self) -> None:
+        t = self._pon(_tracker(), 2, 2)
+        assert t.threats == []
+
+    def test_we_are_never_our_own_threat(self) -> None:
+        """自己副露三組不會變成要防的對象 —— 不會放銃給自己。"""
+        t = self._pon(_tracker(), 0, 3)
+        assert t.threats == []
+
+
+
 class TestNewHand:
     def test_a_new_kyoku_forgets_everything(self) -> None:
         """上一局的安全牌在這一局毫無意義 —— 留著不會有任何症狀,

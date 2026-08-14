@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from mia.analysis import DangerLevel, assess
-from mia.mjai import Dahai, Reach, StartGame, StartKyoku
+from mia.mjai import Dahai, Pon, Reach, StartGame, StartKyoku
 from mia.mjai.table import TableTracker
 from mia.ui.viewmodel import ViewModel
 
@@ -91,13 +91,30 @@ class TestWhatItSays:
         _apply(tab, assess(["3m"], table))
         assert "下家" in tab._headline.text()  # noqa: SLF001
 
-    def test_nobody_reached_says_that_is_not_safety(self, tab) -> None:
-        """**這一條釘的是真實牌譜教的事**:那場三次放銃,和牌的人一個都沒
-        立直。畫面上只寫「沒有人立直」會被讀成「現在很安全」。
+    def test_nobody_named_says_that_is_not_safety(self, tab) -> None:
+        """**這一條釘的是真實牌譜教的事**:那場三次榮和,兩次是沒立直的人
+        和的。畫面上只寫「沒有人立直」會被讀成「現在很安全」。
         """
         _apply(tab, assess(["3m"], _table()))
-        assert tab._headline.text() == "沒有人立直"  # noqa: SLF001
+        assert "沒有人" in tab._headline.text()  # noqa: SLF001
         assert "不代表安全" in tab._source.text()  # noqa: SLF001
+
+    def test_a_melded_seat_is_named_in_the_headline(self, tab) -> None:
+        """有人坐在三副露上,標題卻寫「沒有人立直」—— 那是畫面說沒事而
+        實際有事,與上次那個坑同一類。"""
+        table = _table(seat=0)
+        for pai in ("1z", "2z", "3z"):
+            table.handle(Pon(actor=1, target=0, pai=pai, consumed=[pai, pai]))
+        _apply(tab, assess(["3m"], table))
+        assert tab._headline.text() == "下家3副露"  # noqa: SLF001
+
+    def test_a_row_says_the_seat_is_melded(self, tab) -> None:
+        """「對下家危險」與「對下家(3副露)危險」是不同份量的話。"""
+        table = _table(seat=0)
+        for pai in ("1z", "2z", "3z"):
+            table.handle(Pon(actor=1, target=0, pai=pai, consumed=[pai, pai]))
+        _apply(tab, assess(["3m"], table))
+        assert "3副露" in tab._rows[0]._detail.text()  # noqa: SLF001
 
     def test_honour_tiles_do_not_blow_up(self, tab) -> None:
         """牌名已經是 MJAI 記法了。再轉一次的話數牌剛好過得去、字牌會拋
