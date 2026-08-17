@@ -697,10 +697,26 @@ class TestStartGameButton:
         _, window = wired
         assert "開始遊戲" in window._notice.text()  # noqa: SLF001
 
+    def test_only_the_danger_feature_on_is_not_all_off(self, qtbot) -> None:
+        """**實機踩到的。** 狀態列原本寫死問 ADVICE / VISION,所以只開放銃
+        分析的時候照樣說「功能都關著」—— 而那一頁上明明有東西在跑。
+
+        用 ``features.NAMES`` 逐一問,加第四個功能時也不會再壞一次。
+        """
+        launcher = FakeLauncher()
+        launcher.running = True
+        board = FakeSwitchboard()
+        board.set_enabled(features.DANGER, True)
+        model = ViewModel()
+        window = PanelWindow(model, switchboard=board, launcher=launcher)
+        qtbot.addWidget(window)
+        window.apply(model.state)
+        assert "功能都關著" not in window._notice.text()  # noqa: SLF001
+
     def test_the_status_bar_moves_on_once_a_game_is_running(self, wired) -> None:
         _, window = wired
         window._start_button.click()  # noqa: SLF001
-        assert "兩個功能都關著" in window._notice.text()  # noqa: SLF001
+        assert "功能都關著" in window._notice.text()  # noqa: SLF001
 
 
 class TestStartGameWithoutALauncher:

@@ -525,6 +525,22 @@ class TestDangerSection:
         assert not shown(window._verb)  # noqa: SLF001
         assert shown(window._dangers)  # noqa: SLF001
 
+    def test_running_but_not_on_the_hud_does_not_say_not_enabled(
+        self, qtbot, tmp_path
+    ) -> None:
+        """**實機第一次開起來踩到的。** 放銃分析開著、只是還沒勾上 HUD,
+        Overlay 卻寫「未開啟 —— 用側邊視窗的開關打開」。使用者會去撥一個
+        已經開著的開關,然後以為程式壞了。
+        """
+        _, window = self.build(qtbot, tmp_path, on={features.DANGER}, danger=False)
+        assert window._verb.text() != "未開啟"  # noqa: SLF001
+        assert "設定頁" in window._mark.text()  # noqa: SLF001
+
+    def test_everything_off_still_says_not_enabled(self, qtbot, tmp_path) -> None:
+        """反面:真的全關著時那句話還要在,不然是一個空黑框蓋在牌桌上。"""
+        _, window = self.build(qtbot, tmp_path, on=set(), danger=False)
+        assert window._verb.text() == "未開啟"  # noqa: SLF001
+
     def test_honour_tiles_do_not_blow_up(self, qtbot, tmp_path) -> None:
         """牌名已經是 MJAI 記法。再轉一次只有字牌會炸 —— 數牌剛好轉得過去。"""
         model, window = self.build(qtbot, tmp_path)

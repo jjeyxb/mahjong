@@ -129,7 +129,7 @@ class TestWhatItSays:
         _apply(tab, assess(["3m"], table))
         detail = tab._rows[0]._detail.text()  # noqa: SLF001
         assert "對" in detail
-        assert any(word in detail for word in ("両面", "嵌張", "単騎", "雙碰", "現物"))
+        assert any(word in detail for word in ("兩面", "嵌張", "單騎", "雙碰", "現物"))
 
     def test_a_reached_seat_is_marked_as_such(self, tab) -> None:
         table = _table(seat=0)

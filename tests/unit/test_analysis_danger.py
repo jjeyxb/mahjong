@@ -89,12 +89,12 @@ class TestSuji:
     def test_discarding_the_partner_kills_the_ryanmen(self) -> None:
         t = _table()
         t.handle(Dahai(actor=1, pai="4m", tsumogiri=False))  # 1m 的筋
-        assert "両面(2m3m)" not in _kinds(t, "1m", 1)
+        assert "兩面(2m3m)" not in _kinds(t, "1m", 1)
 
     def test_the_other_side_too(self) -> None:
         t = _table()
         t.handle(Dahai(actor=1, pai="4m", tsumogiri=False))  # 7m 的筋
-        assert "両面(5m6m)" not in _kinds(t, "7m", 1)
+        assert "兩面(5m6m)" not in _kinds(t, "7m", 1)
 
     def test_a_kanchan_is_not_suji(self) -> None:
         """嵌張只和這一張,沒有「另一張」可以構成振聽 —— 筋殺不掉它。"""
@@ -108,7 +108,7 @@ class TestSuji:
         t = _table()
         t.handle(Dahai(actor=1, pai="4m", tsumogiri=False))
         assert not t.players[1].reach
-        assert "両面(2m3m)" not in _kinds(t, "1m", 1)
+        assert "兩面(2m3m)" not in _kinds(t, "1m", 1)
 
 
 class TestWall:
@@ -123,29 +123,29 @@ class TestWall:
         kinds = {str(w) for w in next(
             d for d in report.tiles if d.tile == "4m"
         ).seats[0].waits}
-        assert "両面(5m6m)" not in kinds
-        assert "両面(2m3m)" in kinds  # 另一邊沒有被擋
+        assert "兩面(5m6m)" not in kinds
+        assert "兩面(2m3m)" in kinds  # 另一邊沒有被擋
 
     def test_an_edge_wait_is_labelled_penchan(self) -> None:
         """(8m9m) 只和 7m,沒有另一張可以構成筋 —— 型的名字要分得開。"""
-        assert "辺張(8m9m)" in _kinds(_table(), "7m", 1)
+        assert "邊張(8m9m)" in _kinds(_table(), "7m", 1)
 
 
 class TestHonours:
-    """字牌沒有順子,只剩単騎與雙碰 —— 所以它天生比數牌安全,
+    """字牌沒有順子,只剩單騎與雙碰 —— 所以它天生比數牌安全,
     而理由是「能打中它的型比較少」,不是統計印象。"""
 
     def test_an_untouched_honour_has_only_two_shapes(self) -> None:
-        assert _kinds(_table(), "1z", 1) == {"単騎(東)", "雙碰(東東)"}
+        assert _kinds(_table(), "1z", 1) == {"單騎(東)", "雙碰(東東)"}
 
     def test_three_visible_leaves_only_tanki(self) -> None:
         t = _table()
         t.handle(Dahai(actor=1, pai="2z", tsumogiri=False))
         t.handle(Dahai(actor=2, pai="2z", tsumogiri=False))
-        assert _kinds(t, "2z", 3) == {"単騎(南)"}
+        assert _kinds(t, "2z", 3) == {"單騎(南)"}
 
     def test_four_visible_is_genuinely_safe(self) -> None:
-        """四張全見的字牌不可能被和 —— 単騎要他手上有一張,雙碰要兩張,
+        """四張全見的字牌不可能被和 —— 單騎要他手上有一張,雙碰要兩張,
         而一張都不剩。這與現物一樣是規則保證的。"""
         t = _table()
         for seat in (1, 2, 3):
