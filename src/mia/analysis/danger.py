@@ -19,14 +19,14 @@
 ======  ==============================  ==========================
 型      牌                              也會和的另一張
 ======  ==============================  ==========================
-両面    ``(T+1, T+2)``                  ``T+3``
-両面    ``(T-2, T-1)``                  ``T-3``
+兩面    ``(T+1, T+2)``                  ``T+3``
+兩面    ``(T-2, T-1)``                  ``T-3``
 嵌張    ``(T-1, T+1)``                  ——
-単騎    ``T``                           ——
+單騎    ``T``                           ——
 雙碰    ``T, T``                        ——
 ======  ==============================  ==========================
 
-(``T±3`` 超出 1~9 時那一型是**辺張**,只和 ``T`` 一張。)
+(``T±3`` 超出 1~9 時那一型是**邊張**,只和 ``T`` 一張。)
 
 然後一型一型排除:
 
@@ -34,7 +34,7 @@
 * **那一型也會和的另一張,對方打過** → 他若有那一型早就和了 → 排除。
   這就是**筋**,而它在這裡是自然掉出來的,不必特別寫一條規則。
 * **那一型需要的牌四張全見** → 他不可能持有 → 排除。這就是**壁**。
-* **単騎需要他手上有一張、雙碰需要兩張** → 剩餘張數不夠就排除。字牌的
+* **單騎需要他手上有一張、雙碰需要兩張** → 剩餘張數不夠就排除。字牌的
   「三枚見え」「四枚見え」就是這一條。
 
 剩下幾型,就是這張牌現在還有幾條路會中。
@@ -120,8 +120,8 @@ _LEVEL_LABELS = {
 
 #: 剩幾型 → 危險度。
 #:
-#: 上限隨牌而異,那是**對的**:中張最多五型(兩個両面 + 嵌張 + 単騎 + 雙碰),
-#: 么九牌少一個両面與嵌張,字牌只有単騎與雙碰。老頭牌與字牌本來就比較安全,
+#: 上限隨牌而異,那是**對的**:中張最多五型(兩個兩面 + 嵌張 + 單騎 + 雙碰),
+#: 么九牌少一個兩面與嵌張,字牌只有單騎與雙碰。老頭牌與字牌本來就比較安全,
 #: 而這裡的理由是「能打中它的型比較少」,不是統計上的印象。
 def _level(waits: int) -> DangerLevel:
     if waits == 0:
@@ -138,7 +138,7 @@ class Wait:
     """一種還沒被排除的待牌型。
 
     Attributes:
-        kind: ``両面`` / ``辺張`` / ``嵌張`` / ``単騎`` / ``雙碰``。
+        kind: ``兩面`` / ``邊張`` / ``嵌張`` / ``單騎`` / ``雙碰``。
         tiles: 對方手上要有的那幾張。
     """
 
@@ -326,7 +326,7 @@ def _ranks(tile: str) -> tuple[int, str] | None:
 def _sequence_waits(
     tile: str, safe: set[str], remaining: dict[str, int]
 ) -> list[Wait]:
-    """順子系的待牌型(両面 / 辺張 / 嵌張)裡,還沒被排除的那些。"""
+    """順子系的待牌型(兩面 / 邊張 / 嵌張)裡,還沒被排除的那些。"""
     parsed = _ranks(tile)
     if parsed is None:
         return []  # 字牌沒有順子
@@ -340,7 +340,7 @@ def _sequence_waits(
         return all(1 <= n <= 9 and remaining.get(name(n), 0) > 0 for n in ns)
 
     waits: list[Wait] = []
-    # 両面 / 辺張:(rank+1, rank+2) 也和 rank+3;(rank-2, rank-1) 也和 rank-3
+    # 兩面 / 邊張:(rank+1, rank+2) 也和 rank+3;(rank-2, rank-1) 也和 rank-3
     for low, high, partner in ((rank + 1, rank + 2, rank + 3), (rank - 2, rank - 1, rank - 3)):
         if not usable(low, high):
             continue
@@ -348,9 +348,9 @@ def _sequence_waits(
             # 它也會和 partner。對方打過 partner 就代表他沒有這一型 —— 筋。
             if name(partner) in safe:
                 continue
-            waits.append(Wait("両面", (name(low), name(high))))
+            waits.append(Wait("兩面", (name(low), name(high))))
         else:
-            waits.append(Wait("辺張", (name(low), name(high))))
+            waits.append(Wait("邊張", (name(low), name(high))))
     # 嵌張:只和這一張,沒有筋可言
     if usable(rank - 1, rank + 1):
         waits.append(Wait("嵌張", (name(rank - 1), name(rank + 1))))
@@ -358,11 +358,11 @@ def _sequence_waits(
 
 
 def _pair_waits(tile: str, remaining: dict[str, int]) -> list[Wait]:
-    """単騎與雙碰。要對方手上真的有牌才成立,所以看剩餘張數。"""
+    """單騎與雙碰。要對方手上真的有牌才成立,所以看剩餘張數。"""
     left = remaining.get(tile, 0)
     waits: list[Wait] = []
     if left >= 1:
-        waits.append(Wait("単騎", (tile,)))
+        waits.append(Wait("單騎", (tile,)))
     if left >= 2:
         waits.append(Wait("雙碰", (tile, tile)))
     return waits
@@ -417,7 +417,7 @@ def assess(
 
 
 def _candidate_tiles(tiles: list[str]) -> set[str]:
-    """要查剩餘張數的牌:手上那些,加上它們前後兩張(壁與両面會用到)。"""
+    """要查剩餘張數的牌:手上那些,加上它們前後兩張(壁與兩面會用到)。"""
     needed = set(tiles)
     for tile in tiles:
         parsed = _ranks(tile)

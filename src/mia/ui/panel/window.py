@@ -633,10 +633,12 @@ class PanelWindow(QMainWindow):
             and not self._launcher.game_running()
         ):
             return f"還沒開始 —— 按左下角的「{START_GAME}」開啟遊戲"
+        # 問**每一個**功能,不是寫死其中兩個。加了放銃分析之後,原本那句
+        # 會在它開著的時候照樣說「兩個功能都關著」—— 畫面上明明有東西在跑。
         if self._switchboard is not None and not any(
-            self._switchboard.is_enabled(k) for k in (features.ADVICE, features.VISION)
+            self._switchboard.is_enabled(k) for k in features.NAMES
         ):
-            return "兩個功能都關著 —— 用各頁右上角的開關打開"
+            return "功能都關著 —— 用各頁右上角的開關打開"
         return _status_text(state)
 
     def _sync_engine_picker(self, state: ViewState) -> None:

@@ -502,22 +502,31 @@ class OverlayWindow(QWidget):
         advice_on = is_on(self._switchboard, features.ADVICE)
         vision_on = is_on(self._switchboard, features.VISION)
         # 兩個條件都要:功能開著代表有在算,勾選代表使用者要看。
-        danger_on = self.danger_shown and is_on(self._switchboard, features.DANGER)
+        danger_running = is_on(self._switchboard, features.DANGER)
+        danger_on = self.danger_shown and danger_running
         self._show_dangers(state.dangers if danger_on else None)
 
         if not advice_on and not vision_on:
+            self._show_shanten("")
+            self._show_candidates(None)
             if danger_on:
                 # 危險度自己就是內容了。這時候再喊一次「未開啟」會變成
                 # 一個蓋在清單上面、說著相反的話的標題。
                 self._show_advice(None, verb="")
-                self._show_shanten("")
-                self._show_candidates(None)
-                return
-            # 全部關著時要**主動說**,不然畫面上是一個空的黑框蓋在牌桌上,
-            # 看起來像程式壞了。
-            self._show_advice(None, muted=True, verb="未開啟", mark="用側邊視窗的開關打開")
-            self._show_shanten("")
-            self._show_candidates(None)
+            elif danger_running:
+                # 放銃分析**正在跑**,只是還沒被請上 HUD。說「未開啟」是錯的
+                # —— 使用者會去撥一個已經開著的開關,然後以為程式壞了。
+                # 實機第一次開起來就是踩到這個。
+                self._show_advice(
+                    None, muted=True, verb="放銃分析中",
+                    mark="到設定頁勾「Overlay 顯示放銃危險度」",
+                )
+            else:
+                # 全部關著時要**主動說**,不然畫面上是一個空的黑框蓋在牌桌上,
+                # 看起來像程式壞了。
+                self._show_advice(
+                    None, muted=True, verb="未開啟", mark="用側邊視窗的開關打開"
+                )
             return
 
         engine = state.primary if advice_on else None
