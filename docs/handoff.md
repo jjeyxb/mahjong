@@ -1,6 +1,9 @@
 # 交接文件 — MIA
 
-給接手這個專案的下一個對話 / 下一個人。**最後更新 2026-08-01(M7 Overlay + 開始遊戲按鈕)。**
+給接手這個專案的下一個對話 / 下一個人。**最後更新 2026-08-26(放銃分析 + 準備移到 Windows)。**
+
+> 🪟 **要在 Windows 上接手的話,先看 [在 Windows 上重建](#在-windows-上重建)。**
+> 那一節列出 git 拉不到、必須手動補的四樣東西,以及第一件該做的事。
 
 這份文件只放「接手需要知道」的東西:現況、跑法、已經決定過不要再討論的事、
 以及踩過的坑。**決策的完整理由在 [decisions.md](decisions.md)**,不在這裡重抄。
@@ -12,24 +15,46 @@
 **MIA(Mahjong Intelligence Assistant)** 是雀魂麻將輔助軟體,大學畢業專題。
 macOS 已實機驗證,Windows 程式寫好但沒機器測過。
 
-三個**互相獨立**的功能:
+### ⚠ 「功能 3」有兩個意思,不要搞混
 
-| # | 功能 | 狀態來源 | 現況 |
+文件裡有兩套編號在跑,這是歷史累積下來的:
+
+| 說法 | 指的是 | 在哪 |
+|---|---|---|
+| **App 的三個開關** | 畫面辨識 / AI 建議 / **放銃分析** | `features.py`、UI 上看得到的那三個 |
+| **專題的 M8「功能 3」** | **打法風格微調**(離線訓練) | README 的里程碑表 |
+
+`features.py` 的 `DANGER` 註解寫「功能 3」,指的是第一種。README M8 的「功能 3」
+是第二種。兩者**完全不同**,而且都還在用 —— 講的時候用名字,不要用編號。
+
+### App 的三個開關
+
+| # | 開關 | 狀態來源 | 現況 |
 |---|---|---|---|
 | 1 | 手牌辨識 + 向聽 / 進張 | 螢幕擷取 + CV | ✅ 完成,但只在單一解析度驗過 |
-| 2 | AI 建議(Mortal) | WebSocket 封包 → MJAI | ✅ 完成,已實機打過三場 |
-| 3 | 打法風格微調權重 | 離線訓練 | ❌ 未動工,被 GRP 權重擋住 |
+| 2 | AI 建議(Mortal) | WebSocket 封包 → MJAI | ✅ 完成,已實機打過四場 |
+| 3 | **放銃分析**(每張牌切出去的危險度) | WebSocket 封包 → 桌面狀態 | ✅ 完成,已實機驗過一場 |
 
-解耦是刻意的:功能 1 只吃畫面、功能 2 只吃封包,任何一個做不完不會擋住其他。
+解耦是刻意的:1 只吃畫面,2 與 3 吃封包但**只有 2 會載 130MB 權重** ——
+所以想看放銃分析的人不必付那個代價。任何一個做不完不會擋住其他。
+
+### 專題里程碑
+
+M0–M7 全部 ✅。**只剩 M8:打法風格微調**,被「沒有公開的 GRP 權重」擋住,
+必須自己先跑 `train_grp.py`。那是整個專案剩下唯一「可能根本做不成」的部分,
+而且要 GPU —— 所以才要搬到 Windows(RX 9070 + ROCm)。
 
 **兩種呈現方式:** 側邊視窗(M6)與 Overlay(M7,疊在遊戲上的精簡 HUD)。
 兩者訂閱同一個 `ViewModel`,顯示邏輯不重複實作。
 
-**現在可以真的拿來用**(`--live`)。896 個測試、ruff + mypy 乾淨。
+**現在可以真的拿來用**(`--live`)。**1121 個測試**、ruff + mypy 乾淨。
+最後一個 commit `1160089`,已推上 `origin/main`。
 
 ---
 
 ## 馬上能跑
+
+macOS:
 
 ```bash
 cd /Users/caoyunjie/project/mahjong
@@ -49,9 +74,110 @@ cd /Users/caoyunjie/project/mahjong
 .venv/bin/python -m ruff check . && .venv/bin/python -m mypy && .venv/bin/python -m pytest -q
 ```
 
+Windows(PowerShell)—— 只有直譯器路徑不同,參數完全一樣:
+
+```powershell
+cd C:\path\to\mahjong
+
+.venv\Scripts\python.exe tools\ui.py --live --mortal models\mortal_298k.pth
+
+# 不需要遊戲、不需要權重就能驗 UI 有沒有跑起來(建議 Windows 上第一個先跑這個)
+.venv\Scripts\python.exe tools\ui.py --demo
+
+.venv\Scripts\python.exe -m ruff check . ; .venv\Scripts\python.exe -m mypy ; .venv\Scripts\python.exe -m pytest -q
+```
+
 操作細節與**狀態列訊息對照表**在 [live.md](live.md) —— 即時模式出問題時先看那張表。
 
-### 環境
+---
+
+## 在 Windows 上重建
+
+git clone / pull 之後**還缺四樣東西** —— 它們都在 gitignore 裡,拉不到:
+
+| 缺什麼 | 怎麼補 | 大小 |
+|---|---|---|
+| `models/mortal_298k.pth` | `curl -L -o models/mortal_298k.pth https://huggingface.co/VoidShine/mortal-298k/resolve/main/mortal_298k.pth` | 130 MB |
+| `engines/mortal/Mortal/` | `git clone --depth 1 https://github.com/Equim-chan/Mortal.git engines/mortal/Mortal` | |
+| Playwright 的 Chromium | `.venv\Scripts\python.exe -m playwright install chromium` | |
+| 兩個 venv | 見下 | |
+
+`data/` 空的沒關係 —— 錄影檔會自己長出來,而測試要用的素材在
+`tests/fixtures/`(有進 git)。
+
+### 兩個環境
+
+```powershell
+# 主程式 — Python 3.14
+py -3.14 -m venv .venv
+.venv\Scripts\pip install -r requirements-dev.txt
+
+# AI 引擎 — Python 3.12,獨立
+py -3.12 -m venv engines\mortal\.venv
+engines\mortal\.venv\Scripts\pip install -r engines\mortal\requirements.txt
+```
+
+**為什麼兩個環境:** `libriichi` 不在 PyPI、`mjai` 只有 cp312 wheel,兩者在
+3.14 都裝不起來。這是**技術**原因,不是授權隔離(見下)。
+
+### libriichi 的 Windows 產物名稱與 macOS 不同
+
+```powershell
+cd engines\mortal\Mortal
+cargo build -p libriichi --lib --release
+copy target\release\riichi.dll mortal\libriichi.pyd
+```
+
+三件事會咬人:
+
+* **產物叫 `riichi.dll`,不是 `libriichi.dll`** —— libriichi 的 `[lib] name` 是 `riichi`。
+* **副檔名要改成 `.pyd`** —— CPython 在 Windows 上只認 `.pyd`。
+  (macOS 是 `.dylib` → `.so`,同一個坑的不同平台版本。)
+* **Rust 建置需要 MSYS2。**
+
+`PYO3_PYTHON` 要指到 3.12 那一個直譯器,不然會編出對不上的 ABI。
+
+### 第一件該做的事:先撞最貴的失敗
+
+順序刻意**不是**「先讓 App 跑起來」:
+
+1. **M8 冒煙測試** —— 建 libriichi + 載入 298k 權重 + 跑一次推論。
+   README 自己寫了「這一步同時驗證建置、GPU 環境、權重相容性三件事,
+   失敗的話也是最早、最便宜的失敗點」。
+2. **ROCm 認不認得 RX 9070**、PyTorch 走不走得到它。
+3. 上面兩關過了,才回頭驗擷取層。
+
+理由:擷取層失敗是「要修程式」,可以修;ROCm / libriichi 失敗是「要換方向」,
+那個越早知道越好。
+
+### 擷取層:三個已知風險
+
+`src/mia/capture/windows.py` 的模組 docstring 自己列了(它從沒在真機上跑過):
+
+```powershell
+python tools\capture_probe.py --list --capture ...
+```
+
+1. **`PW_RENDERFULLCONTENT` 對硬體加速視窗可能抓到全黑。** Chrome / Edge /
+   Electron 都是。全黑的話改用 `dxcam`(已在 requirements)或 Windows
+   Graphics Capture。
+2. **DPI 縮放下 `DwmGetWindowAttribute` 的邊界可能與影像尺寸對不上。**
+   程式啟動時會設 `PER_MONITOR_AWARE_V2`,但沒實測過。
+3. **視窗被遮擋時抓不抓得到完整內容。** macOS 上實測是可以的(連完全遮住都行),
+   Windows 未知。
+
+⚠ 若最後退回 `dxcam`,它抓的是**螢幕區域**而不是視窗緩衝區 —— 那條路上
+**Overlay 會被拍進辨識輸入**,要讓 HUD 避開手牌區。`capture/factory.py`
+退回 mss 時會警告,dxcam 這條要自己記得。
+
+### 跑得起來但要留意的
+
+* **視窗自動偵測會選到編輯器** —— 開著這個專案的 VS Code 標題含「雀魂」,
+  而且視窗更大。錄製時一律 `--window` 指定 handle。這在 macOS 上抓到過 Safari。
+* 測試裡有 `platform_windows` marker,但**目前沒有任何一條真的針對 Windows**
+  —— 別把「測試全過」當成擷取層可用。
+
+### 版本對照(macOS 上實際在跑的,Windows 照這個裝)
 
 | | |
 |---|---|
@@ -59,9 +185,6 @@ cd /Users/caoyunjie/project/mahjong
 | AI 引擎 | `engines/mortal/.venv` — Python **3.12.13**(獨立) |
 | 權重 | `models/mortal_298k.pth`(130MB,gitignore),tag `mortal4-b40c192-t26031702` |
 | 上游 | `engines/mortal/Mortal/`(clone,gitignore) |
-
-**為什麼兩個環境:** `libriichi` 不在 PyPI、`mjai` 只有 cp312 wheel,兩者在
-3.14 都裝不起來。這是子程序架構的**技術**原因 —— 不是授權隔離(見下)。
 
 ---
 
@@ -126,6 +249,12 @@ Qt widget 只能在建立它的執行緒上動,而 ViewModel 自己不是執行�
 | **Overlay 的三個控制項都在側邊視窗** | 它鎖定後對滑鼠透明,擺在自己身上的按鈕會變成看得到卻按不到 |
 | **Overlay 不進 features.py 的開關體系** | 那兩個開關管的是 130MB 權重與持續擷取螢幕;Overlay 只是換一種畫法,沒有那個成本 |
 | **視窗位置存 `data/ui_state.json` 而非 config/** | `save_config()` 寫的是整份快照,會把當下所有預設值一起寫死,日後改預設不生效**而且沒有症狀** |
+| **放銃分析輸出「還剩幾種待牌型」,不編機率** | 「放銃率 12.3%」要有語料才有意義,手上兩場差三四個數量級。編一個數字出來會得到「看起來精確、實際沒來源」的東西 |
+| **放銃分析評估三家,不是只算立直的** | 實測那場三次榮和有**兩次**是沒立直的人和的。只算立直家會對真正的放銃牌說「安全 —— 現物」 |
+| **三副露算威脅,但不動危險度等級** | 平起平坐的是**指名**。等級由排除法數出來、副露是估計,混在一起畫面會出現「非常危險」配「還有 2 型」 |
+| **放銃分析不載引擎** | 它要的是事件流本身。與 AI 建議分成兩個開關,就是為了讓人能只開這個而不付 130MB 的代價 |
+| **每一列都要寫「對誰」** | 一張牌對立直那家是現物、對另一家全新。只寫「安全」使用者就會照著打 —— 真實牌譜裡發生過 |
+| **Overlay 的放銃清單與功能開關分開勾** | 功能開著代表有在算,勾選才決定要不要占掉 HUD 的高度(一整手 14 列) |
 
 ---
 
@@ -177,6 +306,21 @@ Qt widget 只能在建立它的執行緒上動,而 ViewModel 自己不是執行�
 | 單幀校正的不穩定度 | 216 幀產生 **21 種**不同 table_rect,約 16% 明顯錯誤 |
 | `own_hand` ROI | `[0.1150, 0.8533, 0.7083, 0.1437]`,量自 2560×1440 |
 
+### 放銃分析(全部量自 `real_game_full.jsonl`,259 次捨牌)
+
+| 項目 | 數字 |
+|---|---|
+| 三次榮和的和牌者 | 3 副露(沒立直)/ 2 副露(沒立直)/ 立直 —— **兩次沒立直** |
+| 副露數分布(捨牌時點 × 四家) | 0 組 786、1 組 47、2 組 128、**3 組 75** |
+| 曝光量:三副露 vs 立直 | **53 vs 59** 個捨牌時點 —— 同一個量級 |
+| 有人被指名的比例:只認立直 | 47/259(**18%**) |
+| 同上:門檻 3 副露(現行) | 100/259(**39%**) |
+| 同上:門檻 2 副露 | 132/259(51%)—— 標籤開始貶值,故未採用 |
+| 每張牌的危險度分布 | 安全 4.2% / 比較安全 40.9% / 危險 35.1% / 非常危險 19.7% |
+
+**我們自己那次放銃(8s)**,和牌者只有 2 副露 —— 現行門檻 3 抓不到他。
+那是已知的覆蓋缺口,見「未解」#13。
+
 ### 郵箱 / 手牌追蹤
 
 | 項目 | 數字 |
@@ -196,6 +340,10 @@ Qt widget 只能在建立它的執行緒上動,而 ViewModel 自己不是執行�
 | `tests/fixtures/hand_*.png` | 三張真實手牌截圖(13 張滿手 / 14 張含摸牌 / 4 張含副露),皆 1813×207 |
 | `data/live/20260730-193801/ws.jsonl` | 2026-07-30 實機第二場,234 事件、2 局、**含立直**、100% 解析 |
 | `data/live/20260730-192227/ws.jsonl` | 同日第一場,65 事件 |
+| `data/live/20260817-100915/ws.jsonl` | 2026-08-17 實機第四場,319 frame / 186 秒。**放銃分析第一次實機**,東 1 局 |
+
+⚠ `data/` 在 gitignore —— 上面三份**不會**跟著 git 到 Windows。要的話手動搬,
+不搬也沒關係:`tests/fixtures/real_game_full.jsonl` 才是被測試依賴的那一份。
 
 `data/` 與 `models/` 都在 gitignore。
 
@@ -239,6 +387,25 @@ Qt widget 只能在建立它的執行緒上動,而 ViewModel 自己不是執行�
 * **鳴牌之後沒有摸牌**(`drawn is None`)但手上是 11 張、還欠一張沒打。
   用 `drawn` 判斷副露組數會每次鳴牌後算錯 —— 要用 `len(tiles) % 3`。
 
+### 只有實機 / 渲染才看得到的(這一類最貴)
+
+* **「未開啟」那句話的條件寫死了兩個功能。** 加了放銃分析之後,它開著、
+  側邊視窗滿滿是資料,Overlay 照樣喊「未開啟 —— 用側邊視窗的開關打開」。
+  最糟的是**它把人指向錯的開關**:去撥一個已經開著的東西,撥完沒反應。
+  側邊視窗狀態列同一個成因。改成逐一問 `features.NAMES`。
+* **待牌型的名字混進日文新字體** —— `両面` / `単騎` / `辺張`。單元測試不會
+  抱怨,要看得懂中文的人盯著畫面才會發現。已改成 兩面 / 單騎 / 邊張。
+* **同一個牌名在不同模組是不同記法。** 放銃分析那條路的資料來自 MJAI 事件流
+  (`E`、`5mr`),向聽分析那條來自 classify(`1z`、`0m`)。多轉一次
+  `ms_to_mjai` 的話**數牌剛好轉得過去、字牌會拋 `TileError`** ——
+  所以只有摸到字牌那一刻才會炸。離屏渲染才抓到的。
+* **視窗邊界會過期。** `WindowInfo` 是找視窗那一刻抓的,而瀏覽器之後被改過
+  大小 —— `scale` 於是算錯,校正永遠鎖不上。三個擷取後端都要每幀重查一次。
+* **滑鼠移到待選牌上,牌會往上抬約 32%。** 抬起來的牌超出 ROI,整手就認錯了。
+  解法是切 ROI 時多留 `HOVER_HEADROOM = 0.5` 的上緣。
+* **深色模式下 `palette(mid)` 比背景還暗。** 那是 3D 陰影的角色,不是文字的。
+  用 `palette(placeholder-text)`(由文字色推出來,兩種模式都成立)。
+
 ### 其他
 
 * **手牌排序不能用 `sorted()`** —— 會把筒子插進萬子中間。用 `tiles.sort_key`。
@@ -264,10 +431,26 @@ Qt widget 只能在建立它的執行緒上動,而 ViewModel 自己不是執行�
 | 8 | 受入枚數略微高估 | 不知副露內容導致 | 次要,可從封包補 |
 | 9 | 單一 session 內視窗縮放 | manifest 只存一個 `table_rect` | 要改成存進每個 `FrameRecord` |
 | 10 | UI 皮膚切換 | 要重載跨 widget 的 `TileIcons` | 未實作。Overlay 又多一個 `TileIcons` 持有者 |
-| 11 | **Overlay 實機疊在對局上** | 版面與開關都測過,但沒真的疊上去打過 | 要驗兩件事:鎖定後點擊真的穿到遊戲、焦點在瀏覽器時不會被 macOS 藏起來 |
+| 11 | ~~Overlay 實機疊在對局上~~ | ✅ 2026-08-17 驗過,疊在牌桌上正常 | **但放銃清單那一段還沒實機看過** —— 那次沒勾設定頁的選項 |
 | 12 | Overlay 自動跟隨遊戲視窗 | 現在是手動拖 | 刻意留到之後,理由見 decisions.md 第十四節 |
+| 13 | **放銃分析不看打點** | 放銃給門清立直 dora 3 與給 1000 點的仕掛け同一級 | 量的只有「會不會中」,沒有「中了多痛」 |
+| 14 | **副露只用來數壁,沒當危險訊號**(門檻 3 除外) | 染手、役牌碰完全沒被讀 | 染め手 是最可靠的讀之一,而且是**推論不是估計**,值得做 |
+| 15 | 三副露門檻漏掉 2 副露 | 我們自己那次放銃的和牌者只有 2 副露 | 「2 副露 + 役牌」比單純的副露數硬,留作獨立一項 |
+| 16 | `Player.reach_turn` 記了沒人用 | 無 | 立直後的安全牌是在捨牌當下就記進 `safe`,不需要它 |
+| 17 | **`decisions.md` 第十八節沒寫** | 放銃分析的設計理由目前只在程式的 docstring 裡 | 該記的:只認立直會漏掉、等級 vs 指名的界線、三副露的數據 |
 
-**沒開始也沒被授權開始的:** 功能 3 離線訓練。
+**沒開始也沒被授權開始的:** M8 風格微調的離線訓練。
+
+### 未解 #8「受入枚數略微高估」現在變便宜了
+
+`shanten.py:221` 算的是 `COPIES - array[index]` —— **只扣自己手上那幾張**,
+牌河、副露、寶牌指示牌全當成還在山裡。而做放銃分析時蓋的
+`TableTracker.remaining()` 算的正好是缺的那一半。
+
+所以現在不是「要寫一個追蹤器」,是「把已經有的接過去」。要決定的一點:
+功能 1 靠 CV、功能 2/3 靠封包,兩條路目前解耦 —— 接上去等於讓向聽分析在
+封包沒開時退回舊行為。建議做成有封包就用、沒有就照舊,畫面上分開
+「進張 12」與「進張 12(估)」。
 
 ---
 
@@ -280,6 +463,12 @@ Qt widget 只能在建立它的執行緒上動,而 ViewModel 自己不是執行�
 * UI 版面參考明日方舟的 MAA:**左側直排功能列 + 每頁頂端放該頁自己的設定**。
 * 開關要 **iOS 樣式的綠色**(用 Apple 的 system green `#34C759`)。
 * 文件與註解用**繁體中文**,語氣直接、講清楚 why 而不只是 what。
+  **注意日文新字體**:麻將術語很容易寫成 `両面` / `単騎` / `辺張`,
+  要用 兩面 / 單騎 / 邊張。(嵌張、雙碰兩種寫法一致。)
+* 切牌建議講**牌名**不講代號 —— 說「東」「南」,不說 `1z`、`2z`。
+  `mia.mjai.tiles.tile_name()` 兩種記法都收。
+* 下一步已經談定:**搬到 Windows**,先撞 M8 的冒煙測試(libriichi + ROCm),
+  再回頭驗擷取層。理由見上面「在 Windows 上重建」。
 
 ---
 
@@ -287,19 +476,19 @@ Qt widget 只能在建立它的執行緒上動,而 ViewModel 自己不是執行�
 
 ```
 src/mia/
-├── features.py     兩個功能的識別字(ui 與 live 共用,無相依)
+├── features.py     三個開關的識別字(ui 與 live 共用,無相依)
 ├── config/         pydantic 設定 + YAML 載入
 ├── capture/        macos(Quartz) / windows(PrintWindow) / mss fallback
 ├── calibration/    牌桌矩形偵測(stable.py 是多幀中位數穩定化)
 ├── vision/         純 CV 無狀態:roi + tiles/(hand 定位、classify 分類)
-├── analysis/       向聽 / 進張 / 打牌建議(mahjong 套件)
-├── mjai/           events / tiles / handstate(HandTracker)
+├── analysis/       shanten(向聽 / 進張)+ danger(放銃危險度,純排除法)
+├── mjai/           events / tiles / handstate(自己的手牌)/ table(整桌公開資訊)
 ├── engine/         base / subprocess_engine / mortal / dummy / multiplex / actions
-├── live/           bus / vision / packets / runtime / source(開遊戲)← 即時模式
+├── live/           bus / vision / packets / danger / runtime / source(開遊戲)
 ├── ui/             viewmodel(顯示什麼,不碰 Qt)+ state(記住的位置)
-│                   + switchboard(開關的 Protocol)
+│                   + switchboard(開關的 Protocol)+ style(深色模式的顏色)
 │                   + panel/(側邊視窗) overlay/(疊在遊戲上的 HUD)
-│                   + widgets/(tiles, advice, analysis, toggle)
+│                   + widgets/(tiles, advice, analysis, danger, toggle)
 ├── groundtruth/    cdp / capture_addon / dump / liqi / schema / to_mjai / stream
 ├── eval/           align / report(準確率評測,素材待補)
 └── recorder/       錄製資料集、離線回放
@@ -320,6 +509,8 @@ docs/   decisions.md  ← 方向轉折與全部決策理由(最重要)
 3. `src/mia/ui/viewmodel.py` —— 整個 UI 要顯示什麼都在這裡,而且不碰 Qt
 4. `src/mia/live/bus.py` 的模組 docstring —— 郵箱的設計理由
 5. `src/mia/engine/base.py` —— 引擎介面與 `Advice` 的語意
+6. `src/mia/analysis/danger.py` 的模組 docstring —— 放銃分析為什麼是排除法
+   而不是機率,以及「只認立直」那個錯誤是怎麼被真實牌譜逼出來的
 
 每個模組的 docstring 都寫了「為什麼這樣做」與「刻意不做什麼」,那是主要的
 設計文件 —— 讀它們比讀程式碼快。
