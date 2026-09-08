@@ -111,11 +111,18 @@ git clone / pull 之後**還缺四樣東西** —— 它們都在 gitignore 裡,
 # 主程式 — Python 3.14
 py -3.14 -m venv .venv
 .venv\Scripts\pip install -r requirements-dev.txt
+.venv\Scripts\pip install -e . --no-deps   # tests/conftest.py 直接 import mia,沒這行 pytest 收集階段就 ModuleNotFoundError
 
 # AI 引擎 — Python 3.12,獨立
 py -3.12 -m venv engines\mortal\.venv
 engines\mortal\.venv\Scripts\pip install -r engines\mortal\requirements.txt
 ```
+
+> `pip install -e .` 這一步在 macOS 上也是必須的,只是先前的文件漏寫了 ——
+> 這次在 Windows 重建時才發現 `mia` 從沒被真的裝進 venv 過(`requirements-dev.txt`
+> 裝的都是相依,不含專案本身)。`requirements-dev.txt` 已經把這一步寫進開頭的
+> 註解,上面這行是給不會去讀 txt 檔頭的人看的。mypy 也少了兩個 stub
+> (`types-PyYAML`、`types-protobuf`),已經一併補進 `requirements-dev.txt`。
 
 **為什麼兩個環境:** `libriichi` 不在 PyPI、`mjai` 只有 cp312 wheel,兩者在
 3.14 都裝不起來。這是**技術**原因,不是授權隔離(見下)。
@@ -133,9 +140,20 @@ copy target\release\riichi.dll mortal\libriichi.pyd
 * **產物叫 `riichi.dll`,不是 `libriichi.dll`** —— libriichi 的 `[lib] name` 是 `riichi`。
 * **副檔名要改成 `.pyd`** —— CPython 在 Windows 上只認 `.pyd`。
   (macOS 是 `.dylib` → `.so`,同一個坑的不同平台版本。)
-* **Rust 建置需要 MSYS2。**
+* ~~Rust 建置需要 MSYS2~~ —— **已在真機上驗證過是錯的。** rustup 預設的
+  `x86_64-pc-windows-msvc` 工具鏈直接就能建,完全沒裝 MSYS2 的 mingw-w64
+  子系統。要用的是 **MSVC Build Tools**(`vcvars64.bat` 把 `link.exe` 放進
+  PATH),不是 MSYS2。這條原本是沒上機測過的猜測,已更正。
 
-`PYO3_PYTHON` 要指到 3.12 那一個直譯器,不然會編出對不上的 ABI。
+```powershell
+# 沒開過 "Developer PowerShell for VS" 的話,先跑這行把 MSVC 工具鏈掛進 PATH
+cmd /c '"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" && powershell'
+```
+
+`PYO3_PYTHON` 要指到 3.12 那一個直譯器,不然會編出對不上的 ABI。實測
+(cargo 1.95、rustc 1.95、release profile)**66 秒**建完,import 與跑真的推論
+都正常,一致率數字與 macOS 記錄的完全一樣(見下面「實測數字」)——這代表
+Windows 建出來的 libriichi 行為上與 macOS 那份等價,不是巧合過關。
 
 ### 第一件該做的事:先撞最貴的失敗
 
