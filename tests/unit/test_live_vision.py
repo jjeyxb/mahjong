@@ -221,7 +221,10 @@ class TestOnlyClassifyingWhatHasStopped:
         worker = VisionWorker(
             bus,
             config=_config(roi),
-            backend=FakeBackend(window, moving),
+            # 幀用完之後模擬擷取失敗,而不是讓 FakeBackend 重複最後一張 ——
+            # 重複的話會被 VisionWorker 誤判成「畫面停下來了」而觸發一次
+            # classify,使這個測試在背景執行緒的時間點上變成賭運氣。
+            backend=FakeBackend(window, [*moving, None]),
             window=window,
         )
         _run_until(worker, lambda: worker.skipped >= len(moving), timeout=3.0)
