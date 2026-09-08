@@ -176,13 +176,21 @@ Windows 建出來的 libriichi 行為上與 macOS 那份等價,不是巧合過�
 python tools\capture_probe.py --list --capture ...
 ```
 
-1. **`PW_RENDERFULLCONTENT` 對硬體加速視窗可能抓到全黑。** Chrome / Edge /
-   Electron 都是。全黑的話改用 `dxcam`(已在 requirements)或 Windows
-   Graphics Capture。
+1. ~~`PW_RENDERFULLCONTENT` 對硬體加速視窗可能抓到全黑~~ —— **已在真機上排除
+   (2026-09-09)。** 拿一個 2560×1440、正在播影片的 Chrome 分頁測(硬體加速
+   跑滿),`capture_probe.py --window` 抓到的是正常畫面(mean=111、std=58,
+   不是全黑的 mean=0),連影片播放中的畫面內容都在。這個風險原本是最貴的
+   —— 沒了它,`windows.py` 這條主路徑大概率能用,不必退到 `dxcam`。
 2. **DPI 縮放下 `DwmGetWindowAttribute` 的邊界可能與影像尺寸對不上。**
-   程式啟動時會設 `PER_MONITOR_AWARE_V2`,但沒實測過。
+   仍未驗證 —— 這次用來測試的機器顯示器是 100% 縮放(`GetDeviceCaps` 量到
+   96 DPI),沒有縮放環境可以踩這個坑。真的要驗,需要一台開 125%/150% 縮放
+   的機器,或把這台的縮放調高一次專門測。
 3. **視窗被遮擋時抓不抓得到完整內容。** macOS 上實測是可以的(連完全遮住都行),
-   Windows 未知。
+   Windows **仍未驗證** —— 這次的測試環境是遠端 / 自動化 session,
+   `SetForegroundWindow`、`SetWindowPos(HWND_TOP)` 都被 Windows 的
+   前景鎖定(foreground lock)擋下,程式化搶不到真正的前景視窗,
+   排不出真正的遮擋場景。真人坐在機器前面操作(手動切換視窗)應該不會
+   撞到這個限制 —— 這是測試環境的限制,不是 `windows.py` 本身已知有問題。
 
 ⚠ 若最後退回 `dxcam`,它抓的是**螢幕區域**而不是視窗緩衝區 —— 那條路上
 **Overlay 會被拍進辨識輸入**,要讓 HUD 避開手牌區。`capture/factory.py`
@@ -194,6 +202,12 @@ python tools\capture_probe.py --list --capture ...
   而且視窗更大。錄製時一律 `--window` 指定 handle。這在 macOS 上抓到過 Safari。
 * 測試裡有 `platform_windows` marker,但**目前沒有任何一條真的針對 Windows**
   —— 別把「測試全過」當成擷取層可用。
+* **繁體 Windows 的主控台編碼(cp950)印不出簡體字或 emoji,`--list` 會直接
+  `UnicodeEncodeError` 崩潰。** `--list --all` 會把所有看得到的視窗標題印出來,
+  而視窗標題是外部來源、內容不可控(隨便一個瀏覽器分頁都可能是簡體字)—— 這在
+  這次真機測試就撞到了,不是假設性的。已在 `mia/utils/logging.py` 修掉:
+  Windows 上把 `sys.stdout` / `sys.stderr` reconfigure 成 UTF-8。macOS/Linux
+  預設 locale 是 UTF-8,這個坑只在 Windows 上存在。
 
 ### 版本對照(macOS 上實際在跑的,Windows 照這個裝)
 
