@@ -1,6 +1,6 @@
 # 交接文件 — MIA
 
-給接手這個專案的下一個對話 / 下一個人。**最後更新 2026-08-26(放銃分析 + 準備移到 Windows)。**
+給接手這個專案的下一個對話 / 下一個人。**最後更新 2026-09-09(補上安裝 / 清除清單)。**
 
 > 🪟 **要在 Windows 上接手的話,先看 [在 Windows 上重建](#在-windows-上重建)。**
 > 那一節列出 git 拉不到、必須手動補的四樣東西,以及第一件該做的事。
@@ -185,6 +185,87 @@ python tools\capture_probe.py --list --capture ...
 | AI 引擎 | `engines/mortal/.venv` — Python **3.12.13**(獨立) |
 | 權重 | `models/mortal_298k.pth`(130MB,gitignore),tag `mortal4-b40c192-t26031702` |
 | 上游 | `engines/mortal/Mortal/`(clone,gitignore) |
+
+---
+
+## 清除:這個專案在 macOS 上裝了什麼
+
+**量於 2026-09-09 的開發機。** 記在這裡是因為三個月後沒有人記得住 ——
+而「裝了什麼」與「怎麼裝」本來就該放在一起。
+
+安裝日期全部落在 2026-07-26 ~ 08-03,而專案第一個 commit 是 07-29,
+所以下面每一項基本上都是為了這個專案才裝的。
+
+### 專案目錄內 —— 6.6 GB(刪資料夾就沒了)
+
+| 路徑 | 大小 | 說明 |
+|---|---|---|
+| `data/recordings` | **2.7 G** | ⚠ **不可重生** —— 見下方警告 |
+| `data/live/chrome-profile` | 553 M | ⚠ 裡面有**登入中的雀魂帳號** |
+| `.venv` | 1.9 G | Python 3.14 主環境 |
+| `engines/mortal/.venv` | 689 M | Python 3.12 引擎環境(torch 佔大部分) |
+| `engines/mortal/Mortal` | 382 M | Mortal 的 clone,含 Rust 編譯產物 |
+| `data/gt` | 286 M | ground truth |
+| `models/` | 125 M | 權重,HuggingFace 隨時能重抓 |
+| 其他 | ~30 M | `.git` 6.4M、`logs` 2.8M、`assets` 616K |
+
+### 專案目錄外 —— 約 1.9 GB(要手動清)
+
+| 路徑 | 大小 | 裝的日期 | 備註 |
+|---|---|---|---|
+| `~/.rustup` + `~/.cargo` | **628 M** | 07-29 | 為了編 libriichi |
+| `~/Library/Caches/ms-playwright` | 539 M | 07-27 | Chromium |
+| `~/Library/Caches/pip` | 758 M | — | ⚠ **不是這個專案專屬**,所有 Python 工作共用 |
+| `~/.mitmproxy` | 24 K | 07-26 | 憑證,見下 |
+| brew `python@3.12` | | 07-29 | |
+| brew `python@3.14` | | 07-26 | |
+| brew `gh` | | 08-03 | |
+
+### 沒有動到系統的部分
+
+特地查過三個最麻煩的地方,**都是乾淨的**:
+
+* **沒有安裝任何系統延伸** —— `systemextensionsctl list` 找不到 mitmproxy 相關的。
+* **沒有 LaunchAgent。**
+* **mitmproxy 的 CA 沒有被信任進系統鑰匙圈** —— `~/.mitmproxy/` 裡有產生出來的
+  憑證檔(2026-07-26),但從沒安裝進去。這與「MITM 測試明確延後」是一致的。
+
+所以不必擔心有東西在背景跑、或系統信任了不該信任的憑證。
+
+### 不是檔案、但要記得收回的
+
+**螢幕錄製權限。** 系統設定 → 隱私權與安全性 → 螢幕與系統錄製,裡面勾了跑這個
+程式的 App(終端機 / VS Code)。**刪專案不會自動取消。**
+
+### 清除順序(由安全到需要想一下)
+
+```bash
+# 1. 最安全 —— 但先確認 data/recordings 不要了
+rm -rf ~/Library/Caches/ms-playwright        # 539M,重裝一行指令
+rm -rf ~/.mitmproxy                          # 24K
+
+# 2. 專案本體(含那 2.7G 錄影與登入中的 Chrome profile)
+rm -rf ~/project/mahjong
+
+# 3. 需要確認沒別的專案在用
+rustup self uninstall                        # 628M,會一起清掉 ~/.cargo
+brew uninstall python@3.12                   # 幾乎確定是為這個專案裝的
+brew uninstall python@3.14 gh                # ← 這兩個可能還有別的用途
+
+# 4. pip 快取是共用的,清了只是下次重載
+rm -rf ~/Library/Caches/pip                  # 758M
+```
+
+總共約 **8.5 GB**。
+
+### ⚠ 兩個刪之前一定要看的
+
+1. **`data/recordings` 那 2.7 G 是不可重生的。** 那是實際打牌錄下來的素材,
+   而未解 #3 還記著「M3-1b 的成對素材待補」。刪掉等於要重錄,而重錄一次是
+   二十分鐘的實際遊玩。**它在 gitignore 裡,`git clone` 帶不過去** ——
+   要換機器的話這個最該先備份。
+2. **`data/live/chrome-profile` 裡有登入中的帳號。** 這台電腦要轉手或送修的話,
+   這個比什麼都優先刪。
 
 ---
 
