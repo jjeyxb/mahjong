@@ -19,6 +19,7 @@ Mortal 附的 ``mortal.py`` 已經是一個 MJAI stdio 迴圈,乍看可以直接
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from mia.engine.base import EngineError
@@ -34,6 +35,10 @@ _BOT = "bot.py"
 _VENV_PYTHON = ".venv/bin/python"
 _VENV_PYTHON_WINDOWS = ".venv/Scripts/python.exe"
 _UPSTREAM = "Mortal/mortal"
+#: CPython 在 Windows 上只認 .pyd,macOS / Linux 都是建置時改名成 .so
+#(見 requirements.txt 的建置步驟)。libriichi 的 [lib] name 是 "riichi",
+#產物原始檔名因平台而異,這裡只認改名後的最終檔案。
+_LIBRIICHI_NAME = "libriichi.pyd" if sys.platform == "win32" else "libriichi.so"
 
 
 def mortal_engine(
@@ -85,8 +90,9 @@ def mortal_engine(
     )
     _require(base / _BOT, "子程序端的腳本不見了,應該隨專案版控")
     _require(
-        base / _UPSTREAM / "libriichi.so",
-        "libriichi 尚未編譯。見 requirements.txt 的建置步驟(macOS 記得把 .dylib 改名成 .so)",
+        base / _UPSTREAM / _LIBRIICHI_NAME,
+        "libriichi 尚未編譯。見 requirements.txt 的建置步驟"
+        "(macOS 把 .dylib 改名成 .so,Windows 把 riichi.dll 改名成 .pyd)",
     )
     _require(weights_path, "權重不隨專案散布,請依 Mortal 專案的規範自行取得")
 
