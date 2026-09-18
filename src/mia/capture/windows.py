@@ -46,6 +46,7 @@ from mia.utils.logging import logger
 __all__ = ["WindowsCaptureBackend", "enable_dpi_awareness", "list_windows"]
 
 try:  # pragma: no cover - 僅 Windows
+    import pywintypes
     import win32api
     import win32con
     import win32gui
@@ -53,8 +54,12 @@ try:  # pragma: no cover - 僅 Windows
     import win32ui
 
     _WIN32_AVAILABLE = True
+    #: pywin32 在 GDI 呼叫失敗時拋的例外。視窗在擷取途中被關掉就會遇到 ——
+    #: handle 跟著失效,之後每一個 GDI 呼叫都會拋。
+    _GDI_ERRORS: tuple[type[BaseException], ...] = (win32ui.error, pywintypes.error)
 except ImportError:  # pragma: no cover
     _WIN32_AVAILABLE = False
+    _GDI_ERRORS = ()
 
 
 # PrintWindow 旗標:渲染完整內容,含 DirectComposition / 硬體加速圖層。
@@ -313,15 +318,31 @@ class WindowsCaptureBackend(CaptureBackend):
             # 用 cv2.cvtColor 而非 numpy 切片,原因見 capture/macos.py 的同段註解。
             bgra = np.frombuffer(raw, dtype=np.uint8).reshape((height, width, 4))
             array = cv2.cvtColor(bgra, cv2.COLOR_BGRA2BGR)
+        except _GDI_ERRORS as exc:
+            # 視窗在擷取途中沒了 —— 對呼叫端而言這就只是「這一幀失敗」,
+            # 和 PrintWindow 回傳失敗是同一件事。轉成 CaptureFailedError,
+            # VisionWorker 才走得到它既有的「失敗幾次就重新找視窗」那條路;
+            # 讓原始的 win32ui.error 漏出去的話,它只會一路衝到執行緒最外層
+            # 把整條擷取執行緒收掉。
+            raise CaptureFailedError(f"GDI 呼叫失敗(視窗可能剛被關掉): {window} — {exc}") from exc
         finally:
-            if bitmap is not None:
-                win32gui.DeleteObject(bitmap.GetHandle())
-            if mem_dc is not None:
-                mem_dc.DeleteDC()
-            if mfc_dc is not None:
-                mfc_dc.DeleteDC()
-            if window_dc is not None:
-                win32gui.ReleaseDC(hwnd, window_dc)
+            # 清理一律 best-effort。視窗一沒,這些 handle 全部失效,
+            # DeleteDC 會拋 win32ui.error —— 而那是**清理階段**的錯誤,
+            # 不該取代真正的結果,更不該取代上面那個 CaptureFailedError。
+            #
+            # 實測(2026-09-18):使用者關掉瀏覽器(live.md 明講那就是結束
+            # 一場的方法)時,DeleteDC failed 這個例外會從 finally 竄出去,
+            # 把整條擷取執行緒打死,畫面上只留一句「擷取執行緒異常結束」。
+            for release in (
+                lambda: win32gui.DeleteObject(bitmap.GetHandle()) if bitmap else None,
+                lambda: mem_dc.DeleteDC() if mem_dc else None,
+                lambda: mfc_dc.DeleteDC() if mfc_dc else None,
+                lambda: win32gui.ReleaseDC(hwnd, window_dc) if window_dc else None,
+            ):
+                try:
+                    release()
+                except _GDI_ERRORS as exc:
+                    logger.debug("釋放 GDI 資源失敗(視窗多半已經關了): {}", exc)
 
         # bounds 回報**邏輯座標**、scale 是螢幕的 DPI 縮放 —— 這才符合
         # base.py 與 geometry.py 白紙黑字寫的約定(「bounds 為邏輯座標」、
