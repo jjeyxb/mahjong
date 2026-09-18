@@ -1,15 +1,18 @@
 """Windows 擷取後端 —— PrintWindow + PW_RENDERFULLCONTENT。
 
-.. warning::
-   **本模組尚未在真實 Windows 機器上驗證過。** 開發環境為 macOS。
-   首次在 Windows 上執行時請先跑 ``python tools/capture_probe.py --list --capture ...``
-   逐項確認,特別是下列三點:
+**2026-09-18 首次在真實 Windows 機器上驗證**(RX 9070、主螢幕 2560×1440 @125%、
+副螢幕 1920×1080 @100%)。原本列的三個風險,現況:
 
-   1. ``PW_RENDERFULLCONTENT`` 對硬體加速視窗(Chrome / Edge / Electron)是否
-      真的抓得到內容,而不是一片全黑。若全黑,改用 dxcam 或 Windows Graphics
-      Capture(見下方「備案」)。
-   2. DPI 縮放下 ``DwmGetWindowAttribute`` 回傳的邊界是否與擷取影像尺寸一致。
-   3. 遊戲視窗被其他視窗遮擋時是否仍能取得完整內容。
+1. ``PW_RENDERFULLCONTENT`` 對硬體加速視窗是否抓到全黑 —— **不會**。拿一個
+   正在播影片的 Chrome 視窗實測,抓到的是正常畫面(mean=111、std=58)。
+   下方「備案」那兩條因此都不需要走。
+2. DPI 縮放下邊界與影像尺寸對不對得上 —— **原本對不上,已修**。成因不是
+   ``DwmGetWindowAttribute`` 不準(它很準),而是**兩種「邏輯像素」被混為
+   一談**:視窗座標(宣告 DPI aware 之後等同實體像素)與瀏覽器的 CSS 像素。
+   詳見 :meth:`WindowsCaptureBackend.capture` 裡的長註解。
+3. 遊戲視窗被遮擋時能不能抓到完整內容 —— **仍未驗證**。自動化 session 搶不到
+   前景視窗(被 Windows 的 foreground lock 擋下),排不出真正的遮擋場景。
+   要驗需要真人坐在機器前手動切換視窗。
 
 備案
 ----
@@ -64,6 +67,11 @@ DWMWA_CLOAKED = 14
 
 # SetProcessDpiAwarenessContext
 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = ctypes.c_void_p(-4)
+
+# GetDpiForMonitor / MonitorFromWindow
+USER_DEFAULT_SCREEN_DPI = 96
+MONITOR_DEFAULTTONEAREST = 2
+MDT_EFFECTIVE_DPI = 0
 
 _dpi_awareness_set = False
 
@@ -120,6 +128,49 @@ def _extended_frame_bounds(hwnd: int) -> Rect:
     return Rect.from_bounds(rect.left, rect.top, rect.right, rect.bottom)
 
 
+def _dpi_scale(hwnd: int) -> float:
+    """視窗所在螢幕的 DPI 縮放:1.0 / 1.25 / 1.5 / 2.0 …
+
+    **這就是 `Frame.scale` 要的那個值**,理由見 :meth:`WindowsCaptureBackend.capture`
+    裡的說明。
+
+    取的是**視窗所在的那一個螢幕**而不是主螢幕 —— 多螢幕各自縮放不同是很常見的
+    設定(這台開發機就是主螢幕 125%、副螢幕 100%),拿主螢幕的值套到另一個螢幕上
+    的視窗會整組算錯。
+
+    Note:
+        這個值等同於瀏覽器的 ``window.devicePixelRatio``,**前提是瀏覽器縮放為
+        100%**。MIA 的瀏覽器是自己開的(見 :mod:`mia.groundtruth.cdp`),不會去
+        動縮放,所以這個前提成立。實測 125% 螢幕上兩者都是 1.25,分毫不差。
+        使用者手動按 Ctrl+ 放大頁面的話這個假設會破 —— 那時候畫布校正會說
+        「對不上」,而不是安靜地給一個偏掉的矩形。
+    """
+    dpi = 0
+    # GetDpiForWindow 是 Windows 10 1607+ 才有的,舊版沒有這個符號
+    get_dpi_for_window = getattr(ctypes.windll.user32, "GetDpiForWindow", None)
+    if get_dpi_for_window is not None:
+        dpi = int(get_dpi_for_window(wintypes.HWND(hwnd)))
+
+    if not dpi:  # 退回:問視窗所在的螢幕
+        monitor = ctypes.windll.user32.MonitorFromWindow(
+            wintypes.HWND(hwnd), wintypes.DWORD(MONITOR_DEFAULTTONEAREST)
+        )
+        dpi_x, dpi_y = wintypes.UINT(), wintypes.UINT()
+        hresult = ctypes.windll.shcore.GetDpiForMonitor(
+            monitor,
+            ctypes.c_int(MDT_EFFECTIVE_DPI),
+            ctypes.byref(dpi_x),
+            ctypes.byref(dpi_y),
+        )
+        if hresult == 0:
+            dpi = dpi_x.value
+
+    if not dpi:
+        logger.warning("問不到視窗 {} 的 DPI,當成 100% 縮放", hwnd)
+        return 1.0
+    return dpi / USER_DEFAULT_SCREEN_DPI
+
+
 def _is_cloaked(hwnd: int) -> bool:
     """視窗是否被 DWM 隱藏(其他虛擬桌面、UWP 暫停中的 App)。"""
     cloaked = wintypes.DWORD()
@@ -174,9 +225,21 @@ def list_windows(*, include_all: bool = False) -> list[WindowInfo]:
             if _is_cloaked(hwnd):
                 return True
 
-        bounds = _extended_frame_bounds(hwnd)
-        if not include_all and (bounds.width <= 0 or bounds.height <= 0):
+        physical = _extended_frame_bounds(hwnd)
+        if not include_all and (physical.width <= 0 or physical.height <= 0):
             return True
+
+        # 與 capture() 一致:對外一律報**邏輯座標**。不一致的話,
+        # 「列出來的視窗」與「擷取回來的那一幀」會是兩種單位,而 base.py 的
+        # min_width / min_height 過濾又是吃這裡的值 —— 混用了不會報錯,
+        # 只會在高 DPI 螢幕上默默篩掉或篩進錯的視窗。
+        scale = _dpi_scale(hwnd) if physical.width > 0 else 1.0
+        bounds = Rect(
+            round(physical.x / scale),
+            round(physical.y / scale),
+            round(physical.width / scale),
+            round(physical.height / scale),
+        )
 
         collected.append(
             WindowInfo(
@@ -216,8 +279,10 @@ class WindowsCaptureBackend(CaptureBackend):
             raise CaptureFailedError(f"視窗已不存在: {window}")
 
         # 用當下的邊界而非快取的 window.bounds —— 使用者可能剛剛縮放了視窗。
-        bounds = _extended_frame_bounds(hwnd)
-        width, height = bounds.width, bounds.height
+        # 這裡拿到的是**實體像素**(本行程宣告了 per-monitor DPI aware),
+        # PrintWindow 的點陣圖必須照這個尺寸開,不能用邏輯座標。
+        physical = _extended_frame_bounds(hwnd)
+        width, height = physical.width, physical.height
         if width <= 0 or height <= 0:
             raise CaptureFailedError(f"視窗尺寸無效({width}x{height}),可能已最小化: {window}")
 
@@ -258,14 +323,37 @@ class WindowsCaptureBackend(CaptureBackend):
             if window_dc is not None:
                 win32gui.ReleaseDC(hwnd, window_dc)
 
-        # 已宣告 per-monitor DPI aware,GetWindowRect 回傳的就是實際像素,
-        # 因此 scale 恆為 1.0。留著這個計算是為了讓上層邏輯與 macOS 一致。
-        scale = array.shape[1] / bounds.width if bounds.width else 1.0
+        # bounds 回報**邏輯座標**、scale 是螢幕的 DPI 縮放 —— 這才符合
+        # base.py 與 geometry.py 白紙黑字寫的約定(「bounds 為邏輯座標」、
+        # 「scale 即 pixel / logical 的比值」),也才與 macOS 那一份一致。
+        #
+        # 這裡原本寫的是「已宣告 per-monitor DPI aware,所以 scale 恆為 1.0」。
+        # 那句話單看擷取層是對的 —— 以視窗座標為單位,影像確實是 1:1。但它讓
+        # **兩種不同的「邏輯像素」被混為一談**:
+        #
+        #   視窗座標(DPI aware 之後 = 實體像素)  vs  瀏覽器的 CSS 像素
+        #
+        # 而 Canvas.table_rect 要換算的是後者 —— 畫布 1600×900 是 CSS 像素,
+        # 在 125% 螢幕上佔 2000 實體像素。scale 給 1.0 的話它會拿 1600 去對
+        # 2004 的影像寬,差 404px 當場判定「畫布對不上」,畫面辨識整個鎖不上。
+        # macOS 上碰巧不會出事:Retina 的 backing scale 與 devicePixelRatio
+        # 都是 2.0,兩種單位剛好同值,於是混用了也看不出來。
+        #
+        # 實測(125% 螢幕、畫布 1600×900):改成這樣之後畫布上方剩給瀏覽器介面
+        # 的高度從荒謬的 337 變成 89.6 個邏輯像素,而 macOS 實測的 Chrome
+        # 工具列是 87 —— 幾何關係一下就對上了,這是這個修法正確的旁證。
+        scale = _dpi_scale(hwnd)
+        logical = Rect(
+            round(physical.x / scale),
+            round(physical.y / scale),
+            round(physical.width / scale),
+            round(physical.height / scale),
+        )
         current = WindowInfo(
             handle=window.handle,
             title=window.title,
             owner=window.owner,
-            bounds=bounds,
+            bounds=logical,
             pid=window.pid,
         )
         return Frame(image=array, window=current, scale=scale, captured_at=captured_at)
