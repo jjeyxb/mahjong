@@ -1,6 +1,6 @@
 # 交接文件 — MIA
 
-給接手這個專案的下一個對話 / 下一個人。**最後更新 2026-08-26(放銃分析 + 準備移到 Windows)。**
+給接手這個專案的下一個對話 / 下一個人。**最後更新 2026-09-18(Windows 實機驗證完成)。**
 
 > 🪟 **要在 Windows 上接手的話,先看 [在 Windows 上重建](#在-windows-上重建)。**
 > 那一節列出 git 拉不到、必須手動補的四樣東西,以及第一件該做的事。
@@ -13,7 +13,7 @@
 ## 一分鐘版
 
 **MIA(Mahjong Intelligence Assistant)** 是雀魂麻將輔助軟體,大學畢業專題。
-macOS 已實機驗證,Windows 程式寫好但沒機器測過。
+macOS 與 **Windows 都已實機驗證**(Windows 部分在 `windows` 分支)。
 
 ### ⚠ 「功能 3」有兩個意思,不要搞混
 
@@ -47,8 +47,11 @@ M0–M7 全部 ✅。**只剩 M8:打法風格微調**,被「沒有公開的 GRP 
 **兩種呈現方式:** 側邊視窗(M6)與 Overlay(M7,疊在遊戲上的精簡 HUD)。
 兩者訂閱同一個 `ViewModel`,顯示邏輯不重複實作。
 
-**現在可以真的拿來用**(`--live`)。**1121 個測試**、ruff + mypy 乾淨。
-最後一個 commit `1160089`,已推上 `origin/main`。
+**現在可以真的拿來用**(`--live`)。**1132 個測試**、ruff + mypy 乾淨。
+
+> 🪟 **Windows 的東西在 `windows` 分支。** M8 冒煙測試(libriichi + 298k 權重 +
+> 推論)與 ROCm(RX 9070)都過了,擷取層也實機驗過 —— 過程中修掉五個只有在
+> Windows 上才會出現的 bug,見「在 Windows 上重建」那一節。
 
 ---
 
@@ -168,29 +171,73 @@ Windows 建出來的 libriichi 行為上與 macOS 那份等價,不是巧合過�
 理由:擷取層失敗是「要修程式」,可以修;ROCm / libriichi 失敗是「要換方向」,
 那個越早知道越好。
 
-### 擷取層:三個已知風險
+### 擷取層:三個已知風險 —— 兩個排除、一個還沒驗
 
-`src/mia/capture/windows.py` 的模組 docstring 自己列了(它從沒在真機上跑過):
+**2026-09-18 實機驗證過了**(`windows` 分支)。畫面辨識在 Windows 上**會動**:
+牌桌校正鎖上、手牌真的認得出來,而且與封包那條路同時在跑。
 
-```powershell
-python tools\capture_probe.py --list --capture ...
+1. ~~`PW_RENDERFULLCONTENT` 對硬體加速視窗可能抓到全黑~~ —— **排除。**
+   拿一個 2560×1440、正在播影片的 Chrome 分頁測(硬體加速跑滿),抓到的是
+   正常畫面(mean=111、std=58,不是全黑的 mean=0)。這個風險原本是最貴的
+   —— 沒了它,`dxcam` 與 Windows Graphics Capture 兩條備案都不必走。
+2. ~~DPI 縮放下邊界與影像尺寸對不上~~ —— **真的發生了,已修。** 但成因不是
+   `DwmGetWindowAttribute` 不準(它很準),是**兩種「邏輯像素」被混為一談**,
+   見下面那一節。
+3. **視窗被遮擋時抓不抓得到完整內容。** macOS 上實測是可以的(連完全遮住都行),
+   Windows **仍未驗證** —— 自動化 session 搶不到前景視窗
+   (`SetForegroundWindow` / `SetWindowPos(HWND_TOP)` 都被 Windows 的
+   foreground lock 擋下),排不出真正的遮擋場景。真人坐在機器前面手動切換
+   視窗應該不會撞到這個限制 —— 這是測試環境的限制,不是已知有問題。
+
+### 高 DPI:兩個修掉的 bug(這台是主螢幕 125%、副螢幕 100%)
+
+⚠ **先量準再說。** 用 `GetDeviceCaps` 量 DPI 會得到**虛擬化後的假值** ——
+呼叫端行程若不是 per-monitor DPI aware,Windows 會騙它。我第一次就是這樣量到
+「96 DPI / 100% 縮放」而誤判「這台測不了 DPI 風險」。要先
+`SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` 再用
+`GetDpiForMonitor`,才會看到真正的 120 DPI。
+
+**一、`Frame.scale` 恆為 1.0(`capture/windows.py`)**
+
+症狀是狀態列一路刷「畫布 1600×900 與這一幀對不上:影像寬 2004px…差了 404 px」,
+畫面辨識完全鎖不上。成因:
+
+```
+視窗座標(宣告 per-monitor DPI aware 之後 = 實體像素)
+  vs  瀏覽器的 CSS 像素(畫布 1600×900 講的是這個)
 ```
 
-1. ~~`PW_RENDERFULLCONTENT` 對硬體加速視窗可能抓到全黑~~ —— **已在真機上排除
-   (2026-09-09)。** 拿一個 2560×1440、正在播影片的 Chrome 分頁測(硬體加速
-   跑滿),`capture_probe.py --window` 抓到的是正常畫面(mean=111、std=58,
-   不是全黑的 mean=0),連影片播放中的畫面內容都在。這個風險原本是最貴的
-   —— 沒了它,`windows.py` 這條主路徑大概率能用,不必退到 `dxcam`。
-2. **DPI 縮放下 `DwmGetWindowAttribute` 的邊界可能與影像尺寸對不上。**
-   仍未驗證 —— 這次用來測試的機器顯示器是 100% 縮放(`GetDeviceCaps` 量到
-   96 DPI),沒有縮放環境可以踩這個坑。真的要驗,需要一台開 125%/150% 縮放
-   的機器,或把這台的縮放調高一次專門測。
-3. **視窗被遮擋時抓不抓得到完整內容。** macOS 上實測是可以的(連完全遮住都行),
-   Windows **仍未驗證** —— 這次的測試環境是遠端 / 自動化 session,
-   `SetForegroundWindow`、`SetWindowPos(HWND_TOP)` 都被 Windows 的
-   前景鎖定(foreground lock)擋下,程式化搶不到真正的前景視窗,
-   排不出真正的遮擋場景。真人坐在機器前面操作(手動切換視窗)應該不會
-   撞到這個限制 —— 這是測試環境的限制,不是 `windows.py` 本身已知有問題。
+`windows.py` 原本讓 scale 恆為 1.0 並註解「這樣才與 macOS 一致」——
+以視窗座標為單位那句話沒錯,但結果**恰恰不一致**:macOS 是 bounds 邏輯 /
+scale 2.0,Windows 是 bounds 實體 / scale 1.0,而 `Canvas.table_rect` 假設的是
+macOS 那套。macOS 上碰巧不出事:Retina 的 backing scale 與 `devicePixelRatio`
+都是 2.0,兩種單位同值,混用了也看不出來。
+
+改成 bounds 回報邏輯座標、scale = **視窗所在那一個螢幕**的 DPI 縮放
+(不是主螢幕 —— 這台兩個螢幕縮放不同,拿主螢幕的值套過去會整組算錯)。
+
+**二、`_fit_canvas` 在非整數縮放下收斂不到(`groundtruth/cdp.py`)**
+
+停在 1602×902 而不是 1600×900。兩個原因,第二個才是本體:
+
+* DIP → CSS 像素**不是 1:1**,中間要過一次實體像素的四捨五入。實測 125% 下
+  DIP 1613/1614 都給 1600,1615 跳到 1602 —— 差一格可能不動、也可能跳 2。
+* **`Browser.getWindowBounds` 不會原樣回報 `setWindowBounds` 送進去的值。**
+  送 1614 進去,問回來是 1615、再問是 1617,每問一次漂一點。原本的迴圈拿
+  回報值當基準算下一步,基準一路漂走。改成全程只用自己送出去的值。
+
+> **旁證:** 修完之後算出來的瀏覽器工具列高是 **87.2 個邏輯像素**,
+> 而 `calibration/canvas.py` 註解裡 macOS 實測的 Chrome for Testing 工具列是
+> **87**。兩個平台量到同一個數字 —— 幾何關係對上了,這比「跑起來沒報錯」
+> 有說服力得多。
+
+**三、關掉瀏覽器會打死擷取執行緒(`capture/windows.py`)**
+
+`win32ui.error: DeleteDC failed` 從 `finally` 竄出去。視窗一沒,GDI handle
+全部失效,而清理階段的錯誤**不該取代真正的結果**。而且關掉瀏覽器是
+[live.md](live.md) 明講的正常結束方式,不是異常。改成清理 best-effort、
+GDI 例外轉成 `CaptureFailedError` —— `VisionWorker._tick` 只接這個型別,
+接到之後走的正是既有的「失敗幾次就重新找視窗」。
 
 ⚠ 若最後退回 `dxcam`,它抓的是**螢幕區域**而不是視窗緩衝區 —— 那條路上
 **Overlay 會被拍進辨識輸入**,要讓 HUD 避開手牌區。`capture/factory.py`
@@ -200,8 +247,10 @@ python tools\capture_probe.py --list --capture ...
 
 * **視窗自動偵測會選到編輯器** —— 開著這個專案的 VS Code 標題含「雀魂」,
   而且視窗更大。錄製時一律 `--window` 指定 handle。這在 macOS 上抓到過 Safari。
-* 測試裡有 `platform_windows` marker,但**目前沒有任何一條真的針對 Windows**
-  —— 別把「測試全過」當成擷取層可用。
+* ~~測試裡有 `platform_windows` marker,但沒有任何一條真的針對 Windows~~ ——
+  **已補第一批**(`tests/unit/test_capture_windows.py`):DPI 縮放取值、
+  以及「視窗中途消失」那條路徑。仍然**不要**把「測試全過」當成擷取層可用
+  —— 真正驗到的是實機跑一場,那些測試只負責釘住已經修好的東西不要再壞掉。
 * **繁體 Windows 的主控台編碼(cp950)印不出簡體字或 emoji,`--list` 會直接
   `UnicodeEncodeError` 崩潰。** `--list --all` 會把所有看得到的視窗標題印出來,
   而視窗標題是外部來源、內容不可控(隨便一個瀏覽器分頁都可能是簡體字)—— 這在
@@ -453,12 +502,12 @@ Qt widget 只能在建立它的執行緒上動,而 ViewModel 自己不是執行�
 
 | # | 項目 | 影響 | 備註 |
 |---|---|---|---|
-| 1 | **畫面 + 封包同時在真實對局跑** | 兩條路各自驗過,沒一起跑過 | 需實機打一場 |
+| 1 | ~~畫面 + 封包同時在真實對局跑~~ | ✅ 2026-09-18 實機驗過(Windows) | 校正鎖上、16 次手牌辨識與封包同時在跑 |
 | 2 | **`own_hand` ROI 在其他解析度** | 座標量自 2560×1440;實機是 1019×804 | 正規化理論上能縮放,沒驗 |
 | 3 | **M3-1b:per-tile 準確率報告** | 工具鏈寫好了,缺成對素材 | **使用者明確暫緩** |
 | 4 | `StableCalibrator` 端對端複驗 | 已修但沒對真實錄影驗 | 可與 #3 一起解決 |
 | 5 | MITM 路線 CA 憑證 | 雀魂是 Unity,是否信任系統憑證未知 | **使用者要求延後** |
-| 6 | Windows 擷取層 | 程式寫好,沒機器測 | |
+| 6 | Windows 擷取層 | ✅ 2026-09-18 實機驗過,修了三個 bug | 見「高 DPI」那節。**遮擋**那項仍未驗 |
 | 7 | 沒有公開 GRP 權重 | 擋住功能 3 | 須先跑 `train_grp.py` |
 | 8 | 受入枚數略微高估 | 不知副露內容導致 | 次要,可從封包補 |
 | 9 | 單一 session 內視窗縮放 | manifest 只存一個 `table_rect` | 要改成存進每個 `FrameRecord` |
