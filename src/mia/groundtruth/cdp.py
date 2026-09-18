@@ -283,12 +283,35 @@ class CdpCapture:
             logger.warning("調整視窗失敗:{}", exc)
 
 
-#: 調整視窗最多試幾次。
+#: 粗調最多試幾次。
 #:
 #: 需要不只一次是因為**工具列高度事前不知道**:視窗高度扣掉 viewport 高度
 #: 才是它,而那要先開起來量。量到之後補上差額就對了,第二輪通常就收斂。
 #: 留第三輪是給書籤列這種「改了視窗大小才出現/消失」的東西。
 _FIT_ATTEMPTS = 3
+
+#: 細調時每一軸往兩邊各試幾格 DIP。
+#:
+#: 粗調靠「差幾個 CSS 像素就把視窗改幾格 DIP」逼近,而那個假設在非整數 DPI
+#: 縮放下**不成立** —— 視窗尺寸是 DIP,DIP 換算成 CSS 像素中間要過一次實體
+#: 像素的四捨五入。實測 125% 螢幕:
+#:
+#: ===========  ==============
+#: 視窗 DIP 寬   ``innerWidth``
+#: ===========  ==============
+#: 1613          1600  ← 命中
+#: 1614          1600  ← 命中
+#: 1615          1602  ← 跳 2
+#: 1616          1603
+#: ===========  ==============
+#:
+#: 差一格 DIP 可能讓 CSS 寬不動、也可能跳 2,所以粗調會在目標附近來回跳而
+#: 收斂不到。這個對應關係**算不出來但試得出來**,所以細調改成逐格試。
+#: 粗調之後誤差實測在 ±2 以內,兩邊各留 3 格綽綽有餘。
+_FIT_NUDGE = 3
+
+#: 改完視窗尺寸等多久再量。太短會量到還在動的中間值。
+_FIT_SETTLE_MS = 200
 
 
 def _fit_canvas(page: Page, canvas: Canvas) -> None:
@@ -305,34 +328,91 @@ def _fit_canvas(page: Page, canvas: Canvas) -> None:
     session = page.context.new_cdp_session(page)
     window_id = session.send("Browser.getWindowForTarget")["windowId"]
 
-    for _ in range(_FIT_ATTEMPTS):
-        inner = page.evaluate("() => [window.innerWidth, window.innerHeight]")
-        delta = (canvas.width - inner[0], canvas.height - inner[1])
-        if delta == (0, 0):
-            logger.info("畫布已調整為 {}", canvas.label)
-            return
+    def viewport() -> tuple[int, int]:
+        got = page.evaluate("() => [window.innerWidth, window.innerHeight]")
+        return int(got[0]), int(got[1])
+
+    def window_size() -> tuple[int, int]:
         bounds = session.send("Browser.getWindowBounds", {"windowId": window_id})["bounds"]
+        return int(bounds["width"]), int(bounds["height"])
+
+    def resize(width: int, height: int) -> tuple[int, int]:
         session.send(
             "Browser.setWindowBounds",
             {
                 "windowId": window_id,
                 # windowState 一定要一起送:視窗若是最大化或全螢幕,
                 # 寬高會被直接忽略而且不會有任何錯誤。
-                "bounds": {
-                    "windowState": "normal",
-                    "width": bounds["width"] + delta[0],
-                    "height": bounds["height"] + delta[1],
-                },
+                "bounds": {"windowState": "normal", "width": width, "height": height},
             },
         )
-        page.wait_for_timeout(200)
+        page.wait_for_timeout(_FIT_SETTLE_MS)
+        got = viewport()
+        # 這條路只有在高 DPI 上才會出事,而出事時唯一有用的資訊就是
+        # 「視窗 DIP 與量到的 CSS 像素之間實際是什麼對應」。留著。
+        logger.debug("視窗 {}×{} DIP → viewport {}×{}", width, height, got[0], got[1])
+        return got
 
-    inner = page.evaluate("() => [window.innerWidth, window.innerHeight]")
+    def miss(got: tuple[int, int]) -> int:
+        """離目標差多少(兩軸絕對差之和)。0 就是剛好。"""
+        return abs(canvas.width - got[0]) + abs(canvas.height - got[1])
+
+    # ``Browser.getWindowBounds`` **不會**把 ``setWindowBounds`` 送進去的值原樣
+    # 回報 —— 實測送 1614 進去,下一輪問回來是 1615、再問是 1617,每問一次漂一點
+    # (那是視窗外框與 DWM 邊界的差,不是這裡該關心的東西)。所以起始值問一次
+    # 就好,之後**全程以「我們送出去的值」為準**。
+    #
+    # 拿回報值當基準的話,基準會一路漂走,細調掃描的範圍就涵蓋不到正確答案 ——
+    # 而那個失敗完全看不出是這個原因造成的:畫面上只會看到「調不到畫布」。
+    requested = list(window_size())
+    got = viewport()
+    best = (miss(got), tuple(requested))
+
+    # --- 粗調:差幾個 CSS 像素就把視窗改幾格 DIP ---
+    # 平均而言 1 DIP ≈ 1 CSS px,所以這一步能很快逼到目標附近;
+    # 但非整數 DPI 縮放下它到不了「剛好」,那是下面細調的事。
+    for _ in range(_FIT_ATTEMPTS):
+        if miss(got) == 0:
+            logger.info("畫布已調整為 {}", canvas.label)
+            return
+        requested = [
+            requested[0] + canvas.width - got[0],
+            requested[1] + canvas.height - got[1],
+        ]
+        got = resize(requested[0], requested[1])
+        if miss(got) < best[0]:
+            best = (miss(got), (requested[0], requested[1]))
+
+    # --- 細調:逐格試 ---
+    # 兩軸分開掃(聯合掃是 7×7 = 49 次,太慢),每一軸都從目前最好的那組出發。
+    # 兩軸之間可能經由捲軸互相影響,所以最多再跑一輪。
+    for _ in range(2):
+        for axis in (0, 1):
+            base = list(best[1])
+            for delta in range(-_FIT_NUDGE, _FIT_NUDGE + 1):
+                if delta == 0:
+                    continue
+                trial = list(base)
+                trial[axis] = base[axis] + delta
+                score = miss(resize(trial[0], trial[1]))
+                if score < best[0]:
+                    best = (score, (trial[0], trial[1]))
+                if score == 0:
+                    logger.info("畫布已調整為 {}", canvas.label)
+                    return
+
+    # 掃完仍不剛好 —— 把視窗放回過程中最好的那一組再回報。
+    # 不放回去的話會停在最後一次試的位置,那不保證是試過的裡面最好的。
+    got = resize(best[1][0], best[1][1])
+    if miss(got) == 0:
+        logger.info("畫布已調整為 {}", canvas.label)
+        return
     logger.warning(
-        "調不到畫布 {},實際是 {}x{} —— 通常是螢幕放不下,請改選小一點的尺寸",
+        "調不到畫布 {},實際是 {}x{}(差 {} px)—— 螢幕放不下的話請改選小一點的尺寸",
         canvas.label,
-        inner[0],
-        inner[1],
+        got[0],
+        got[1],
+        miss(got),
     )
 
 
