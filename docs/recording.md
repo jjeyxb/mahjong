@@ -19,10 +19,10 @@
 
 ```bash
 # 確認 CDP 那條路還通(會開一個 Chromium)
-python tools/gt.py cdp --duration 5 --out /tmp/probe.jsonl
+.venv/bin/python tools/gt.py cdp --duration 5 --out /tmp/probe.jsonl
 
 # 確認擷取層找得到視窗(--list 列出所有候選)
-python tools/capture_probe.py --list
+.venv/bin/python tools/capture_probe.py --list
 ```
 
 **用網頁版,不要用 Steam 桌面版。** CDP 只能接瀏覽器;桌面版要走 MITM,
@@ -40,10 +40,10 @@ python tools/capture_probe.py --list
 
 ```bash
 # 終端機 A —— 封包。會開一個 Chromium
-python tools/gt.py cdp --out data/gt/ws.jsonl --user-data-dir data/gt/browser-profile
+.venv/bin/python tools/gt.py cdp --out data/gt/ws.jsonl --user-data-dir data/gt/browser-profile
 
 # 終端機 B —— 畫面。瀏覽器一開好就下,不用等進牌桌
-python tools/record.py --window "#<handle>" --notes "評測用 東風戰"
+.venv/bin/python tools/record.py --window "#<handle>" --notes "評測用 東風戰"
 ```
 
 `--user-data-dir` 會保留登入狀態,重錄時不用再登一次。
@@ -88,7 +88,7 @@ session manifest 只存**一個** `table_rect`,錄製中途縮放視窗的話,`S
 **趁還登入著就跑這一步。** 對不上的話重錄一場,比事後才發現省事得多。
 
 ```bash
-python tools/evaluate.py data/recordings/<session-id> data/gt/ws.jsonl --dry-run
+.venv/bin/python tools/evaluate.py data/recordings/<session-id> data/gt/ws.jsonl --dry-run
 ```
 
 會印出兩件事:
@@ -101,7 +101,7 @@ python tools/evaluate.py data/recordings/<session-id> data/gt/ws.jsonl --dry-run
 兩個數字都正常就可以跑完整評測:
 
 ```bash
-python tools/evaluate.py data/recordings/<session-id> data/gt/ws.jsonl
+.venv/bin/python tools/evaluate.py data/recordings/<session-id> data/gt/ws.jsonl
 ```
 
 ---

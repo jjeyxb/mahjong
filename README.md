@@ -177,22 +177,43 @@ python3.14 -m venv .venv
 ### 4. 取得牌面模板
 
 ```bash
-python tools/fetch_tiles.py                       # 預設牌面皮膚
-python tools/fetch_tiles.py --list-skins          # 看有哪些皮膚
-python tools/fetch_tiles.py --skin mjpface_25summer
+.venv/bin/python tools/fetch_tiles.py                       # 預設牌面皮膚
+.venv/bin/python tools/fetch_tiles.py --list-skins          # 看有哪些皮膚
+.venv/bin/python tools/fetch_tiles.py --skin mjpface_25summer
 ```
 
 從雀魂官方資源取得牌面圖集並切成 37 張模板（34 種牌 + 3 種赤寶牌），
 存進 `assets/tiles/<皮膚>/`。**遊戲裡換了牌面皮膚就要重跑一次**（牌**背**
 皮膚不影響——手牌定位那一層已經不看顏色了）。
 
-### 5. 驗證安裝
+### 5. 啟動
 
 ```bash
-python tools/capture_probe.py --list                     # 看得到哪些視窗
-python tools/capture_probe.py --out shot.png             # 抓一張雀魂畫面
-python tools/capture_probe.py --calibrate --out cal.png  # 校正並輸出標註圖
-python tools/capture_probe.py --bench 60                 # 測擷取幀率
+.venv/bin/python tools/ui.py --live --mortal models/mortal_298k.pth
+```
+
+側邊視窗會開在螢幕右側。**什麼都還沒開始** —— 按左下角的「開始遊戲」開瀏覽器、
+登入、開一場，再撥開你要的那個開關（三個功能預設都關著）。操作細節與
+**狀態列訊息對照表**見 [docs/live.md](docs/live.md)。
+
+`--mortal` 是選用的 —— 不帶就只是沒有 AI 建議，另外兩個功能照常：
+
+```bash
+.venv/bin/python tools/ui.py --live      # 不載 130MB 權重
+.venv/bin/python tools/ui.py --demo      # 只看版面，不開遊戲、不用權重
+```
+
+> ⚠ **一定要用 `.venv/bin/python`,不是裸的 `python`。** 相依都裝在專案的
+> venv 裡，系統的 python 沒有 PySide6，會直接 `ModuleNotFoundError`。
+> 習慣先 `source .venv/bin/activate` 的話當然也可以，但指名路徑不必記得啟用。
+
+### 6. 驗證安裝
+
+```bash
+.venv/bin/python tools/capture_probe.py --list                     # 看得到哪些視窗
+.venv/bin/python tools/capture_probe.py --out shot.png             # 抓一張雀魂畫面
+.venv/bin/python tools/capture_probe.py --calibrate --out cal.png  # 校正並輸出標註圖
+.venv/bin/python tools/capture_probe.py --bench 60                 # 測擷取幀率
 ```
 
 `--calibrate` 產生的標註圖中，綠框是偵測到的牌桌矩形、橘線是三分格線。
@@ -204,16 +225,16 @@ python tools/capture_probe.py --bench 60                 # 測擷取幀率
 21 種不同的 `table_rect`，其中 16% 明顯錯誤。詳見
 [docs/decisions.md](docs/decisions.md) 第二節。
 
-### 6. 錄製資料集
+### 7. 錄製資料集
 
 ```bash
-python tools/record.py --duration 60          # 錄 60 秒
-python tools/record.py                        # 錄到 Ctrl-C
-python tools/record.py --inspect data/recordings/<id>    # 檢視
-python tools/record.py --export data/recordings/<id> --export-dir out/  # 輸出關鍵幀
+.venv/bin/python tools/record.py --duration 60          # 錄 60 秒
+.venv/bin/python tools/record.py                        # 錄到 Ctrl-C
+.venv/bin/python tools/record.py --inspect data/recordings/<id>    # 檢視
+.venv/bin/python tools/record.py --export data/recordings/<id> --export-dir out/  # 輸出關鍵幀
 ```
 
-### 7. 封包擷取（功能 2 的狀態來源）
+### 8. 封包擷取（功能 2 與 3 的狀態來源）
 
 三種擷取方式，寫出的錄影檔格式**完全相同**，下游不需要知道資料是怎麼來的：
 
@@ -224,19 +245,19 @@ python tools/record.py --export data/recordings/<id> --export-dir out/  # 輸出
 | `local` | MITM + 行程重導 | 要 | 內建 | 是 |
 
 ```bash
-python tools/fetch_liqi.py                                  # 更新協定定義
+.venv/bin/python tools/fetch_liqi.py                                  # 更新協定定義
 
 # 推薦：零前置設定，開一個受控 Chromium 打網頁版
-python tools/gt.py cdp --out data/recordings/g1/ws.jsonl
+.venv/bin/python tools/gt.py cdp --out data/recordings/g1/ws.jsonl
 
 # 連到自己已開的 Chrome（需 --remote-debugging-port=9222，保留登入狀態）
-python tools/gt.py cdp --connect http://localhost:9222 --out data/ws.jsonl
+.venv/bin/python tools/gt.py cdp --connect http://localhost:9222 --out data/ws.jsonl
 
 # MITM：行程重導（mitmproxy 內建，不需要 Proxifier）
-python tools/gt.py local --spec Jantama_MahjongSoul --out data/ws.jsonl
+.venv/bin/python tools/gt.py local --spec Jantama_MahjongSoul --out data/ws.jsonl
 
 # 檢視錄影並轉成 MJAI 事件流
-python tools/gt.py inspect data/ws.jsonl --actions --mjai-out data/g1.mjai.jsonl
+.venv/bin/python tools/gt.py inspect data/ws.jsonl --actions --mjai-out data/g1.mjai.jsonl
 ```
 
 **為什麼預設用 CDP** —— 它不是中間人攔截。瀏覽器自己完成 TLS 交握、自己解密，
@@ -435,20 +456,20 @@ JSONL。liqi 解析全在離線階段。這樣解析程式有 bug 或協定改�
 它衡量的是「像不像這個人」。
 
 ```bash
-python tools/advise.py data/gt/ws.jsonl --mortal models/mortal_298k.pth
+.venv/bin/python tools/advise.py data/gt/ws.jsonl --mortal models/mortal_298k.pth
 ```
 
 ### 即時模式：真的接上遊戲
 
 ```bash
 # 按左下角「開始遊戲」開瀏覽器，登入後撥開關就開始給建議
-python tools/ui.py --live --mortal models/mortal_298k.pth
+.venv/bin/python tools/ui.py --live --mortal models/mortal_298k.pth
 
 # 已經有另一個 gt.py 在錄了（或用 MITM 錄 Steam 版），只跟著那個檔案走
-python tools/ui.py --live --tail data/recordings/now/ws.jsonl
+.venv/bin/python tools/ui.py --live --tail data/recordings/now/ws.jsonl
 
 # 只要 AI 建議，不跑畫面辨識（不必授權螢幕錄製）
-python tools/ui.py --live --no-packets   # ← 反過來：只要畫面辨識，不接封包
+.venv/bin/python tools/ui.py --live --no-packets   # ← 反過來：只要畫面辨識，不接封包
 ```
 
 **瀏覽器不會自己開**，要按左下角的「開始遊戲」。每按一次是新的一場，寫到新的
@@ -509,8 +530,8 @@ Qt 事件迴圈要顧。代價是多一次落地與讀回，換到的是「三�
 
 ```bash
 # 先確認兩份錄影對得上（不跑 CV，幾秒就有結果）
-python tools/evaluate.py data/recordings/<id> data/gt/ws.jsonl --dry-run
-python tools/evaluate.py data/recordings/<id> data/gt/ws.jsonl
+.venv/bin/python tools/evaluate.py data/recordings/<id> data/gt/ws.jsonl --dry-run
+.venv/bin/python tools/evaluate.py data/recordings/<id> data/gt/ws.jsonl
 ```
 
 錄製步驟見 [docs/recording.md](docs/recording.md)。

@@ -10,8 +10,12 @@
 ## 一般情況
 
 ```bash
-python tools/ui.py --live --mortal models/mortal_298k.pth
+cd /path/to/mahjong
+.venv/bin/python tools/ui.py --live --mortal models/mortal_298k.pth
 ```
+
+> 用 `.venv/bin/python` 而不是裸的 `python` —— 相依裝在專案的 venv 裡,
+> 系統的 python 沒有 PySide6。先 `source .venv/bin/activate` 也可以。
 
 會發生的事,依序:
 
@@ -195,8 +199,8 @@ MIA 開的,不該去動它。那種情況請自己把視窗調成 16:9 畫布,�
 要換一個位置,或是真的想要一個乾淨的設定檔(測第一次登入流程):
 
 ```bash
-python tools/ui.py --live --user-data-dir /somewhere/else
-python tools/ui.py --live --fresh-profile     # 用完就丟,不留登入
+.venv/bin/python tools/ui.py --live --user-data-dir /somewhere/else
+.venv/bin/python tools/ui.py --live --fresh-profile     # 用完就丟,不留登入
 ```
 
 ### 只跑其中一條路
@@ -204,8 +208,8 @@ python tools/ui.py --live --fresh-profile     # 用完就丟,不留登入
 三個功能刻意解耦,一邊壞掉另一邊照樣有用:
 
 ```bash
-python tools/ui.py --live --no-vision --mortal models/...   # 只要 AI 建議
-python tools/ui.py --live --no-packets                      # 只要向聽分析
+.venv/bin/python tools/ui.py --live --no-vision --mortal models/...   # 只要 AI 建議
+.venv/bin/python tools/ui.py --live --no-packets                      # 只要向聽分析
 ```
 
 `--no-vision` 的額外好處:不需要 macOS 的螢幕錄製授權。
@@ -214,11 +218,11 @@ python tools/ui.py --live --no-packets                      # 只要向聽分析
 
 ```bash
 # 連到已開的 Chrome(需以 --remote-debugging-port=9222 啟動)
-python tools/ui.py --live --connect http://localhost:9222 --mortal models/...
+.venv/bin/python tools/ui.py --live --connect http://localhost:9222 --mortal models/...
 
 # Steam 桌面版:另一個終端機用 MITM 錄,這邊只跟著檔案走
-python tools/gt.py local --spec Jantama_MahjongSoul --out data/live/now/ws.jsonl
-python tools/ui.py --live --tail data/live/now/ws.jsonl --mortal models/...
+.venv/bin/python tools/gt.py local --spec Jantama_MahjongSoul --out data/live/now/ws.jsonl
+.venv/bin/python tools/ui.py --live --tail data/live/now/ws.jsonl --mortal models/...
 ```
 
 `--tail` 不會自己開擷取子程序,所以不會跟另一個錄製程序搶同一個瀏覽器。

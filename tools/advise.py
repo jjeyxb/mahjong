@@ -16,7 +16,7 @@
     tools/gt.py inspect data/gt/ws.jsonl --mjai-out data/gt/mjai.jsonl
 
     # 規則式 baseline 與 Mortal 並排
-    python tools/advise.py data/gt/mjai.jsonl --mortal models/mortal_298k.pth
+    .venv/bin/python tools/advise.py data/gt/mjai.jsonl --mortal models/mortal_298k.pth
 """
 
 from __future__ import annotations

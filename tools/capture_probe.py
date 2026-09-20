@@ -6,20 +6,20 @@ M1 的驗收工具,也是之後每次換機器 / 換平台時的第一件事。
 用法::
 
     # 看得到哪些視窗、目前用哪個後端
-    python tools/capture_probe.py --list
-    python tools/capture_probe.py --list --all      # 不過濾系統浮層
+    .venv/bin/python tools/capture_probe.py --list
+    .venv/bin/python tools/capture_probe.py --list --all      # 不過濾系統浮層
 
     # 抓一張圖存檔(--window 可給子字串或 #視窗ID)
-    python tools/capture_probe.py --window Chrome --out shot.png
+    .venv/bin/python tools/capture_probe.py --window Chrome --out shot.png
 
     # 用設定檔裡的 pattern 找雀魂
-    python tools/capture_probe.py --out shot.png
+    .venv/bin/python tools/capture_probe.py --out shot.png
 
     # 測速
-    python tools/capture_probe.py --window Chrome --bench 60
+    .venv/bin/python tools/capture_probe.py --window Chrome --bench 60
 
     # 跑牌桌校正並輸出標註圖
-    python tools/capture_probe.py --window Chrome --calibrate --out calib.png
+    .venv/bin/python tools/capture_probe.py --window Chrome --calibrate --out calib.png
 """
 
 from __future__ import annotations

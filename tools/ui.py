@@ -24,13 +24,13 @@
 用法::
 
     # 實際使用:按「開始遊戲」開瀏覽器,登入後撥開關就開始給建議
-    python tools/ui.py --live --mortal models/mortal_298k.pth
+    .venv/bin/python tools/ui.py --live --mortal models/mortal_298k.pth
 
     # 已經有另一個 gt.py 在錄了,只要跟著那個檔案走
-    python tools/ui.py --live --tail data/recordings/now/ws.jsonl
+    .venv/bin/python tools/ui.py --live --tail data/recordings/now/ws.jsonl
 
-    python tools/ui.py --demo
-    python tools/ui.py --replay tests/fixtures/real_game_full.jsonl --speed 8
+    .venv/bin/python tools/ui.py --demo
+    .venv/bin/python tools/ui.py --replay tests/fixtures/real_game_full.jsonl --speed 8
 """
 
 from __future__ import annotations
