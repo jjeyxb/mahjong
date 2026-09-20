@@ -25,19 +25,19 @@ GT 只用於**離線產生標註資料與量化 CV 準確率**,不參與線上�
 用法::
 
     # 建議:用瀏覽器錄,零設定
-    python tools/gt.py cdp --out data/recordings/game1/ws.jsonl
+    .venv/bin/python tools/gt.py cdp --out data/recordings/game1/ws.jsonl
 
     # 連到自己已開的 Chrome(需 --remote-debugging-port=9222)
-    python tools/gt.py cdp --connect http://localhost:9222 --out data/ws.jsonl
+    .venv/bin/python tools/gt.py cdp --connect http://localhost:9222 --out data/ws.jsonl
 
     # MITM:行程重導(mitmproxy 內建,不需要 Proxifier)
-    python tools/gt.py local --spec Jantama_MahjongSoul --out data/ws.jsonl
+    .venv/bin/python tools/gt.py local --spec Jantama_MahjongSoul --out data/ws.jsonl
 
     # MITM:傳統代理(需自行把雀魂/瀏覽器指向 127.0.0.1:8080)
-    python tools/gt.py proxy --port 8080 --out data/ws.jsonl
+    .venv/bin/python tools/gt.py proxy --port 8080 --out data/ws.jsonl
 
     # 檢視錄影並轉成 MJAI 事件流
-    python tools/gt.py inspect data/ws.jsonl --actions --mjai-out data/game.mjai.jsonl
+    .venv/bin/python tools/gt.py inspect data/ws.jsonl --actions --mjai-out data/game.mjai.jsonl
 """
 
 from __future__ import annotations

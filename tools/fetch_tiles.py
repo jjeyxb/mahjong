@@ -22,9 +22,9 @@
 
 用法::
 
-    python tools/fetch_tiles.py                    # 預設皮膚
-    python tools/fetch_tiles.py --skin mjpface_25summer
-    python tools/fetch_tiles.py --list-skins       # 列出有哪些牌面皮膚
+    .venv/bin/python tools/fetch_tiles.py                    # 預設皮膚
+    .venv/bin/python tools/fetch_tiles.py --skin mjpface_25summer
+    .venv/bin/python tools/fetch_tiles.py --list-skins       # 列出有哪些牌面皮膚
 """
 
 from __future__ import annotations

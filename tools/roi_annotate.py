@@ -4,18 +4,18 @@
 輸入必須是**純畫布圖**(已裁掉瀏覽器分頁列/網址列的遊戲畫面),因為
 `RoiConfig` 的座標是相對 `table_rect` 正規化的。用這個指令產生::
 
-    python tools/capture_probe.py --window "Chrome for Testing" \\
+    .venv/bin/python tools/capture_probe.py --window "Chrome for Testing" \\
         --calibrate --canvas-out canvas.png
 
 然後標註::
 
-    python tools/roi_annotate.py --image canvas.png
+    .venv/bin/python tools/roi_annotate.py --image canvas.png
 
 一次標不完、或某些區域要換一張參考圖(例如自己的副露要挑有吃碰槓的那局),
 就分次跑,用 --only 指定欄位、--out 指定同一個檔案累積結果::
 
-    python tools/roi_annotate.py --image a.png --out roi.yaml
-    python tools/roi_annotate.py --image b.png --out roi.yaml --only own_hand
+    .venv/bin/python tools/roi_annotate.py --image a.png --out roi.yaml
+    .venv/bin/python tools/roi_annotate.py --image b.png --out roi.yaml --only own_hand
 
 --out 檔已存在時會先載入當作起始值,只覆寫這次真的重畫的欄位。
 

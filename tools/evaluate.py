@@ -7,11 +7,11 @@
 用法::
 
     # 兩個終端機同時開錄(順序無所謂,重疊的那段才算數)
-    python tools/gt.py cdp --out data/gt/ws.jsonl
-    python tools/record.py --notes "評測用"
+    .venv/bin/python tools/gt.py cdp --out data/gt/ws.jsonl
+    .venv/bin/python tools/record.py --notes "評測用"
 
     # 錄完之後
-    python tools/evaluate.py data/recordings/20260729-201530 data/gt/ws.jsonl
+    .venv/bin/python tools/evaluate.py data/recordings/20260729-201530 data/gt/ws.jsonl
 
 先跑 ``--dry-run`` 確認兩份檔案真的對得上 —— 那一步不跑 CV,幾秒就有結果,
 可以在還登入著的時候就發現「其實根本沒重疊」。

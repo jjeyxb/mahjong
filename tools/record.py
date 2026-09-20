@@ -4,19 +4,19 @@
 用法::
 
     # 錄 60 秒(自動找雀魂視窗)
-    python tools/record.py --duration 60
+    .venv/bin/python tools/record.py --duration 60
 
     # 一直錄到 Ctrl-C
-    python tools/record.py
+    .venv/bin/python tools/record.py
 
     # 指定視窗、加註記
-    python tools/record.py --window "#4914" --notes "王座間 東風戰 測試皮膚"
+    .venv/bin/python tools/record.py --window "#4914" --notes "王座間 東風戰 測試皮膚"
 
     # 檢視已錄製的 session
-    python tools/record.py --inspect data/recordings/20260726-190312
+    .venv/bin/python tools/record.py --inspect data/recordings/20260726-190312
 
     # 把 session 的關鍵幀輸出成圖檔(給人工標註用)
-    python tools/record.py --export data/recordings/20260726-190312 --export-dir out/
+    .venv/bin/python tools/record.py --export data/recordings/20260726-190312 --export-dir out/
 """
 
 from __future__ import annotations

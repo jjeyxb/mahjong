@@ -17,9 +17,9 @@ protobuf descriptor)。但**網頁版**會公開提供同一份 ``liqi.json`` �
 
 用法::
 
-    python tools/fetch_liqi.py              # 檢查並在有更新時下載
-    python tools/fetch_liqi.py --check      # 只比對,不寫檔
-    python tools/fetch_liqi.py --force      # 強制重新下載
+    .venv/bin/python tools/fetch_liqi.py              # 檢查並在有更新時下載
+    .venv/bin/python tools/fetch_liqi.py --check      # 只比對,不寫檔
+    .venv/bin/python tools/fetch_liqi.py --force      # 強制重新下載
 """
 
 from __future__ import annotations
