@@ -1,6 +1,6 @@
 # 交接文件 — MIA
 
-給接手這個專案的下一個對話 / 下一個人。**最後更新 2026-09-18(Windows 實機驗證完成)。**
+給接手這個專案的下一個對話 / 下一個人。**最後更新 2026-09-28(M8 管線打通)。**
 
 > 🪟 **要在 Windows 上接手的話,先看 [在 Windows 上重建](#在-windows-上重建)。**
 > 那一節列出 git 拉不到、必須手動補的四樣東西,以及第一件該做的事。
@@ -40,9 +40,9 @@ macOS 與 **Windows 都已實機驗證**(Windows 部分在 `windows` 分支)。
 
 ### 專題里程碑
 
-M0–M7 全部 ✅。**只剩 M8:打法風格微調**,被「沒有公開的 GRP 權重」擋住,
-必須自己先跑 `train_grp.py`。那是整個專案剩下唯一「可能根本做不成」的部分,
-而且要 GPU —— 所以才要搬到 Windows(RX 9070 + ROCm)。
+M0–M7 全部 ✅。**只剩 M8:打法風格微調** —— 它原本是整個專案唯一「可能根本
+做不成」的部分,**2026-09-28 已經把整條管線跑通了**(牌譜 → mjai → GRP →
+微調),見下面「M8」那一節。剩下的步驟不再有技術未知數,是資料處理與評測。
 
 **兩種呈現方式:** 側邊視窗(M6)與 Overlay(M7,疊在遊戲上的精簡 HUD)。
 兩者訂閱同一個 `ViewModel`,顯示邏輯不重複實作。
@@ -52,6 +52,9 @@ M0–M7 全部 ✅。**只剩 M8:打法風格微調**,被「沒有公開的 GRP 
 > 🪟 **Windows 的東西在 `windows` 分支。** M8 冒煙測試(libriichi + 298k 權重 +
 > 推論)與 ROCm(RX 9070)都過了,擷取層也實機驗過 —— 過程中修掉五個只有在
 > Windows 上才會出現的 bug,見「在 Windows 上重建」那一節。
+>
+> **M8 的離線訓練管線也在這個分支上打通了**(牌譜 → mjai → GRP → 微調),
+> 見「M8」那一節。
 
 ---
 
@@ -104,6 +107,7 @@ git clone / pull 之後**還缺四樣東西** —— 它們都在 gitignore 裡,
 | `engines/mortal/Mortal/` | `git clone --depth 1 https://github.com/Equim-chan/Mortal.git engines/mortal/Mortal` | |
 | Playwright 的 Chromium | `.venv\Scripts\python.exe -m playwright install chromium` | |
 | 兩個 venv | 見下 | |
+| `engines/mortal/mjai-reviewer/` | `git clone --depth 1 https://github.com/Equim-chan/mjai-reviewer.git engines/mortal/mjai-reviewer` —— 只有要做 M8 才需要,見「M8」那節 | |
 
 `data/` 空的沒關係 —— 錄影檔會自己長出來,而測試要用的素材在
 `tests/fixtures/`(有進 git)。
@@ -413,6 +417,97 @@ Qt widget 只能在建立它的執行緒上動,而 ViewModel 自己不是執行�
 
 ---
 
+## M8:打法風格微調(2026-09-28 管線打通)
+
+整條管線在真機上跑通了:**牌譜 → mjai → GRP → 微調**。這一節記的是
+「怎麼跑」與「踩到什麼」,設計理由在 README 的「功能 3」那一節。
+
+### 文件原本把第一關寫錯了
+
+README 寫「**唯一的**前置關卡 = 沒有公開的 GRP 權重」。實際動手才發現
+前面還有一關:`train_grp.py` 要的是 `train_globs` 指向**一整批** `.json.gz`,
+而本專案自己錄的只有個位數場次。**牌譜語料才是真正的第一關**,而它在任何
+文件裡都沒被列為阻擋項 —— 「預期流程」第 1 步直接把它當成既有的東西。
+
+### 怎麼跑
+
+```powershell
+# 1. 抓牌譜並轉成 mjai(轉換器要先建,見下)
+.venv\Scripts\python.exe toolsetch_tenhou.py --days 3 --limit 600
+
+# 2. 驗一下(上游的驗證器,會用真正的 PlayerState 重播每一局)
+engines\mortal\Mortal	arget
+eleasealidate_logs.exe data\datasets	enhou\mjai
+
+# 3. 訓 GRP。**注意 cwd** —— 上游那些模組彼此用同層 import
+cd engines\mortal\Mortal\mortal
+$env:MORTAL_CFG="../../grp.toml"; ..\..\.venv\Scripts\python.exe -u train_grp.py
+
+# 4. 微調(先把 mortal_298k.pth 複製一份當 state_file,理由見 finetune.toml)
+$env:MORTAL_CFG="../../finetune.toml"; ..\..\.venv\Scripts\python.exe -u train.py
+```
+
+轉換器是 **Mortal 作者本人**寫的 `convlog`(在 `mjai-reviewer` 裡),
+所以格式相容性不必自己保證:
+
+```powershell
+git clone --depth 1 https://github.com/Equim-chan/mjai-reviewer.git engines\mortal\mjai-reviewer
+cd engines\mortal\mjai-reviewer
+cargo build --release          # 一樣要先掛 MSVC 工具鏈
+```
+
+設定檔兩份,都有進版控:`engines/mortal/grp.toml`、`engines/mortal/finetune.toml`。
+
+### 實測數字
+
+| 項目 | 結果 |
+|---|---|
+| 天鳳 → mjai | 620 場,`validate_logs` **全過**,轉換 0 失敗 |
+| 一天的量 | 索引到 945 場,四人半莊 **596** 場 |
+| GRP | `grp.pth` 1.4 MB、36,800 步 |
+| 微調 | `steps` 298,000 → 298,180,約 **6 batch/s**(batch_size 16) |
+| 權重真的變了 | 主幹 **10,818,640 / 10,818,641(100%)** 元素被改動 |
+
+> ⚠ **這只證明管線通,不是能用的模型。** 620 場對 GRP 遠遠不夠(每場被
+> 反覆看了數千次),微調也只跑 180 步。要有意義的產出,語料與步數都要
+> 放大好幾個數量級。
+
+### 踩到的坑
+
+* **`--limit` 要算「處理過幾場」,不是「下載幾場」。** 原本寫成
+  `downloaded + skipped`,結果「raw 已快取但還沒轉 mjai」那一類兩邊都不算,
+  中止條件永遠碰不到 —— 實測 `--limit 20` 轉出了 40 場。
+* **Mortal 只吃半莊。** 上游對東風戰直接
+  `bail!("Mortal supports hanchan games only")`,所以在下載階段就要靠規則
+  字串(`四鳳南喰赤－` 的「南」)濾掉,不然會等到轉換那一步才一場一場失敗。
+* **`[baseline.test]` 即使不做評測也一定要有。** `train.py` 一開始就無條件
+  建 `TestPlayer()`,而它的 `__init__` **當場**就把 baseline 權重載進來 ——
+  不是等到 `test_every` 才載。少了會 `KeyError: 'baseline'`。
+* **`state_file` 不能指向 `models/mortal_298k.pth`。** `train.py` 讀同一個檔、
+  也寫回同一個檔 —— 直接指過去等於邊訓練邊覆蓋那份 130MB 的基準權重,
+  而「微調後 vs 原始」這個比較就永遠做不了了,**且不會有任何錯誤訊息**。
+* **`train_grp.py` 與 `train.py` 都是無限迴圈**,只在 `KeyboardInterrupt` 停,
+  每 `save_every` 步存一次檔。不是跑完就結束的東西。
+* **別把訓練的輸出接進 `| tail`。** 這是踩過的坑裡最蠢的一個:`tail` 要等
+  串流結束才輸出,而訓練永遠不結束 —— 於是日誌全空,看起來像「卡住了、
+  什麼都沒跑」。實際上它訓了 35,800 步而且一路在存檔。
+  配合 `python -u` 直接寫檔就好。(「stdout 重導到檔案是 block-buffered」
+  這條坑本來就記在下面「其他」那一節,這次是同一個坑的變形。)
+
+### 剩下什麼
+
+| 步驟 | 狀態 |
+|---|---|
+| 統計特徵 → 分群成數個風格 | 未做,純資料處理 |
+| 每群一份玩家名單 → `player_names_files` | 未做。機制已驗:空名單 = 全部玩家,日誌會印 `loaded 0 players` |
+| `one_vs_three` 對戰評測 | 未做 |
+| 掃 `min_q_weight` 畫取捨曲線 | 未做。權重檔裡存的實際值是 **3**(不是 `config.example.toml` 的 5) |
+
+這四項**都不再有技術未知數** —— 會「根本做不成」的那幾步(語料、GRP、微調)
+已經跑過了。
+
+---
+
 ## 素材
 
 | 路徑 | 內容 |
@@ -508,7 +603,7 @@ Qt widget 只能在建立它的執行緒上動,而 ViewModel 自己不是執行�
 | 4 | `StableCalibrator` 端對端複驗 | 已修但沒對真實錄影驗 | 可與 #3 一起解決 |
 | 5 | MITM 路線 CA 憑證 | 雀魂是 Unity,是否信任系統憑證未知 | **使用者要求延後** |
 | 6 | Windows 擷取層 | ✅ 2026-09-18 實機驗過,修了三個 bug | 見「高 DPI」那節。**遮擋**那項仍未驗 |
-| 7 | 沒有公開 GRP 權重 | 擋住功能 3 | 須先跑 `train_grp.py` |
+| 7 | ~~沒有公開 GRP 權重~~ | ✅ 2026-09-28 自己訓出來了 | 真正的第一關其實是**牌譜語料**,見「M8」那節 |
 | 8 | 受入枚數略微高估 | 不知副露內容導致 | 次要,可從封包補 |
 | 9 | 單一 session 內視窗縮放 | manifest 只存一個 `table_rect` | 要改成存進每個 `FrameRecord` |
 | 10 | UI 皮膚切換 | 要重載跨 widget 的 `TileIcons` | 未實作。Overlay 又多一個 `TileIcons` 持有者 |
@@ -520,7 +615,7 @@ Qt widget 只能在建立它的執行緒上動,而 ViewModel 自己不是執行�
 | 16 | `Player.reach_turn` 記了沒人用 | 無 | 立直後的安全牌是在捨牌當下就記進 `safe`,不需要它 |
 | 17 | **`decisions.md` 第十八節沒寫** | 放銃分析的設計理由目前只在程式的 docstring 裡 | 該記的:只認立直會漏掉、等級 vs 指名的界線、三副露的數據 |
 
-**沒開始也沒被授權開始的:** M8 風格微調的離線訓練。
+**M8 離線訓練的管線已驗通**(2026-09-28),見下節。尚未做的是分群與評測。
 
 ### 未解 #8「受入枚數略微高估」現在變便宜了
 

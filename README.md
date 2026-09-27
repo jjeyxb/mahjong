@@ -295,28 +295,64 @@ python tools/gt.py inspect data/ws.jsonl --actions --mjai-out data/g1.mjai.jsonl
 調低 = 更自由地往最優化跑。掃過一輪就能畫出**「風格強度 vs 平均順位」的取捨曲線**，
 比單一個微調結果更有論文價值。
 
-### 唯一的前置關卡
+### 前置關卡（2026-09-28 全部打通）
 
-**沒有公開的 GRP 權重，而離線訓練需要它。**
-`dataloader.py` 會建立 `GRP(**config['grp']['network'])` 並載入 `config['grp']['state_file']`
-來計算每局的 reward。但 HuggingFace 上的 298k repo 只有 `mortal_298k.pth` 與 `config.toml`，
-Mortal 的 GitHub 也**沒有任何 release** —— 兩處都沒有 `grp.pth`。
+原本這一節寫的是「**唯一的**前置關卡 = 沒有公開的 GRP 權重」。實際動手之後
+發現**那不是第一關**，前面還有一關沒被算進去。
 
-所以必須先用 `train_grp.py` 自己訓一個。好消息是它很小
-（GRU，`hidden_size = 64`、`num_layers = 2`），成本遠低於主模型。**這是動手的第一步。**
+#### 一、牌譜語料 —— 真正的第一關
+
+`train_grp.py` 要的是 `cfg['dataset']['train_globs']` 指向**一整批**
+`.json.gz`。本專案自己錄的只有個位數場次，而風格分群更需要大量玩家與場次
+才有統計意義。這件事在文件裡從來沒被列為阻擋項 —— 下面「預期流程」第 1 步
+直接把它當成既有的東西。
+
+已解決：[`tools/fetch_tenhou.py`](tools/fetch_tenhou.py) 從天鳳公開存檔抓，
+轉換交給 [`convlog`](https://github.com/Equim-chan/mjai-reviewer)（**Mortal
+作者本人寫的**，格式相容性不必自己保證）。實測 620 場全部通過上游的
+`validate_logs`。
+
+#### 二、GRP 權重
+
+`dataloader.py` 會建立 `GRP(**config['grp']['network'])` 並載入
+`config['grp']['state_file']` 來計算每局的 reward。但 HuggingFace 上的 298k
+repo 只有 `mortal_298k.pth` 與 `config.toml`，Mortal 的 GitHub 也**沒有任何
+release** —— 兩處都沒有 `grp.pth`。
+
+已解決：用 `train_grp.py` 自己訓（GRU，`hidden_size = 64`、`num_layers = 2`，
+成本遠低於主模型）。設定見 [`engines/mortal/grp.toml`](engines/mortal/grp.toml)。
+
+#### 管線實測（RX 9070 / ROCm 7.2.1）
+
+| 步驟 | 結果 |
+|---|---|
+| 天鳳 → mjai | 620 場，`validate_logs` **全過** |
+| GRP 訓練 | `grp.pth` 1.4 MB，36,800 步，GPU |
+| **主模型微調** | 從 `steps=298,000` 續訓到 **298,180**，約 **6 batch/s** |
+| 權重真的變了嗎 | 主幹 **10,818,640 / 10,818,641（100%）** 元素被改動 |
+
+> ⚠ **這只證明管線通，不是能用的模型。** 620 場對 GRP 來說遠遠不夠
+> （每一場被反覆看了數千次），微調也只跑了 180 步。要產出有意義的風格模型，
+> 語料與步數都得放大好幾個數量級。
 
 ### 預期流程
 
-1. 天鳳牌譜 → mjai `.json.gz`（每行一個 JSON，第一行 `start_game` 含 `names`）
-2. 計算每位玩家的統計特徵 → 分群成數個風格
-3. 每群輸出一份玩家名單檔 → 填入 `player_names_files`
-4. **先訓 GRP**（唯一前置關卡）
-5. 從 `mortal_298k.pth` 起步，每群各微調一個模型（低學習率）
-6. `one_vs_three` 對戰 → 用既有 MJAI 工具算風格指標與平均順位
-7. 掃 `min_q_weight` → 風格強度 vs 順位的取捨曲線
+| # | 步驟 | 狀態 |
+|---|---|---|
+| 1 | 天鳳牌譜 → mjai `.json.gz`（每行一個 JSON，第一行 `start_game` 含 `names`） | ✅ `tools/fetch_tenhou.py` |
+| 2 | 計算每位玩家的統計特徵 → 分群成數個風格 | 未做 |
+| 3 | 每群輸出一份玩家名單檔 → 填入 `player_names_files` | 未做（機制已驗：空名單 = 全部玩家，日誌印 `loaded 0 players`） |
+| 4 | 先訓 GRP | ✅ `engines/mortal/grp.toml` |
+| 5 | 從 `mortal_298k.pth` 起步，每群各微調一個模型（低學習率） | ✅ 管線已通，`engines/mortal/finetune.toml` |
+| 6 | `one_vs_three` 對戰 → 用既有 MJAI 工具算風格指標與平均順位 | 未做 |
+| 7 | 掃 `min_q_weight` → 風格強度 vs 順位的取捨曲線 | 未做 |
+
+剩下的 2、3、6、7 都**不再有技術未知數**了 —— 1/4/5 是會「根本做不成」的那幾步，
+它們已經在真機上跑過。2、3 是純資料處理，6、7 是把既有工具多跑幾次。
 
 **建議的第一個驗證步驟**：先把 libriichi 建起來、載入 298k 權重跑一次推論。
 這一步同時驗證建置、GPU 環境、權重相容性三件事，失敗的話也是最早、最便宜的失敗點。
+（2026-09-18 已在 Windows 上驗過，與真人一致率 66%，與 macOS 記錄的數字相同。）
 
 ### 硬體與環境
 
