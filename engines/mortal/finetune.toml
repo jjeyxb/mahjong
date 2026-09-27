@@ -1,0 +1,122 @@
+# 風格微調設定 —— M8 的主要產出
+#
+# 從 `mortal_298k.pth` 起步續訓。README 的可行性調查說「微調本身不需要修改
+# Mortal 任何一行程式碼」,這份設定就是那個結論的具體形式:`train.py` 在
+# `state_file` 存在時會載入 mortal / current_dqn / aux_net(以及 optimizer、
+# scheduler、scaler)並還原 `steps`,指向公開權重就是微調。
+#
+# 實際確認過 `mortal_298k.pth` 裡有:
+#   mortal, current_dqn, aux_net, optimizer, scheduler, scaler, steps=298000, config
+#
+# 用法:
+#
+#   cd engines/mortal/Mortal/mortal
+#   MORTAL_CFG=../../finetune.toml ../../.venv/Scripts/python.exe train.py
+#
+# ⚠ **`state_file` 一定要指向副本,不能指向 models/mortal_298k.pth。**
+# `train.py` 是**讀同一個檔、也寫回同一個檔**,直接指過去等於邊訓練邊覆蓋那份
+# 130MB 的原始權重 —— 而它是從 HuggingFace 下載的基準,一旦被蓋掉,
+# 「微調後 vs 原始」這個比較就永遠做不了了,而且不會有任何錯誤訊息。
+# 先 copy 一份再改這裡。
+
+[control]
+# 這三個必須與 mortal_298k.pth 裡存的 config 相同,否則載進來的張量對不上。
+# 實際從權重檔讀出來的:version=4、resnet 192x40。
+version = 4
+online = false          # 離線訓練(CQL),不是自我對弈
+
+state_file = 'F:/mahjong/models/style_finetune.pth'
+best_state_file = 'F:/mahjong/models/style_finetune_best.pth'
+tensorboard_dir = 'F:/mahjong/data/datasets/finetune_log'
+
+device = 'cuda:0'
+enable_cudnn_benchmark = false
+enable_amp = false
+enable_compile = false
+
+# 上游預設 batch_size=512,那是給資料中心的卡。resnet 192x40 在 16GB 上
+# 開太大會 OOM,而 OOM 發生在跑了一陣子之後最浪費時間。先小再往上加。
+batch_size = 16
+opt_step_every = 1
+
+save_every = 20
+# test_every 會觸發自我對弈評測(test_play.games 場),很貴。
+# 設得遠遠大於這次要跑的步數 = 這趟不做評測。
+# train.py 有 `assert test_every % save_every == 0`,所以要是 save_every 的倍數。
+test_every = 20000
+submit_every = 400
+
+[test_play]
+games = 3000
+log_dir = 'F:/mahjong/data/datasets/finetune_test_play'
+
+# ⚠ 這一段**即使不做評測也一定要有**。`train.py` 一開始就無條件建
+# `TestPlayer()`,而它的 `__init__` 當場就把 baseline 權重載進來 ——
+# 不是等到 `test_every` 才載。少了這一段會在載入模型之後、訓練開始之前
+# 直接 `KeyError: 'baseline'`。
+#
+# baseline 指向**未微調的原始權重**是刻意的:評測要問的正是
+# 「微調後的模型對上原本的自己,贏得了嗎」。這也是 README 說的
+# `one_vs_three`(challenger 對三個 champion)那個設計。
+[baseline.test]
+device = 'cuda:0'
+enable_compile = false
+state_file = 'F:/mahjong/models/mortal_298k.pth'
+
+[dataset]
+globs = ['F:/mahjong/data/datasets/tenhou/mjai/**/*.json.gz']
+file_index = 'F:/mahjong/data/datasets/finetune_file_index.pth'
+file_batch_size = 20
+reserve_ratio = 0.0
+num_workers = 1
+
+# **風格微調的關鍵旋鈕就是這一個。** train.py 讀入名單 → 只保留有這些玩家
+# 參與的對局 → 把 player_names 傳給 GameplayLoader,使**只有這些玩家的決策
+# 成為訓練樣本**。空的代表「全部玩家」,也就是還沒分群之前的樣子。
+player_names_files = []
+num_epochs = 1
+enable_augmentation = false
+augmented_first = false
+
+[env]
+# 與權重檔裡存的相同
+gamma = 1
+pts = [6.0, 4.0, 2.0, 0.0]
+
+[resnet]
+conv_channels = 192
+num_blocks = 40
+
+[cql]
+# **這是 README 說的「風格 vs 強度」旋鈕。** 調高 = 更貼近該群玩家的實際打法
+# (風格更明顯),調低 = 更自由地往最優化跑。
+# 權重檔裡存的實際值是 3(不是 config.example.toml 的 5),先對齊它。
+min_q_weight = 3
+
+[aux]
+next_rank_weight = 0.2
+
+[freeze_bn]
+mortal = false          # online 訓練才需要凍結
+
+[optim]
+eps = 1e-8
+betas = [0.9, 0.999]
+weight_decay = 0.1
+max_grad_norm = 0
+
+[optim.scheduler]
+# 微調要用**低學習率** —— 目的是把既有的強度往某種風格推,不是重練。
+peak = 1e-5
+final = 1e-5
+warm_up_steps = 0
+max_steps = 0
+
+[grp]
+# 離線訓練用它算每一局的 reward。這是整個 M8 的前置關卡,
+# 由 engines/mortal/grp.toml 訓出來。
+state_file = 'F:/mahjong/models/grp.pth'
+
+[grp.network]
+hidden_size = 64
+num_layers = 2
