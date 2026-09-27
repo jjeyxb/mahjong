@@ -42,6 +42,10 @@ models/*
 engines/mortal/Mortal/
 engines/mortal/*.whl
 
+# mjai-reviewer 同理 —— 它是天鳳牌譜 → mjai 的轉換器(Mortal 作者本人寫的
+# convlog),tools/fetch_tenhou.py 會呼叫它。一樣是 clone,不納入本 repo。
+engines/mortal/mjai-reviewer/
+
 # 牌面模板圖:小張的模板要進版控(辨識必需),但錄製的原始截圖不要
 assets/**/raw/
 assets/**/*.psd
