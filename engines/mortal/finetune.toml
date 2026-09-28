@@ -100,7 +100,18 @@ num_workers = 1
 # ⚠ 換了名單**一定要刪掉下面那個 `file_index`**。它快取的是「有這些玩家參與的
 # 檔案清單」,換群之後沿用舊清單不會有任何提示 —— 訓練會照舊跑、日誌會照樣
 # 印步數,而你訓的是上一群的人。
-player_names_files = ['F:/mahjong/data/datasets/styles/副露率_high.txt']
+# 2026-09-28 語料放大到 25,543 場之後重跑 style_profile 的結果。每條軸一個
+# 子目錄 —— write_lists 會清掉輸出目錄裡不屬於這次的 .txt,兩條軸寫進同一個
+# 目錄的話,跑第二條會把第一條的名單洗掉。
+#
+# 可用的軸只有兩條(拆半信度 >= 0.7,且兩端平均順位接近):
+#   data/datasets/styles/call_rate/副露率_{high,low}.txt    信度 0.884,兩端順位差 0.015
+#   data/datasets/styles/reach_rate/立直率_{high,low}.txt   信度 0.796,兩端順位差 0.029
+#
+# ⚠ **放銃率不能用**,雖然它信度 0.679 看起來夠。它兩端的平均順位差 0.113,
+# 那是**強度不是風格** —— 拿它選人會微調出「比較強的」與「比較弱的」Mortal。
+# 對照:那次失敗微調量到的順位差是 0.057,而這條軸是它的兩倍。
+player_names_files = ['F:/mahjong/data/datasets/styles/call_rate/副露率_high.txt']
 num_epochs = 1
 enable_augmentation = false
 augmented_first = false
