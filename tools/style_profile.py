@@ -684,6 +684,19 @@ def write_lists(groups: dict[str, list[str]], out: Path) -> None:
     回頭看還要看得懂的東西,而 `style_0` 什麼都沒說。
     """
     out.mkdir(parents=True, exist_ok=True)
+
+    # **把上一次跑剩的名單清掉。** 這個目錄是工具的輸出,不是使用者的收藏夾。
+    #
+    # 不清的話會留下一地看起來一樣合法的 .txt:k-means 那版的 style_0.txt、
+    # 拿雜訊軸試出來的 平均放銃失點_high.txt …… 而 finetune.toml 裡那行
+    # `player_names_files` 只是一個路徑字串,指到哪一個都不會有人抱怨。
+    # 幾週後回來看,沒有任何線索指出哪一份是當時真的採用的。
+    keep = {f"{label}.txt" for label in groups}
+    for stale in sorted(out.glob("*.txt")):
+        if stale.name not in keep:
+            stale.unlink()
+            print(f"  清掉上一次的 {stale.name}")
+
     for label, group in groups.items():
         path = out / f"{label}.txt"
         # train.py 用 filtered_trimmed_lines 讀:一行一個名字,空行會被濾掉。
