@@ -282,7 +282,21 @@ class VisionWorker(threading.Thread):
             self.status.say(f"畫面上讀到 {len(hand)} 張,不是合法手牌(動畫中?)")
             return
 
-        concealed, drawn = classify_hand(tall, hand, self._templates, headroom=headroom)
+        try:
+            concealed, drawn = classify_hand(tall, hand, self._templates, headroom=headroom)
+        except ValueError as exc:
+            # 牌框太小,`classify` 明確拒收而不是硬算(見 classify.MIN_TEMPLATE_PX)。
+            #
+            # **這裡一定要接住。** 讓 ValueError 竄上去的話,`run()` 那個 blanket
+            # except 會把整條擷取執行緒收掉 —— 而這是個**使用者救得回來**的狀況
+            # (把視窗放大就好),執行緒卻已經沒了,只能重開整個 App。
+            # 與擷取失敗、校正鎖不上一樣,這該是「這一幀不認」而不是「不玩了」。
+            #
+            # 走得到這裡的兩條路:使用者把瀏覽器縮到畫布 480 CSS 像素以下
+            # (辨識的實測下限,見 tests/unit/test_vision_classify.py 的解析度掃描),
+            # 或校正鎖到一個偏小的假牌桌 —— 單幀校正實測 16% 明顯錯誤。
+            self.status.say(f"手牌區太小,認不出牌面:{exc}")
+            return
         matches = (*concealed, *(m for m in (drawn,) if m is not None))
         confident = all(m.is_confident for m in matches)
         self.reads += 1

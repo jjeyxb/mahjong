@@ -153,6 +153,95 @@ class TestClassifyHand:
         assert drawn is None
 
 
+#: ``own_hand`` ROI 佔牌桌寬度的比例(``config/default.yaml``)。
+#: ROI 像素寬 = 牌桌寬 × 這個值,而牌桌寬 = 畫布 CSS 寬 × DPI 縮放。
+_ROI_WIDTH_RATIO = 0.7083
+
+#: 每個情境是 ``(說明, 畫布 CSS 寬, DPI 縮放)``。
+#: 模板與 `HandLayout` 全部量自 2560×1440 @100%,其餘都是外插。
+_RESOLUTIONS = [
+    ("3840x2160 @100%", 3840, 1.0),
+    ("2560x1440 @200% Retina", 2560, 2.0),
+    ("2560x1440 @100% 量測基準", 2560, 1.0),
+    ("1600x900 @125% 實機", 1600, 1.25),
+    ("1600x900 @100%", 1600, 1.0),
+    ("1280x720 @100%", 1280, 1.0),
+    ("1024x576 @100%", 1024, 1.0),
+    ("800x450 @100%", 800, 1.0),
+    ("640x360 @100%", 640, 1.0),
+    ("480x270 @100% 實測下限", 480, 1.0),
+]
+
+
+def _rescaled(name: str, canvas_width: int, dpr: float) -> np.ndarray:
+    """把參考素材縮放成「在該解析度下 ROI 會是多大」。"""
+    source = cv2.imread(str(FIXTURES / f"{name}.png"))
+    assert source is not None, f"讀不到 fixture {name}"
+    width = round(canvas_width * dpr * _ROI_WIDTH_RATIO)
+    scale = width / source.shape[1]
+    return cv2.resize(
+        source,
+        (width, round(source.shape[0] * scale)),
+        interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC,
+    )
+
+
+class TestResolutionIndependence:
+    """未解 #2:ROI 與模板全部量自 2560×1440,換解析度還成立嗎?
+
+    文件原本寫的是「正規化理論上能縮放,沒驗」。**現在驗了**:把三張真實
+    素材縮放成各解析度下 ROI 應有的尺寸,24 個已知答案在
+    畫布 480 到 3840(8 倍跨度)全部正確、全部可信,最低分穩定在 0.62 左右。
+
+    ⚠ 縮放素材**不等於**遊戲原生渲染在那個解析度 —— 原生會比縮出來的更銳利,
+    所以這組數字是**下界**,不是精確值。要精確值還是得一份畫面與封包配對的
+    錄影(未解 #3,使用者已暫緩)。但它足以回答「會不會整個壞掉」,
+    而那才是 #2 在問的事。
+
+    再小就不是變差,是 :func:`classify` **明確拒收**(見 ``MIN_TEMPLATE_PX``)
+    —— 那條路要保證不會把擷取執行緒打死,見
+    ``tests/unit/test_live_vision.py::TestDegradedConditions``。
+    """
+
+    @pytest.mark.parametrize(("label", "canvas", "dpr"), _RESOLUTIONS, ids=lambda v: str(v))
+    def test_known_tiles_survive_every_plausible_resolution(
+        self, label: str, canvas: int, dpr: float, templates: TemplateSet
+    ) -> None:
+        wrong: list[str] = []
+        for name, answers in EXPECTED.items():
+            roi = _rescaled(name, canvas, dpr)
+            hand = read_hand(roi)
+            concealed, drawn = classify_hand(roi, hand, templates)
+            matches = list(concealed) + ([drawn] if drawn else [])
+            for index, expected in answers.items():
+                if index >= len(matches):
+                    wrong.append(f"{label} {name} 槽 {index}: 根本沒讀到這個槽位")
+                    continue
+                match = matches[index]
+                if match.label != expected or not match.is_confident:
+                    wrong.append(f"{label} {name} 槽 {index}: 期望 {expected},得到 {match}")
+        assert not wrong, "\n".join(wrong)
+
+    @pytest.mark.parametrize(("label", "canvas", "dpr"), _RESOLUTIONS, ids=lambda v: str(v))
+    def test_tile_counts_survive_every_plausible_resolution(
+        self, label: str, canvas: int, dpr: float
+    ) -> None:
+        """張數讀錯會讓 `Hand.melds` 反推出錯的副露組數,向聽數跟著全錯。
+
+        這條與上面那條分開,是因為它們會壞在不同地方:張數靠標準差門檻,
+        牌面靠模板比對。縮小影像會**同時**壓低兩者,但不會同時壞。
+        """
+        for name, count, has_drawn in (
+            ("hand_13_full", 13, False),
+            ("hand_14_with_draw", 13, True),
+            ("hand_4_with_melds", 4, False),
+        ):
+            hand = read_hand(_rescaled(name, canvas, dpr))
+            assert len(hand.concealed) == count, f"{label} {name} 讀到 {len(hand.concealed)} 張"
+            assert (hand.drawn is not None) == has_drawn, f"{label} {name} 摸牌判斷錯"
+            assert hand.is_plausible, f"{label} {name} 張數不合法"
+
+
 class TestGuards:
     def test_a_greyscale_query_is_rejected(self, templates: TemplateSet) -> None:
         """彩色是赤五能分開的原因,傳灰階進來要當場擋掉而不是默默變差。"""

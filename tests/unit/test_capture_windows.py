@@ -208,3 +208,44 @@ class TestGdiFailures:
     def test_a_handle_that_is_no_longer_a_window_fails_cleanly(self, backend) -> None:
         with pytest.raises(CaptureFailedError):
             backend.capture(_window(handle=0xDEAD_BEEF))
+
+    def test_asking_for_the_bounds_of_a_dead_window_does_not_raise(self) -> None:
+        """這條擋的是一個**真的發生過**的故障,不是防禦性假設。
+
+        ``list_windows`` 在 ``EnumWindows`` 的回呼裡對每一個視窗問邊界,而桌面上
+        隨時有視窗正在關。DWM 對死掉的 handle 會失敗、退路 ``GetWindowRect``
+        會拋 ``pywintypes.error`` —— 只要撞上一次整趟列舉就炸,而
+        ``find_window`` 的呼叫端只接 ``CaptureError``,擷取執行緒就被收掉了。
+
+        2026-09-28 全套測試隨機排序時真的撞到(當時剛加了會開關 Tk 視窗的
+        fixture,把這個競態的機率拉高了)。
+        """
+        from mia.capture.windows import _extended_frame_bounds
+
+        bounds = _extended_frame_bounds(0xDEAD_BEEF)
+        assert bounds.width == 0 and bounds.height == 0
+
+    def test_listing_windows_survives_one_of_them_dying(self, monkeypatch) -> None:
+        """列舉途中有視窗消失,不該讓整趟列舉失敗。"""
+        import pywintypes
+
+        from mia.capture import windows as mod
+
+        real = mod.win32gui.GetWindowRect
+        seen: list[int] = []
+
+        def flaky(hwnd: int):
+            seen.append(hwnd)
+            if len(seen) == 1:  # 第一個問到的視窗「剛好」在這一刻沒了
+                raise pywintypes.error(1400, "GetWindowRect", "無效的視窗控制代碼。")
+            return real(hwnd)
+
+        # 讓 DWM 一律失敗,強迫每個視窗都走到 GetWindowRect 那條退路
+        monkeypatch.setattr(
+            mod.ctypes.windll.dwmapi, "DwmGetWindowAttribute", lambda *_a: 1
+        )
+        monkeypatch.setattr(mod.win32gui, "GetWindowRect", flaky)
+
+        listed = mod.list_windows()  # 不該拋
+        assert seen, "測試沒有真的走到 GetWindowRect"
+        assert all(w.bounds.width > 0 for w in listed)

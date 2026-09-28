@@ -133,6 +133,18 @@ def _extended_frame_bounds(hwnd: int) -> Rect:
     ``GetWindowRect`` 在 Windows 10 以後會包含視窗周圍那圈不可見的縮放邊框
     (通常每邊 7~8 px),直接拿來當擷取尺寸會多出黑邊。DWM 的
     ``DWMWA_EXTENDED_FRAME_BOUNDS`` 才是視覺上的真實邊界。
+
+    Returns:
+        視窗邊界;**視窗在查詢當下消失的話回傳 ``Rect(0, 0, 0, 0)``**。
+        兩個呼叫端都已經把「尺寸 <= 0」當成「這個視窗不能用」處理
+        (:func:`list_windows` 跳過它,:meth:`WindowsCaptureBackend.capture`
+        轉成 :class:`CaptureFailedError`),所以這裡不需要再多一種例外。
+
+        **不能讓 ``pywintypes.error`` 漏出去。** 這不是假設性的:
+        :func:`list_windows` 是在 ``EnumWindows`` 的回呼裡對**每一個**視窗
+        呼叫這裡,而桌面上隨時有視窗正在關 —— 只要撞上一次,整趟列舉就炸,
+        而 ``find_window`` 的呼叫端只接 ``CaptureError``,於是擷取執行緒
+        直接被收掉。2026-09-28 全套測試隨機排序時真的撞到了。
     """
     rect = wintypes.RECT()
     hresult = ctypes.windll.dwmapi.DwmGetWindowAttribute(
@@ -141,10 +153,17 @@ def _extended_frame_bounds(hwnd: int) -> Rect:
         ctypes.byref(rect),
         ctypes.sizeof(rect),
     )
-    if hresult != 0:  # 失敗就退回 GetWindowRect
+    if hresult == 0:
+        return Rect.from_bounds(rect.left, rect.top, rect.right, rect.bottom)
+
+    # DWM 失敗就退回 GetWindowRect。它對已經消失的 handle 會拋,
+    # 而「視窗剛剛沒了」正是 DWM 會失敗的主要原因之一。
+    try:
         left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-        return Rect.from_bounds(left, top, right, bottom)
-    return Rect.from_bounds(rect.left, rect.top, rect.right, rect.bottom)
+    except _GDI_ERRORS as exc:
+        logger.debug("問不到視窗 {} 的邊界(多半剛被關掉): {}", hwnd, exc)
+        return Rect(0, 0, 0, 0)
+    return Rect.from_bounds(left, top, right, bottom)
 
 
 def _dpi_scale(hwnd: int) -> float:
@@ -320,7 +339,9 @@ class WindowsCaptureBackend(CaptureBackend):
         physical = _extended_frame_bounds(hwnd)
         width, height = physical.width, physical.height
         if width <= 0 or height <= 0:
-            raise CaptureFailedError(f"視窗尺寸無效({width}x{height}): {window}")
+            raise CaptureFailedError(
+                f"視窗尺寸無效({width}x{height}),多半是剛被關掉: {window}"
+            )
 
         window_dc = mfc_dc = mem_dc = bitmap = None
         try:
