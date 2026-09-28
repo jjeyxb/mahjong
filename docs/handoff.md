@@ -516,15 +516,57 @@ README 寫「**唯一的**前置關卡 = 沒有公開的 GRP 權重」。實際�
 而本專案自己錄的只有個位數場次。**牌譜語料才是真正的第一關**,而它在任何
 文件裡都沒被列為阻擋項 —— 「預期流程」第 1 步直接把它當成既有的東西。
 
+### 語料規模:預設那條路有個看不出來的天花板
+
+`list.cgi` 給的是一個**滾動視窗**:最近 10 天、每小時一份。實測 230 份索引
+換到 **2871 場**四人半莊 —— 那是天花板,不是 `--limit` 設小了。`--days 30`
+不會給你 30 天,清單裡就只有那 10 天。
+
+`list.cgi?old` 才是放大的那條路:**日檔**、按年份分目錄,實測回溯到
+`2026/scc20260101.html.gz`,**261 份日檔、每份約 426 場四人半莊,合計約 11 萬場**。
+索引請求數還從 6264(小時檔)降到 261。
+
+兩邊**不重疊**:日檔到 2026-09-18,小時檔從 2026-09-19 開始。所以要完整語料
+就兩趟都跑:
+
+```powershell
+.venv\Scripts\python.exe tools\fetch_tenhou.py --since 20260101 --limit 20000
+.venv\Scripts\python.exe tools\fetch_tenhou.py --days 10 --limit 3000
+```
+
+**真正的瓶頸是每場一個請求**(`mjlog2json.cgi`,`--delay` 預設 1 秒),
+實測約 1.2 秒一場:2 萬場約 6.7 小時、11 萬場約 37 小時。索引那 261 個請求
+只佔 4 分半,而且會快取(`data/datasets/tenhou/index/`)—— 中途被打斷重跑
+不會再跟天鳳要一次。
+
+### 索引列上就寫著玩家名字 —— 這改變了抓取策略
+
+一開始想的是「抓 2 萬場」。但風格統計是 **per-player** 的,而 2 萬場均勻散在
+幾千個玩家身上等於每人十幾場,撐不起分群。
+
+而「誰打得多」**不必下載任何一場牌譜**就知道 —— 索引每一列的尾端就是
+`名字(+42.5) 名字(+5.7) …`。於是:
+
+```powershell
+# 只解析索引,印出玩家出現次數分布(不下載牌譜)
+.venv\Scripts\python.exe tools\fetch_tenhou.py --since 20260101 --index-stats
+
+# 把下載預算集中在常打的人身上
+.venv\Scripts\python.exe tools\fetch_tenhou.py --since 20260101 --focus-players 300 --limit 20000
+```
+
+**一場只要有一個目標玩家就留下**,不需要四家全中 —— `train.py` 把名單傳給
+`GameplayLoader`,只有名單上那些人的決策會變成訓練樣本,其他三家只是環境。
+要求四家全中會把幾乎所有對局丟掉。
+
 ### 怎麼跑
 
 ```powershell
 # 1. 抓牌譜並轉成 mjai(轉換器要先建,見下)
-.venv\Scripts\python.exe toolsetch_tenhou.py --days 3 --limit 600
+.venv\Scripts\python.exe tools\fetch_tenhou.py --days 3 --limit 600
 
 # 2. 驗一下(上游的驗證器,會用真正的 PlayerState 重播每一局)
-engines\mortal\Mortal	arget
-eleasealidate_logs.exe data\datasets	enhou\mjai
+engines\mortal\Mortal\target\release\validate_logs.exe data\datasets\tenhou\mjai
 
 # 3. 訓 GRP。**注意 cwd** —— 上游那些模組彼此用同層 import
 cd engines\mortal\Mortal\mortal
@@ -581,12 +623,39 @@ cargo build --release          # 一樣要先掛 MSVC 工具鏈
   配合 `python -u` 直接寫檔就好。(「stdout 重導到檔案是 block-buffered」
   這條坑本來就記在下面「其他」那一節,這次是同一個坑的變形。)
 
+### 風格怎麼定出來的(`tools/style_profile.py`)
+
+不寫「攻擊型 = 立直率 > 25%」這種門檻 —— 門檻要從哪來?手上沒有那個數字的
+來源,硬訂一個就是拿印象當資料。改成量六個能直接從 mjai 事件數出來的比率,
+標準化之後跑 k-means,**讓群自己浮出來**,再回頭看每一群的重心。
+
+六個特徵:副露率、立直率、和了率、放銃率、平均和了打點、平均放銃失點。
+全部以**局**為分母而不是場(一場半莊 8~12 局,拿場當分母立直率會大於 1)。
+
+**平均順位刻意不是分群特徵。** 它是**強度**不是風格,放進去 k-means 會照強度切,
+產出「強/中/弱」而不是「攻/守/速」—— 而 M8 要的是風格遷移。它只印出來
+**當檢查**:各群平均順位差太多(> 0.15)就代表這次分群其實抓到了強度,
+工具會直接說出來。那是它唯一的自我懷疑機制。
+
+量出來的全體數字對得上公開的鳳凰卓統計,這是實作正確的旁證:
+
+| 特徵 | 中位數(620 場語料) |
+|---|---|
+| 副露率 | 33.9% |
+| 立直率 | 18.1% |
+| 和了率 | 20.7% |
+| 放銃率 | 14.3% |
+| 平均和了打點 | 6757 |
+
+⚠ **`--min-games` 是這支工具最重要的旋鈕。** 620 場語料裡只有 **10 個人**滿 20 場
+(524 個玩家、中位數 3 場)—— 那個規模分不出群。先跑 `--stats` 看分布再決定。
+
 ### 剩下什麼
 
 | 步驟 | 狀態 |
 |---|---|
-| 統計特徵 → 分群成數個風格 | 未做,純資料處理 |
-| 每群一份玩家名單 → `player_names_files` | 未做。機制已驗:空名單 = 全部玩家,日誌會印 `loaded 0 players` |
+| 統計特徵 → 分群成數個風格 | **工具做好了**(`tools/style_profile.py`),等語料 |
+| 每群一份玩家名單 → `player_names_files` | 同上 —— `style_profile.py` 直接寫出 `style_N.txt`。機制已驗:空名單 = 全部玩家,日誌會印 `loaded 0 players` |
 | `one_vs_three` 對戰評測 | 未做 |
 | 掃 `min_q_weight` 畫取捨曲線 | 未做。權重檔裡存的實際值是 **3**(不是 `config.example.toml` 的 5) |
 
