@@ -1017,6 +1017,69 @@ data/datasets/styles/reach_rate/立直率_{high,low}.txt   各 66 人  0.153 vs 
 
 ---
 
+### ⚠ 「設定寫了但沒生效」—— 一天踩到三次,這是一個模式
+
+三個都**不報錯**:步數照跑、loss 照印、進度條照走,而訓的不是你以為的那個。
+唯一的發現方式是**去讀實際生效的值**,不是讀設定檔。
+
+| # | 設定 | 以為的 | 實際的 | 怎麼發現的 |
+|---|---|---|---|---|
+| 1 | `test_every = 20000` | 這趟不評測 | 跑 2,000 步就觸發 3,000 場自我對弈 | 去查「那個 train.py 到底在跑什麼」 |
+| 2 | `player_names_files` | 新的 66 人名單 | 舊的 77 人名單 | 日誌印 `loaded 77 players`,數字對不上 |
+| 3 | `[optim.scheduler]` | lr = 1e-5 | **lr = 2.92e-4(30 倍)** | tensorboard 的 `hparam/lr` |
+
+#### 1. `test_every` 比的是絕對步數
+
+微調從 `mortal_298k.pth` 的 298,000 步**續算**,所以 `test_every = 20000` 的
+下一個倍數是 300,000 —— 跑 2,000 步就撞到。門檻要大於**續訓後會到達的步數**,
+不是這趟的步數。已改成 400000。
+
+#### 2. 輸出目錄裡的舊名單長得一樣合法
+
+`style_profile.py` 重跑之後名單換了位置(每條軸一個子目錄),而 `finetune.toml`
+裡那行 `player_names_files` 只是一個路徑字串,指到舊的不會有人抱怨。
+**驗法:看日誌的 `loaded N players` 對不對得上名單檔的行數。**
+
+#### 3. `[optim.scheduler]` 在續訓時整段被權重檔蓋掉
+
+```python
+train.py:95   scheduler = LinearWarmUpCosineAnnealingLR(optimizer, **config['optim']['scheduler'])
+train.py:115  scheduler.load_state_dict(state['scheduler'])   # ← 把上面那些全蓋掉
+```
+
+PyTorch 的 `LRScheduler.state_dict()` 會存下**除了 optimizer 以外的所有屬性**,
+包含 `peak` / `final` / `warm_up_steps` / `max_steps`。`mortal_298k.pth` 裡存的是
+`peak=3e-4`、`max_steps=2,750,000`,而跑到 298,000 步時餘弦退火幾乎還沒開始降,
+所以實際學習率是 **2.92e-4**。
+
+症狀是 **loss 一路往上**(dqn 0.3595→0.3703、cql 0.5105→0.5395、
+next_rank 0.7050→0.7373)—— 拿完整的原始訓練學習率去推一個已經收斂的模型,
+那叫重練不叫微調。修正後同樣的步數區間變成 dqn 0.3921→0.3595 往下走。
+
+**解法:改複製出來的權重檔,不改上游。**
+`setup_finetune.py` 的 `SCHEDULER_OVERRIDE` 在複製 `mortal_298k.pth` 之後直接把
+檔案裡的 scheduler 狀態改成 `peak=final=1e-5, max_steps=0, warm_up_steps=0`
+(那時 `_step_inner` 兩個分支都不進,直接 `return self.final`,得到常數 1e-5)。
+
+不改上游 `train.py` 的理由與 `PYTHONUTF8` 那次相同:Mortal 是 clone 進來的、
+不在版控裡,改了下次重新 clone 就沒了,而症狀會安靜地回來。
+
+⚠ 這也代表**早上那次失敗的微調有兩個原因**,不只一個:壞 GRP(val_loss 3.844,
+比亂猜還差)**加上**高了 30 倍的學習率。評測出來平均順位 2.5574 顯著變差,
+兩個都有份。
+
+#### 教訓
+
+開跑之後**一定要去讀實際生效的值**,至少三樣:
+
+* 日誌的 `loaded N players` 對不對得上名單行數
+* tensorboard 的 `hparam/lr`
+* `total steps: X (~Y)` 的 Y —— 那是距離下次自我對弈評測還有幾步
+
+三樣都對了再走開。
+
+---
+
 ### 剩下什麼 —— 順序不能換
 
 | # | 步驟 | 狀態 |

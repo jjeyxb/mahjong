@@ -144,7 +144,25 @@ weight_decay = 0.1
 max_grad_norm = 0
 
 [optim.scheduler]
-# 微調要用**低學習率** —— 目的是把既有的強度往某種風格推,不是重練。
+# ⚠ **續訓時這一整段不生效,設了也沒用。**
+#
+# `train.py:95` 先用這裡的值建 scheduler,但 `train.py:115` 接著
+# `scheduler.load_state_dict(state['scheduler'])`,而 PyTorch 的
+# `LRScheduler.state_dict()` 會把**除了 optimizer 以外的所有屬性**都存進去 ——
+# 包含 peak / final / warm_up_steps / max_steps。所以權重檔裡的舊值會把這裡
+# 整段蓋掉。
+#
+# 2026-09-28 實測:這裡寫 peak=1e-5,而 tensorboard 的 hparam/lr 是 **2.92e-4**
+# (mortal_298k.pth 裡 peak=3e-4、max_steps=2,750,000,跑到 298,000 步餘弦退火
+# 幾乎還沒開始降)。整整 30 倍,而且 dqn / cql / next_rank 三條 loss 一路往上 ——
+# 那是拿完整的原始訓練學習率在推一個已經收斂的模型,叫重練不叫微調。
+#
+# 真正生效的地方是**複製起始權重時直接改掉檔案裡的 scheduler 狀態**,見
+# `setup_finetune.py` 的 `SCHEDULER_OVERRIDE`。不改上游 train.py 的理由跟
+# PYTHONUTF8 那次一樣:Mortal 是 clone 進來的、不在版控裡。
+#
+# 下面這幾行留著是為了讓「從零開始訓練」那條路(state_file 不存在)仍然正確,
+# 而且值要與 SCHEDULER_OVERRIDE 一致,否則兩條路會給出不同的學習率。
 peak = 1e-5
 final = 1e-5
 warm_up_steps = 0
@@ -153,6 +171,10 @@ max_steps = 0
 [grp]
 # 離線訓練用它算每一局的 reward。這是整個 M8 的前置關卡,
 # 由 engines/mortal/grp.toml 訓出來。
+#
+# ⚠ 這一行與 `[baseline.test]` 的 `state_file` **都不是** `[control]` 那個。
+# 用前綴比對去改設定會三個一起換掉,而結果是拿 130MB 的 Mortal 權重當 GRP
+# 載入。2026-09-28 真的做過一次,改設定要認區段。
 state_file = 'F:/mahjong/models/grp.pth'
 
 [grp.network]
