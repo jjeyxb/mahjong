@@ -33,9 +33,28 @@ def _table(seat: int = 0) -> TableTracker:
     return t
 
 
+#: 對座位 2 與 3(``_table`` 的 ``oya=0``、場風東)都**不是役牌**、而且湊不出
+#: 染手的三張牌。
+#:
+#: 每一張都是選過的:
+#:
+#: * ``9p`` / ``9s`` —— 兩個不同花色,所以 ``suit_read`` 不會成立(數牌副露
+#:   要全同色才算染)。9 又離被測的 ``3m`` 夠遠,不會動到它的壁與筋。
+#: * ``2z``(南)—— 場風是東、這兩家的自風是西與北,所以南對他們不是役牌。
+#:
+#: 原本用的是 ``1z 2z 3z``,而 ``1z`` 就是場風 —— 那會讓「兩副露不算威脅」
+#: 的測試實際上在測「兩副露帶役牌」,只是當時役牌門檻還不存在,所以看不出來。
+_NEUTRAL_MELDS = ("9p", "9s", "2z")
+
+
 def _meld(table: TableTracker, seat: int, count: int) -> TableTracker:
-    """讓某一家碰到 ``count`` 組。用字牌,免得順手動到數牌的壁與筋。"""
-    for pai in ("1z", "2z", "3z", "4z")[:count]:
+    """讓某一家副露 ``count`` 組**不帶任何訊號**的牌。
+
+    「不帶訊號」是這個 helper 的重點:要測的是副露**組數**的效果,所以內容
+    不能剛好構成役牌或染手,否則測到的是別的東西。理由見 :data:`_NEUTRAL_MELDS`。
+    """
+    assert count <= len(_NEUTRAL_MELDS), "要更多組的話得先確認新加的牌一樣沒有訊號"
+    for pai in _NEUTRAL_MELDS[:count]:
         table.handle(Pon(actor=seat, target=(seat + 3) % 4, pai=pai, consumed=[pai, pai]))
     return table
 
@@ -303,3 +322,54 @@ class TestAgainstARealGame:
             if kind == "dahai" and d.level is DangerLevel.SAFE
         )
         assert safe > 0
+
+
+class TestSuitReadIsAnEstimateNotAnInference:
+    """副露的內容會講話,但它講的是估計 —— 界線在哪這一組就是在釘。
+
+    實測 14,544 場鳳凰卓:面對 3 組同色副露的人,打**他色**的放銃率 0.327%
+    [0.212, 0.505],與對門清家打數牌的 0.288% 幾乎相同;打同色是 4.918%
+    [3.904, 6.178]。倍率 15x,而且因為危險的那色大家本來就少打,這個倍率是
+    **被低估的**。
+    """
+
+    @staticmethod
+    def _dyeing(seat: int = 2) -> TableTracker:
+        """讓某一家碰成「3 組全萬子」。挑 1m / 5m / 9m 是為了離被測的 3m
+        與 3p 夠遠,不會順手改掉它們的壁。"""
+        t = _table()
+        for pai in ("1m", "5m", "9m"):
+            t.handle(Pon(actor=seat, target=(seat + 3) % 4, pai=pai, consumed=[pai, pai]))
+        return t
+
+    def test_the_read_shows_up_in_the_label(self) -> None:
+        """有人染的時候要講得出是哪一色 —— 只寫「3副露」等於把讀到的東西丟掉。"""
+        threats = assess(["3m"], self._dyeing()).threats
+        assert [(x.seat, x.label) for x in threats] == [(2, "3副露 染萬子")]
+
+    def test_it_does_not_change_the_level(self) -> None:
+        """**這一條是界線。**
+
+        染手讀牌是估計:三組同色萬子的人仍然可以做斷么九或對對和,那時他的
+        待牌可以在任何花色 —— 實測也只有 81.3% 落在同色,不是 100%。等級是
+        排除法數出來的,估計混進去就會出現「非常危險」配著「還有 2 型」。
+        """
+        assert _danger(self._dyeing(), "3m").level is _danger(_table(), "3m").level
+
+    def test_off_suit_sorts_ahead_of_the_dyed_suit(self) -> None:
+        """等級相同時,把他色排到前面 —— 這才是量到的那 15x 真正的用處。
+
+        系統原本只會說「3 副露,全場危險」;現在它能把另外兩色推到該打的
+        那一端,而不是只會多喊幾聲危險。
+        """
+        order = [t.tile for t in assess(["3m", "3p"], self._dyeing()).tiles]
+        assert order.index("3p") < order.index("3m")
+
+    def test_without_a_read_the_order_falls_back_to_the_tile(self) -> None:
+        """對照組:沒有人在染的時候,同一對牌的順序由原本的規則決定。"""
+        order = [t.tile for t in assess(["3m", "3p"], _table()).tiles]
+        assert order == ["3m", "3p"]
+
+    def test_the_flag_only_counts_threats(self) -> None:
+        """自己染沒有意義 —— 不會放銃給自己。"""
+        assert not any(t.suit_flagged for t in assess(["3m"], self._dyeing(seat=0)).tiles)

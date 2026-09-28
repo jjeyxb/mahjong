@@ -12,8 +12,10 @@ from mia.mjai.tiles import (
     is_red_five,
     mjai_to_ms,
     ms_to_mjai,
+    normalize_honor,
     normalize_red,
     sort_key,
+    suit_name,
     tile_name,
 )
 
@@ -129,3 +131,38 @@ class TestTileName:
         """這是顯示用的,不該讓 UI 因為多了一種牌就崩掉。"""
         assert tile_name("99z") == "99z"
         assert tile_name("?") == "?"
+
+
+class TestNormalizeHonor:
+    """``1z`` 與 ``E`` 是同一張牌。專案裡兩種記法都會出現,比對前要統一。
+
+    **這一組是回歸測試。** 少了這一步的症狀是「那條規則靜靜地不生效」——
+    ``"1z" in {"E", ...}`` 永遠是 False,不拋例外、不寫日誌。實測
+    ``Player`` 的役牌門檻就是這樣被吃掉的,而當時的測試全部照樣通過。
+    """
+
+    def test_the_numeric_form_becomes_the_letter_form(self) -> None:
+        assert [normalize_honor(f"{i + 1}z") for i in range(7)] == list(HONOR_ORDER)
+
+    def test_the_letter_form_is_already_canonical(self) -> None:
+        assert [normalize_honor(code) for code in HONOR_ORDER] == list(HONOR_ORDER)
+
+    def test_number_tiles_pass_through(self) -> None:
+        assert normalize_honor("3m") == "3m"
+        assert normalize_honor("5pr") == "5pr"
+
+    def test_an_unrecognised_tile_comes_back_unchanged(self) -> None:
+        """理由同 ``tile_name``:比對用的東西不該讓上層因為多一種牌就崩掉。"""
+        assert normalize_honor("99z") == "99z"
+        assert normalize_honor(UNKNOWN) == UNKNOWN
+
+
+class TestSuitName:
+    """花色的中文名。與 ``tile_name`` 讓數牌維持 ``3m`` 不衝突 ——
+    個別的牌要對得上畫面,句子裡的花色要讀得懂。"""
+
+    def test_the_three_suits(self) -> None:
+        assert [suit_name(s) for s in ("m", "p", "s")] == ["萬子", "筒子", "索子"]
+
+    def test_anything_else_comes_back_unchanged(self) -> None:
+        assert suit_name("z") == "z"
