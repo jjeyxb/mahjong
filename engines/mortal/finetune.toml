@@ -35,11 +35,17 @@ enable_amp = false
 enable_compile = false
 
 # 上游預設 batch_size=512,那是給資料中心的卡。resnet 192x40 在 16GB 上
-# 開太大會 OOM,而 OOM 發生在跑了一陣子之後最浪費時間。先小再往上加。
-batch_size = 16
+# 開太大會 OOM,而 OOM 發生在跑了一陣子之後最浪費時間。
+#
+# 2026-09-28 第一趟用 16 只是為了幾分鐘內知道管線通不通,實測約 6 batch/s。
+# 64 是往上試的下一格:顯存吃約四倍,而 OOM 會在跑了一陣子之後才發生 ——
+# **真的要放大就先用 --limit 小的語料跑個幾百步確認不 OOM**,再開長跑。
+# `opt_step_every` 是梯度累積:顯存不夠就把 batch_size 降回去、這個調高,
+# 等效批量不變。
+batch_size = 64
 opt_step_every = 1
 
-save_every = 20
+save_every = 200
 # test_every 會觸發自我對弈評測(test_play.games 場),很貴。
 # 設得遠遠大於這次要跑的步數 = 這趟不做評測。
 # train.py 有 `assert test_every % save_every == 0`,所以要是 save_every 的倍數。
@@ -64,6 +70,9 @@ enable_compile = false
 state_file = 'F:/mahjong/models/mortal_298k.pth'
 
 [dataset]
+# 這裡刻意**不**排除 GRP 的驗證月份(9 月)。GRP 是拿來算 reward 的前置模型,
+# 主模型微調與它不是同一個評測;主模型要不要留 held-out 由 [test_play]
+# 的自我對弈回答,那是對戰結果而不是資料切分。
 globs = ['F:/mahjong/data/datasets/tenhou/mjai/**/*.json.gz']
 file_index = 'F:/mahjong/data/datasets/finetune_file_index.pth'
 file_batch_size = 20
@@ -73,6 +82,16 @@ num_workers = 1
 # **風格微調的關鍵旋鈕就是這一個。** train.py 讀入名單 → 只保留有這些玩家
 # 參與的對局 → 把 player_names 傳給 GameplayLoader,使**只有這些玩家的決策
 # 成為訓練樣本**。空的代表「全部玩家」,也就是還沒分群之前的樣子。
+#
+# 名單由 `tools/style_profile.py` 產出(一行一個名字,train.py 用
+# `filtered_trimmed_lines` 讀,空行會被濾掉)。**一次只填一群** ——
+# 填兩群等於把兩種風格混在一起訓,結果是兩者的平均,那正是我們想避免的東西。
+#
+#   player_names_files = ['F:/mahjong/data/datasets/styles/style_0.txt']
+#
+# ⚠ 換了名單**一定要刪掉下面那個 `file_index`**。它快取的是「有這些玩家參與的
+# 檔案清單」,換群之後沿用舊清單不會有任何提示 —— 訓練會照舊跑、日誌會照樣
+# 印步數,而你訓的是上一群的人。
 player_names_files = []
 num_epochs = 1
 enable_augmentation = false
