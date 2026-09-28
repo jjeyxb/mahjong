@@ -150,6 +150,23 @@ class Game:
         """
         return "南" in self.rule
 
+    @property
+    def is_houou(self) -> bool:
+        """鳳凰卓。規則字串裡的 ``鳳`` 就是卓等,其他等級寫的是 般 / 上 / 特。
+
+        **這條檢查原本沒有,而少了它是個會安靜出錯的洞。** 原本的過濾只看
+        「四人」與「南場」,能拿到純鳳凰卓語料**純粹因為 ``scc`` 這個前綴剛好
+        只有鳳凰卓** —— 那是個沒有寫下來、也沒有被驗證的隱含相依。哪天天鳳把
+        ``scc`` 的涵蓋範圍改了,或有人把前綴改成 ``scb``,較低等級的對局就會
+        默默混進語料:每一場都轉得成功、`validate_logs` 全過,而訓練出來的
+        「風格」是一鍋不同水準的平均。
+
+        實測(2026-09-28,4142 場已下載的牌譜)全部是 ``rule.disp = 鳳南喰赤``、
+        ``lobby = 0``,段位 七段 57.8% / 八段 30.7% / 九段 9.9% / 十段 1.7%,
+        Rate 最低 2000 —— 那正是鳳凰卓的入場條件(七段以上且 R2000 以上)。
+        """
+        return "鳳" in self.rule
+
 
 def fetch(url: str, *, timeout: float = 30.0) -> bytes:
     request = urllib.request.Request(url, headers=HEADERS)
@@ -422,13 +439,18 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("小時檔 {} 份(最近 {} 天)", len(archives), args.days)
     games = collect_games(archives, args.delay, args.out / "index")
     total = len(games)
-    keep = [g for g in games if g.is_four_player and g.is_hanchan]
+    keep = [g for g in games if g.is_four_player and g.is_hanchan and g.is_houou]
     logger.info(
-        "索引到 {} 場,其中四人半莊 {} 場(濾掉三人與東風戰 {} 場)",
+        "索引到 {} 場,其中四人半莊鳳凰卓 {} 場(濾掉 {} 場)",
         total,
         len(keep),
         total - len(keep),
     )
+    # 把留下來的規則字串逐一列出來。**這是刻意的冗長** —— 語料的「品質」就是
+    # 這一行,而它原本只存在於「scc 應該是鳳凰卓」這個沒被驗證的假設裡。
+    # 印出來之後,混進別的卓等或別的規則會當場看得見,不必等訓練完覺得怪。
+    for rule, count in Counter(g.rule for g in keep).most_common():
+        logger.info("  規則 {!r}:{} 場", rule, count)
     if not keep:
         raise SystemExit("沒有符合條件的對局")
 
