@@ -49,9 +49,17 @@ from mia.mjai.events import (
     StartGame,
     StartKyoku,
 )
-from mia.mjai.tiles import normalize_red
+from mia.mjai.tiles import normalize_honor, normalize_red
 
-__all__ = ["MELD_THREAT", "SEATS", "Player", "TableTracker"]
+__all__ = [
+    "DRAGONS",
+    "MELD_THREAT",
+    "MELD_THREAT_WITH_YAKUHAI",
+    "SEATS",
+    "SUIT_READ_MELDS",
+    "Player",
+    "TableTracker",
+]
 
 #: 四人麻將。三麻不在範圍內 —— 北拔きドラ 與座位數都不一樣。
 SEATS = 4
@@ -69,7 +77,70 @@ COPIES = 4
 #: 這**是估計不是推論**,與這個模組其他部分不同。所以它只影響「要不要把他
 #: 當成威脅」(標題、排序、對誰),不影響危險度等級 —— 等級仍然只由「還剩
 #: 幾種待牌型」決定,那條鏈不能斷。
+#:
+#: 2026-09-28 拿 14,544 場鳳凰卓牌譜量過,這個門檻**漏掉一個威脅度相同的狀態**,
+#: 見 :data:`MELD_THREAT_WITH_YAKUHAI`。
 MELD_THREAT = 3
+
+#: 有役牌副露時,幾組就算威脅。
+#:
+#: 原本只有 :data:`MELD_THREAT` 這個純計數門檻。14,544 場鳳凰卓、每一個捨牌
+#: 時點對每一家各算一筆(共約 400 萬筆)量出來的條件放銃率:
+#:
+#: ====================  ==========  ===============
+#: 對手狀態              放銃率      95% CI
+#: ====================  ==========  ===============
+#: 1 副露、無役牌        0.811%      ——
+#: 1 副露、**有**役牌    0.750%      ——
+#: 2 副露、無役牌        1.257%      ——
+#: 2 副露、**有**役牌    1.488%      [1.459, 1.518]
+#: 3 副露、無役牌        1.465%      [1.358, 1.579]
+#: ====================  ==========  ===============
+#:
+#: **「2 副露 + 役牌」與「3 副露無役牌」的信賴區間重疊** —— 威脅度是同一級,
+#: 但舊門檻只認得後者。實測牌譜裡我們自己那次放銃,和牌的人正是 2 副露
+#: (``docs/decisions.md`` 未解 #15)。那不是運氣不好,是門檻有洞。
+#:
+#: 注意**一副露有役牌反而是 0.93x**(0.750% 對 0.811%,樣本各 125 萬與 150 萬,
+#: 不是雜訊)。所以「碰了役牌就有役、門檻該掉到一副露」是錯的 —— 單獨一個
+#: 役牌碰多半是慢手的起手,不是聽牌訊號。門檻只降到 2,不再往下。
+MELD_THREAT_WITH_YAKUHAI = 2
+
+#: 三元牌。役牌永遠包含這三種,與場風自風無關。
+DRAGONS = ("P", "F", "C")
+
+#: 風牌依座位順序。``_WINDS[(座位 - 莊家) % 4]`` 就是那一家的自風。
+_WINDS = ("E", "S", "W", "N")
+
+#: 總副露幾組之後,「數牌全同色」才算染手(混一色 / 清一色)的形狀。
+#:
+#: 看的是**總組數**,不是同色的數牌組數 —— 這是量出來的,不是想出來的。
+#: 14,544 場裡取**自摸**和牌(和牌張是從牌山摸的,沒有被任何人挑選過,
+#: 所以是對他待牌組成的無偏估計),看和牌張落在他集中的那個花色的比例,
+#: 虛無假設是 33.3%:
+#:
+#: =========================  ======  ============  ================
+#: 對手副露形狀               樣本    同色佔數牌    95% CI
+#: =========================  ======  ============  ================
+#: 1 組數牌(無字牌)         5192    **25.4%**     [24.2, 26.6]
+#: 1 組數牌 + 1 組字牌        ——      31.2%         ——
+#: 2 組同色(無字牌)         715     36.8%         [33.3, 40.4]
+#: 2 組同色 + 1 組字牌        436     **50.5%**     [45.8, 55.1]
+#: 1 組數牌 + 2 組字牌        ——      **50.3%**     ——
+#: 3 組同色                   91      **81.3%**     [72.1, 88.0]
+#: =========================  ======  ============  ================
+#:
+#: 兩件事跟直覺不同:
+#:
+#: 1. **單獨一組副露是負訊號**(25.4%,信賴區間完全不碰 33.3%)。吃一組萬子
+#:    之後他的待牌**更不可能**在萬子 —— 那個面子已經做完了,剩下的形在別處。
+#: 2. **帶訊號的是字牌組,不是同色的數牌組數。** 2 組同色沒字牌只有 36.8%,
+#:    加一組字牌跳到 50.5%;而 1 組數牌配 2 組字牌同樣是 50.3%。混一色允許
+#:    字牌面子,所以字牌組與數牌組在這裡是等價的。
+#:
+#: 所以門檻是「總副露 ≥ 3 且數牌全同色」。3 組同色(81.3%)更強,但沒有另外
+#: 分級 —— 兩種都遠高於基準,而多一級只會讓畫面多一種要解釋的狀態。
+SUIT_READ_MELDS = 3
 
 
 @dataclass(slots=True)
@@ -88,6 +159,10 @@ class Player:
         reach_turn: 立直宣言牌是他的第幾張捨牌。``None`` 表示還沒立直。
         safe: 對這一家**確定安全**的牌。見模組說明 —— 這是振聽規則保證的,
             不是估計出來的。
+        yakuhai: 對**這一家**來說算役牌的字牌:三元牌 + 場風 + 他的自風。
+            自風要知道莊家是誰才算得出來,所以由 :meth:`TableTracker._reset`
+            在每一局開始時填進來。預設只有三元牌 —— 那是在沒收到
+            ``start_kyoku`` 時最保守的值(少算風牌會**低估**威脅,不會高估)。
 
     Note:
         **沒有實作同巡振聽。** 一家放過一次榮和機會之後,到他下次摸牌為止是
@@ -102,6 +177,7 @@ class Player:
     reach: bool = False
     reach_turn: int | None = None
     safe: set[str] = field(default_factory=set)
+    yakuhai: frozenset[str] = frozenset(DRAGONS)
 
     @property
     def melded(self) -> int:
@@ -109,10 +185,46 @@ class Player:
         return len(self.melds)
 
     @property
-    def is_threat(self) -> bool:
-        """需不需要防他:立直,或副露到 :data:`MELD_THREAT` 組。
+    def has_yakuhai(self) -> bool:
+        """副露裡有沒有役牌。有就代表他**已經有役**,隨時可以聽牌。
 
-        立直是封包直接宣告的,毫無歧義;三副露是估計(見 :data:`MELD_THREAT`)。
+        這是門檻降到 :data:`MELD_THREAT_WITH_YAKUHAI` 的依據,而那個門檻是
+        量出來的,不是推的 —— 數字見該常數的說明。
+
+        Note:
+            比對前一定要過 :func:`~mia.mjai.tiles.normalize_honor`。副露記下來
+            的可能是 ``1z`` 也可能是 ``E``(看事件來源),而 :attr:`yakuhai`
+            存的是字母式。少了這一步門檻會**靜靜地不生效**。
+        """
+        return any(normalize_honor(m[0]) in self.yakuhai for m in self.melds)
+
+    @property
+    def suit_read(self) -> str | None:
+        """他的副露像不像染手,是的話回那個花色(``m`` / ``p`` / ``s``)。
+
+        條件是「總副露 ≥ :data:`SUIT_READ_MELDS` 組,且數牌副露全在同一色」。
+        字牌組不破壞條件 —— 混一色本來就允許字牌面子,而實測**帶訊號的正是
+        字牌組**(見 :data:`SUIT_READ_MELDS`)。
+
+        Note:
+            這**是估計不是推論**。三組同色萬子的人仍然可以做斷么九或對對和,
+            那時他的待牌可以在任何花色 —— 實測也確實只有 81.3% 落在同色,
+            不是 100%。所以它跟 :data:`MELD_THREAT` 一樣只影響「怎麼描述他、
+            怎麼排序」,**不影響危險度等級**。
+        """
+        if len(self.melds) < SUIT_READ_MELDS:
+            return None
+        suits = {s for m in self.melds if (s := _suit_of(m[0])) is not None}
+        if len(suits) != 1:
+            return None
+        return next(iter(suits))
+
+    @property
+    def is_threat(self) -> bool:
+        """需不需要防他:立直、副露到 :data:`MELD_THREAT` 組,或
+        :data:`MELD_THREAT_WITH_YAKUHAI` 組而其中有役牌。
+
+        立直是封包直接宣告的,毫無歧義;後兩者是估計(見那兩個常數)。
         兩者混在同一個屬性裡是刻意的 —— 它回答的是「防不防他」,而那個答案
         兩種情況都是要。**「安全」兩個字的意思不受影響**:那是由振聽與排除法
         決定的,與他聽不聽牌無關。
@@ -122,7 +234,15 @@ class Player:
             都安全,那份安全牌一路累積。三副露的人拿不到這個扣抵,所以到中盤
             之後他每一張牌的危險度通常**高於**立直家,不只是持平。
         """
-        return self.reach or self.melded >= MELD_THREAT
+        if self.reach or self.melded >= MELD_THREAT:
+            return True
+        return self.melded >= MELD_THREAT_WITH_YAKUHAI and self.has_yakuhai
+
+
+def _suit_of(tile: str) -> str | None:
+    """``3m`` → ``"m"``。字牌回 ``None``(它不屬於任何數牌花色)。"""
+    suit = tile[-1]
+    return suit if suit in ("m", "p", "s") else None
 
 
 @dataclass(slots=True)
@@ -134,11 +254,15 @@ class TableTracker:
         players: 四家,索引即 ``actor``。
         dora_markers: 寶牌指示牌(不是寶牌本身)。它們也是**看得見的牌**,
             要算進 :meth:`visible`。
+        bakaze: 場風。``start_kyoku`` 之前是 ``None``。
+        oya: 這一局的莊家。``start_kyoku`` 之前是 ``None``。
     """
 
     seat: int | None = None
     players: list[Player] = field(default_factory=lambda: [Player() for _ in range(SEATS)])
     dora_markers: list[str] = field(default_factory=list)
+    bakaze: str | None = None
+    oya: int | None = None
 
     # ------------------------------------------------------------------ 更新
 
@@ -173,8 +297,18 @@ class TableTracker:
 
     def _reset(self, event: StartKyoku) -> None:
         """新的一局。**所有東西都要清掉** —— 上一局的安全牌在這一局毫無意義,
-        而留著不會有任何症狀,只會安靜地把危險牌說成安全。"""
-        self.players = [Player() for _ in range(SEATS)]
+        而留著不會有任何症狀,只會安靜地把危險牌說成安全。
+
+        順便發役牌:自風是座位相對莊家算出來的,每一局莊家會換,所以這件事
+        只能在這裡做。場風與莊家也要留著,因為 :attr:`Player.yakuhai` 是每家
+        一份而不是全桌一份 —— 同一張東,對莊家是役牌,對西家不是。
+        """
+        self.bakaze = event.bakaze
+        self.oya = event.oya
+        self.players = [
+            Player(yakuhai=frozenset((*DRAGONS, event.bakaze, _WINDS[(seat - event.oya) % SEATS])))
+            for seat in range(SEATS)
+        ]
         self.dora_markers = [normalize_red(event.dora_marker)]
 
     def _discard(self, actor: int, tile: str) -> None:
