@@ -51,7 +51,8 @@ M0–M7 全部 ✅。**只剩 M8:打法風格微調** —— 它原本是整個�
 
 > 🪟 **Windows 的東西在 `windows` 分支。** M8 冒煙測試(libriichi + 298k 權重 +
 > 推論)與 ROCm(RX 9070)都過了,擷取層三個已知風險也**全部收掉** —— 過程中
-> 修掉七個只有在 Windows 上才會出現的 bug,見「在 Windows 上重建」那一節。
+> 修掉八個只有在 Windows 上才會出現的 bug(最新一個是上游 `train.py` 的
+> 編碼假設,見「M8」那一節),見「在 Windows 上重建」那一節。
 >
 > **M8 的離線訓練管線也在這個分支上打通了**(牌譜 → mjai → GRP → 微調),
 > 見「M8」那一節。
@@ -617,7 +618,9 @@ cd engines\mortal\Mortal\mortal
 $env:MORTAL_CFG="../../grp.toml"; ..\..\.venv\Scripts\python.exe -u train_grp.py
 
 # 4. 微調(先把 mortal_298k.pth 複製一份當 state_file,理由見 finetune.toml)
-$env:MORTAL_CFG="../../finetune.toml"; ..\..\.venv\Scripts\python.exe -u train.py
+#    **PYTHONUTF8=1 不能省** —— 少了它會在讀玩家名單那一行當掉,見下
+$env:MORTAL_CFG="../../finetune.toml"; $env:PYTHONUTF8="1"
+..\..\.venv\Scripts\python.exe -u train.py
 ```
 
 轉換器是 **Mortal 作者本人**寫的 `convlog`(在 `mjai-reviewer` 裡),
@@ -644,6 +647,51 @@ cargo build --release          # 一樣要先掛 MSVC 工具鏈
 > ⚠ **這只證明管線通,不是能用的模型。** 620 場對 GRP 遠遠不夠(每場被
 > 反覆看了數千次),微調也只跑 180 步。要有意義的產出,語料與步數都要
 > 放大好幾個數量級。
+
+### `player_names_files` 真的有把樣本限制住嗎 —— 驗了,三層都有
+
+這是 M8 鏈上最後一個沒驗過的機制。上一輪跑的是空名單,日誌只印
+`loaded 0 players`,那什麼都沒證明。用「副露率最高的 20%」那份 77 人名單實跑:
+
+| 層 | 證據 |
+|---|---|
+| `train.py` 讀名單 | `loaded 77 players` |
+| 檔案清單過濾 | 掃 8,495 場 → **留下 3,574 場**(42% 有這 77 人之一參與) |
+| **樣本層**(Rust) | `libriichi/src/dataset/gameplay.rs:173` |
+
+最後一層才是重點。`load_events` 會把 `start_game.names` 依名單過濾,
+**只對名單上的座位**建 `Gameplay`:
+
+```rust
+names.iter().enumerate()
+    .filter(|&(_, name)| {
+        if !self.player_names_set.is_empty() {
+            return self.player_names_set.contains(name);
+        }
+        ...
+```
+
+所以是「只有名單上那些人的決策成為訓練樣本」,不是「拿這些對局訓練」——
+後者會把同桌另外三家的決策一起學進去,風格就被稀釋掉了。
+
+### ⚠ Windows 專屬阻擋:`PYTHONUTF8=1`,少了它整個風格微調跑不起來
+
+```
+UnicodeDecodeError: 'cp950' codec can't decode byte 0xe9 in position 117
+  File "train.py", line 156, in train_epoch
+    player_names_set.update(filtered_trimmed_lines(f))
+```
+
+上游 `train.py` 第 155 行是 `with open(filename) as f:` —— **沒有指定編碼**,
+於是吃系統預設。macOS / Linux 預設 UTF-8 所以上游從來不會踩到;繁體 Windows
+預設是 **cp950**,而天鳳玩家名字是日文,當場炸。
+
+解法是啟動時加 `PYTHONUTF8=1`(Python 的 UTF-8 模式,讓 `open()` 預設 UTF-8)。
+**不要改上游的 train.py** —— Mortal 是 clone 進來的、不在版控裡,改了下次重新
+clone 就沒了,而症狀會以「莫名其妙的編碼錯誤」重新出現。
+
+注意 `PYTHONIOENCODING=utf-8` **擋不住這個** —— 它只管 stdout/stderr,不管
+`open()` 的預設編碼。
 
 ### 踩到的坑
 
@@ -752,17 +800,29 @@ Spearman-Brown 換算成全份資料的信度):
   **這是寫測試時才發現的**(正面案例當場紅掉),見
   `tests/unit/test_style_clustering.py::TestClusterIsReal`。
 
-### 剩下什麼
+### 剩下什麼 —— 順序不能換
 
-| 步驟 | 狀態 |
-|---|---|
-| 統計特徵 → 分群成數個風格 | **工具做好了**(`tools/style_profile.py`),等語料 |
-| 每群一份玩家名單 → `player_names_files` | 同上 —— `style_profile.py` 直接寫出 `style_N.txt`。機制已驗:空名單 = 全部玩家,日誌會印 `loaded 0 players` |
-| `one_vs_three` 對戰評測 | 未做 |
-| 掃 `min_q_weight` 畫取捨曲線 | 未做。權重檔裡存的實際值是 **3**(不是 `config.example.toml` 的 5) |
+| # | 步驟 | 狀態 |
+|---|---|---|
+| 1 | 語料放大到 2 萬場 | **進行中**,`--since 20260101 --focus-players 300`,約 6.7 小時 |
+| 2 | **重訓 GRP** | 等 1。現有 `grp.pth` 只看過 620 場 |
+| 3 | 重跑 `style_profile` | 等 1。每人場數上去,信度才撐得起更多軸 |
+| 4 | 對每份名單微調 | 等 2、3 |
+| 5 | `one_vs_three` 評測 | 等 4 |
+| 6 | 掃 `min_q_weight` 畫取捨曲線 | 等 5。權重檔裡存的實際值是 **3**(不是 `config.example.toml` 的 5) |
 
-這四項**都不再有技術未知數** —— 會「根本做不成」的那幾步(語料、GRP、微調)
-已經跑過了。
+**第 2 步不能跳過,也不能跟第 4 步對調。** `train.py` 在微調時會載入
+`config['grp']['state_file']` 來算每一局的 reward(見 `dataloader.py` 的
+`RewardCalculator(self.grp, ...)`)—— GRP 爛,reward 就爛,微調學到的東西
+跟著爛,而過程中**不會有任何錯誤訊息**,步數照跑、loss 照降。
+
+⚠ `models/style_call_high.pth`(298,000 → **299,400** 步)是**驗機制用的**,
+不是能用的風格模型:它是拿只看過 620 場的 GRP 算 reward 訓出來的。
+真正要用的那一份要等第 2、3 步做完之後,**從 `mortal_298k.pth` 重新複製一份**
+再訓,不要在這個上面續。
+
+這六步都不再有技術未知數 —— 會「根本做不成」的那幾步(語料、GRP、微調、
+名單過濾)都跑過了。
 
 ---
 
