@@ -8,7 +8,12 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
+import textwrap
+import time
+import uuid
+from collections.abc import Iterator
 
 import pytest
 
@@ -34,6 +39,98 @@ def _window(handle: int = 1) -> WindowInfo:
     return WindowInfo(
         handle=handle, title="t", owner="o", bounds=Rect(0, 0, 100, 100), pid=1
     )
+
+
+@pytest.fixture
+def real_window() -> Iterator[WindowInfo]:
+    """開一個真的 Win32 視窗給測試用。
+
+    用子行程而不是同行程開:Tk 的視窗必須在建立它的執行緒上跑訊息迴圈,
+    塞在 pytest 的主執行緒裡會把後面的測試一起卡住。
+    """
+    from mia.capture.windows import enable_dpi_awareness, list_windows
+
+    enable_dpi_awareness()
+    title = f"mia-test-{uuid.uuid4().hex[:8]}"
+    source = textwrap.dedent(f"""
+        import ctypes, tkinter as tk
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+        root = tk.Tk()
+        root.title({title!r})
+        root.geometry("400x300+80+80")
+        root.after(30_000, root.destroy)   # 保險:測試掛掉也不會留下孤兒視窗
+        root.mainloop()
+    """)
+    process = subprocess.Popen([sys.executable, "-c", source])
+    try:
+        deadline = time.monotonic() + 15.0
+        found = None
+        while found is None and time.monotonic() < deadline:
+            found = next((w for w in list_windows() if w.title == title), None)
+            if found is None:
+                time.sleep(0.2)
+        if found is None:
+            pytest.skip("開不出測試視窗(無桌面 session?)")
+        yield found
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
+
+
+class TestMinimized:
+    """視窗被最小化。
+
+    **這個情境原本會安靜地出錯**,是 2026-09-28 跑 ``tools/occlusion_probe.py``
+    時順手挖出來的。原本的程式碼以為「最小化」會被 ``width <= 0`` 那道檢查擋下,
+    實際上不會:DWM 對最小化的視窗回報的是一個**正數**的小矩形,PrintWindow
+    也回傳成功,於是呼叫端拿到「擷取成功」加一張 183x26 的凍結縮圖。
+
+    凍結的畫面是最糟的失敗形式 —— 不報錯、看起來合法,辨識層會照著過期的
+    手牌一路算下去。
+    """
+
+    def test_dwm_reports_a_positive_size_for_a_minimized_window(self, real_window) -> None:
+        """釘住那個反直覺的作業系統行為本身。
+
+        這條測試在講「為什麼不能只靠尺寸檢查」。哪天 Windows 改成回報 0,
+        這條會紅 —— 那時候就知道 ``IsIconic`` 那道檢查可以簡化了。
+        """
+        import win32con
+        import win32gui
+
+        from mia.capture.windows import _extended_frame_bounds
+
+        win32gui.ShowWindow(real_window.handle, win32con.SW_MINIMIZE)
+        time.sleep(1.0)
+
+        bounds = _extended_frame_bounds(real_window.handle)
+        assert win32gui.IsIconic(real_window.handle)
+        assert win32gui.IsWindowVisible(real_window.handle), "最小化的視窗仍算「可見」"
+        assert bounds.width > 0 and bounds.height > 0, "尺寸檢查攔不住最小化"
+
+    def test_capturing_a_minimized_window_fails_cleanly(self, backend, real_window) -> None:
+        import win32con
+        import win32gui
+
+        win32gui.ShowWindow(real_window.handle, win32con.SW_MINIMIZE)
+        time.sleep(1.0)
+
+        with pytest.raises(CaptureFailedError, match="最小化"):
+            backend.capture(real_window)
+
+    def test_capturing_works_again_after_restore(self, backend, real_window) -> None:
+        """失敗必須是暫時的 —— VisionWorker 靠重試接回來。"""
+        import win32con
+        import win32gui
+
+        win32gui.ShowWindow(real_window.handle, win32con.SW_MINIMIZE)
+        time.sleep(1.0)
+        win32gui.ShowWindow(real_window.handle, win32con.SW_RESTORE)
+        time.sleep(1.0)
+
+        frame = backend.capture(real_window)
+        assert frame.image.shape[0] > 100
+        assert frame.image.shape[1] > 100
 
 
 class TestDpiScale:

@@ -244,7 +244,7 @@ python tools/gt.py inspect data/ws.jsonl --actions --mjai-out data/g1.mjai.jsonl
 | # | 內容 | 狀態 |
 |---|---|---|
 | M0 | 專案骨架、設定載入、日誌 | ✅ 完成 |
-| M1 | 擷取層雙平台 + 校正 | ✅ macOS 完成並實機驗證;Windows 待驗證 |
+| M1 | 擷取層雙平台 + 校正 | ✅ 兩個平台都實機驗證完畢(Windows 見下方「M1 Windows 實測」) |
 | M2 | 封包擷取 → MJAI 事件流 + recorder | ✅ 已用真實對局驗證;MITM 兩模式已實作但未實測 |
 | M3 | **功能 1**:手牌 CV | ✅ 校正穩定化、手牌定位、牌面分類皆完成 |
 | M3-1b | 準確率評測工具鏈 | ✅ 完成 —— 素材已錄、數字已量,**每張牌正確 97.1%、整手正確 88.0%**,見下方「M3-1b 實測」 |
@@ -369,7 +369,7 @@ release** —— 兩處都沒有 `grp.pth`。
 
 | # | 問題 | 對策 | 狀態 |
 |---|---|---|---|
-| 1 | 全螢幕擷取會把自己的 Overlay 拍進去 | 主路徑用**單視窗擷取**：macOS `CGWindowListCreateImage(windowID)`、Windows `PrintWindow` + `PW_RENDERFULLCONTENT` | ✅ macOS 已解決（見下方實測） |
+| 1 | 全螢幕擷取會把自己的 Overlay 拍進去 | 主路徑用**單視窗擷取**：macOS `CGWindowListCreateImage(windowID)`、Windows `PrintWindow` + `PW_RENDERFULLCONTENT` | ✅ 兩個平台都解決了（見下方兩張實測表） |
 | 2 | macOS Retina 邏輯座標 ≠ 像素座標 | ROI 一律存成相對牌桌矩形的 0~1 正規化座標，執行期再乘實際像素尺寸 | ✅ 已實作 |
 | 3 | 視窗擷取含 OS 標題列 / 瀏覽器工具列 | 多輪邊緣剝除：從四邊往內剝「整條顏色一致」的帶狀區域 | ✅ 已實作，Chromium 上也正確 |
 | 4 | 單幀校正是啟發式，會被動畫與立繪干擾（216 幀產生 21 種 `table_rect`，16% 明顯錯誤） | `StableCalibrator`：多幀取樣 → 丟掉離譜候選 → 逐分量中位數 | ✅ 已修，尚未對真實錄影複驗 |
@@ -386,6 +386,19 @@ release** —— 兩處都沒有 `grp.pth`。
 | mss fallback | 只回傳邏輯解析度 1512×870（像素少一半），確定僅作備援 |
 
 實測期間修掉的三個真實缺陷詳見 [docs/decisions.md](docs/decisions.md) 第四節。
+
+### M1 Windows 實機實測（RX 9070 · 主螢幕 2560×1440 @125% · 副螢幕 1920×1080 @100%）
+
+| 項目 | 結果 |
+|---|---|
+| `PrintWindow` + `PW_RENDERFULLCONTENT` 對硬體加速視窗 | **正常**，不是全黑（拿正在播影片的 Chrome 測，mean=111、std=58） |
+| **視窗被遮擋時** | **仍可正確擷取活著的內容** —— 螢幕上覆蓋率實測 100%（使用者眼裡是一塊純色）的同時，擷取到的畫面仍在持續變化。全遮、半遮皆同 |
+| **視窗被最小化時** | **擷取會明確失敗**（`CaptureFailedError`），還原後自動接回。⚠ 修之前是「回傳成功 + 一張 183×26 的凍結縮圖」，不報錯 |
+| 高 DPI | `Frame.scale` 回報螢幕 DPI 縮放、`bounds` 回報邏輯座標。混用兩種「邏輯像素」原本讓畫布判定差 404px |
+
+驗證工具是 [tools/occlusion_probe.py](tools/occlusion_probe.py)（`--self-test` 全自動）。
+它量的不是「抓不抓得到」，而是**抓到的是不是活的** —— 遮擋若讓瀏覽器停掉合成，
+擷取不會報錯也不會給全黑，而是給一張看起來完全正常但過期的畫面，那是最難查的失敗。
 
 ### M2 實測與設計決策
 
