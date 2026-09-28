@@ -25,8 +25,8 @@
 version = 4
 online = false          # 離線訓練(CQL),不是自我對弈
 
-state_file = 'F:/mahjong/models/style_call_high.pth'
-best_state_file = 'F:/mahjong/models/style_call_high_best.pth'
+state_file = 'F:/mahjong/models/style_reach_high.pth'
+best_state_file = 'F:/mahjong/models/style_reach_high_best.pth'
 tensorboard_dir = 'F:/mahjong/data/datasets/finetune_log'
 
 device = 'cuda:0'
@@ -85,7 +85,15 @@ globs = ['F:/mahjong/data/datasets/tenhou/mjai/**/*.json.gz']
 file_index = 'F:/mahjong/data/datasets/finetune_file_index.pth'
 file_batch_size = 20
 reserve_ratio = 0.0
-num_workers = 1
+# 0 = 在主行程裡載資料,不開 worker 子行程。
+#
+# 2026-09-29 用 num_workers=1 跑到第 29,800 步時,**worker 子行程無聲死掉**:
+# 輸出檔沒有 traceback、記憶體沒爆(31.9GB 總量還剩 10.6GB)、Windows 事件
+# 記錄乾淨,而主行程活著、單核空轉、只剩 1 個執行緒,在等一個永遠不會來的
+# 批次。那是最糟的一種失敗 —— 不報錯、不結束,會一路轉到天亮。
+#
+# 在主行程載會慢一些,但整晚空轉的代價更大。
+num_workers = 0
 
 # **風格微調的關鍵旋鈕就是這一個。** train.py 讀入名單 → 只保留有這些玩家
 # 參與的對局 → 把 player_names 傳給 GameplayLoader,使**只有這些玩家的決策
@@ -111,7 +119,7 @@ num_workers = 1
 # ⚠ **放銃率不能用**,雖然它信度 0.679 看起來夠。它兩端的平均順位差 0.113,
 # 那是**強度不是風格** —— 拿它選人會微調出「比較強的」與「比較弱的」Mortal。
 # 對照:那次失敗微調量到的順位差是 0.057,而這條軸是它的兩倍。
-player_names_files = ['F:/mahjong/data/datasets/styles/call_rate/副露率_high.txt']
+player_names_files = ['F:/mahjong/data/datasets/styles/reach_rate/立直率_high.txt']
 num_epochs = 1
 enable_augmentation = false
 augmented_first = false
