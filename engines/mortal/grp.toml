@@ -30,23 +30,33 @@ device = 'cuda:0'
 enable_cudnn_benchmark = false
 tensorboard_dir = 'F:/mahjong/data/datasets/grp_log'
 
-# 上游預設 batch_size=512 / save_every=2000 / val_steps=400,那是配著
-# 數十萬場牌譜的。這裡是「先用少量資料打通整條管線」的設定,調小是為了
-# 幾分鐘內就能知道管線通不通,**不是**能產出堪用權重的設定。
-batch_size = 64
-save_every = 200
-val_steps = 50
+# 已經改回上游預設 —— 語料放大之後這些才是對的。
+#
+# 2026-09-28 第一趟(620 場)用的是 batch_size=64 / save_every=200 /
+# val_steps=50,那是為了「幾分鐘內知道管線通不通」而故意調小的,
+# **不是**能產出堪用權重的設定。要再跑一次那種快速驗證就把這三個值換回去。
+batch_size = 512
+save_every = 2000
+val_steps = 400
 
 [grp.dataset]
 # 依日期分層,所以 train / val 用 glob 就切得開 —— 這也是
 # tools/fetch_tenhou.py 把輸出寫成 <YYYY>/<MM>/<DD>/ 的理由。
-# **val 要用不同日期**:同一天的對局玩家高度重疊,切在同一天等於自己考自己。
+#
+# **切在月份而不是日期,而且 val 是比較晚的那一段。** 兩個理由:
+#
+# 1. 同一天的對局玩家高度重疊,切在同一天等於自己考自己。
+# 2. 更重要的是**方向**:用 1~8 月訓練、9 月驗證,問的是「學到的東西對
+#    後來的對局還成不成立」。反過來(或隨機切)問的只是「有沒有背下這批人」,
+#    而那個問題在這裡不重要 —— 真正要用的時候,對手是還沒發生的對局。
+#
+# 語料來源對得上這個切法:`--since 20260101` 走日檔(到 2026-09-18),
+# `--days 10` 走小時檔(2026-09-19 之後)。
 train_globs = [
-    'F:/mahjong/data/datasets/tenhou/mjai/2026/09/25/**/*.json.gz',
-    'F:/mahjong/data/datasets/tenhou/mjai/2026/09/26/**/*.json.gz',
+    'F:/mahjong/data/datasets/tenhou/mjai/2026/0[1-8]/**/*.json.gz',
 ]
 val_globs = [
-    'F:/mahjong/data/datasets/tenhou/mjai/2026/09/27/**/*.json.gz',
+    'F:/mahjong/data/datasets/tenhou/mjai/2026/09/**/*.json.gz',
 ]
 # 檔案清單的快取。**換了 train_globs 要記得刪掉它**,否則會沿用舊清單
 # 而且不會有任何提示。
