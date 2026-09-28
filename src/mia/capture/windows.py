@@ -10,9 +10,23 @@
    ``DwmGetWindowAttribute`` 不準(它很準),而是**兩種「邏輯像素」被混為
    一談**:視窗座標(宣告 DPI aware 之後等同實體像素)與瀏覽器的 CSS 像素。
    詳見 :meth:`WindowsCaptureBackend.capture` 裡的長註解。
-3. 遊戲視窗被遮擋時能不能抓到完整內容 —— **仍未驗證**。自動化 session 搶不到
-   前景視窗(被 Windows 的 foreground lock 擋下),排不出真正的遮擋場景。
-   要驗需要真人坐在機器前手動切換視窗。
+3. 遊戲視窗被遮擋時能不能抓到完整內容 —— **2026-09-28 驗過了,沒問題**。
+   這裡原本寫的理由是「自動化 session 搶不到前景視窗」,那個理由是錯的:
+   要製造遮擋根本不需要把別人搶到前景,自己開一個 ``WS_EX_TOPMOST`` 的視窗
+   蓋上去就好,那條路不受 foreground lock 管。用 mss 抓螢幕確認覆蓋率 100%
+   (使用者眼裡就是一塊純色)的同時,PrintWindow 拿到的仍是持續變化的內容,
+   全遮與半遮都一樣。見 ``tools/occlusion_probe.py``。
+
+   兩點限制講清楚:
+
+   * 這證明的是**擷取獨立於螢幕上的疊放**。實測中 Chrome 的
+     ``document.visibilityState`` 始終是 ``visible`` —— 它從頭到尾沒發現自己
+     被蓋住(連拿掉 Playwright 那三個保護旗標也一樣),所以「Chrome 主動把
+     被遮擋的視窗當成隱藏、停掉合成」這個狀態沒有被走到。它在未來的 Chrome
+     版本上有可能被走到,屆時的症狀與解法寫在 ``occlusion_probe.py`` 的
+     ``judge()`` 裡。
+   * **最小化是另一回事,而且原本會出事。** 見 :meth:`WindowsCaptureBackend.capture`
+     裡的 ``IsIconic`` 那段。
 
 備案
 ----
@@ -283,13 +297,30 @@ class WindowsCaptureBackend(CaptureBackend):
         if not win32gui.IsWindow(hwnd):
             raise CaptureFailedError(f"視窗已不存在: {window}")
 
+        # 最小化必須在這裡明確攔下來,**不能指望下面那道尺寸檢查**。
+        # 實測(2026-09-28,tools/occlusion_probe.py 順手挖出來的):
+        #
+        #   IsWindowVisible  → 1      ← 還是「可見」,list_windows 不會濾掉它
+        #   GetWindowRect    → (-32000, -32000, -31801, -31966)
+        #   DWM 擴展邊界      → 183x26 @(-31992,-32000)      ← **正數**
+        #
+        # 於是 `width <= 0` 永遠不成立,PrintWindow 還**回傳成功**,拿到的是
+        # 一張 183x26 的縮圖,而且每一幀都一模一樣。呼叫端收到的是「擷取成功」
+        # 外加一張過期畫面 —— 那比拋例外糟得多:辨識層會拿著凍結的畫面繼續算,
+        # 狀態列上不會有任何異常,錯只會出現在建議裡。
+        #
+        # 轉成 CaptureFailedError,VisionWorker 走的就是既有的「失敗幾次就重新
+        # 找視窗」,使用者把視窗還原之後會自己接回來。
+        if win32gui.IsIconic(hwnd):
+            raise CaptureFailedError(f"視窗已最小化,沒有可擷取的內容: {window}")
+
         # 用當下的邊界而非快取的 window.bounds —— 使用者可能剛剛縮放了視窗。
         # 這裡拿到的是**實體像素**(本行程宣告了 per-monitor DPI aware),
         # PrintWindow 的點陣圖必須照這個尺寸開,不能用邏輯座標。
         physical = _extended_frame_bounds(hwnd)
         width, height = physical.width, physical.height
         if width <= 0 or height <= 0:
-            raise CaptureFailedError(f"視窗尺寸無效({width}x{height}),可能已最小化: {window}")
+            raise CaptureFailedError(f"視窗尺寸無效({width}x{height}): {window}")
 
         window_dc = mfc_dc = mem_dc = bitmap = None
         try:
