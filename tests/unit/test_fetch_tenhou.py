@@ -156,18 +156,38 @@ class TestIndexCache:
 
 class TestGameFilters:
     @pytest.mark.parametrize(
-        ("rule", "four", "hanchan"),
+        ("rule", "four", "hanchan", "houou"),
         [
-            ("四鳳南喰赤－", True, True),
-            ("四鳳東喰赤－", True, False),  # 東風戰 —— Mortal 直接拒絕
-            ("三鳳南喰赤－", False, True),  # 三人麻將
-            ("四鳳南喰赤", True, True),
+            # 實測 2026-01-01/02 兩天的 scc 存檔只出現這三種規則
+            ("四鳳南喰赤－", True, True, True),
+            ("三鳳南喰赤－", False, True, True),  # 三人麻將
+            ("四鳳東喰赤速", True, False, True),  # 東風戰 —— Mortal 直接拒絕
+            # 其他卓等:scc 裡沒有,但過濾不該靠「剛好沒有」成立
+            ("四特南喰赤－", True, True, False),  # 特上卓
+            ("四上南喰赤－", True, True, False),  # 上級卓
+            ("四般南喰赤－", True, True, False),  # 一般卓
         ],
     )
-    def test_rule_string_is_read_correctly(self, rule: str, four: bool, hanchan: bool) -> None:
+    def test_rule_string_is_read_correctly(
+        self, rule: str, four: bool, hanchan: bool, houou: bool
+    ) -> None:
         game = Game(log_id="2026010100gm-00a9-0000-deadbeef", rule=rule)
         assert game.is_four_player is four
         assert game.is_hanchan is hanchan
+        assert game.is_houou is houou
+
+    def test_lower_lobbies_are_rejected_even_though_scc_has_none(self) -> None:
+        """卓等要**明確**檢查,不能靠「``scc`` 剛好只有鳳凰卓」。
+
+        原本的過濾只看四人與南場,拿到純鳳凰卓語料純粹因為前綴選對了 ——
+        那是個沒寫下來、也沒被驗證的隱含相依。天鳳改了 ``scc`` 的涵蓋範圍,
+        或有人把前綴打成 ``scb``,較低等級的對局就會默默混進語料:
+        每一場都轉得成功、``validate_logs`` 全過,而訓出來的「風格」
+        是一鍋不同水準的平均。
+        """
+        tokujou = Game(log_id="x", rule="四特南喰赤－")
+        assert tokujou.is_four_player and tokujou.is_hanchan
+        assert not tokujou.is_houou, "特上卓不該被當成鳳凰卓"
 
     def test_the_shard_comes_from_the_log_id(self) -> None:
         """分層是給 train/val 用 glob 切開用的,日期取自 ID 前 8 碼。"""
