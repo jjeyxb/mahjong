@@ -25,8 +25,8 @@
 version = 4
 online = false          # 離線訓練(CQL),不是自我對弈
 
-state_file = 'F:/mahjong/models/style_reach_low.pth'
-best_state_file = 'F:/mahjong/models/style_reach_low_best.pth'
+state_file = 'F:/mahjong/models/style_call_high_q1.pth'
+best_state_file = 'F:/mahjong/models/style_call_high_q1_best.pth'
 tensorboard_dir = 'F:/mahjong/data/datasets/finetune_log'
 
 device = 'cuda:0'
@@ -119,7 +119,7 @@ num_workers = 0
 # ⚠ **放銃率不能用**,雖然它信度 0.679 看起來夠。它兩端的平均順位差 0.113,
 # 那是**強度不是風格** —— 拿它選人會微調出「比較強的」與「比較弱的」Mortal。
 # 對照:那次失敗微調量到的順位差是 0.057,而這條軸是它的兩倍。
-player_names_files = ['F:/mahjong/data/datasets/styles/reach_rate/立直率_low.txt']
+player_names_files = ['F:/mahjong/data/datasets/styles/call_rate/副露率_high.txt']
 num_epochs = 1
 enable_augmentation = false
 augmented_first = false
@@ -137,7 +137,7 @@ num_blocks = 40
 # **這是 README 說的「風格 vs 強度」旋鈕。** 調高 = 更貼近該群玩家的實際打法
 # (風格更明顯),調低 = 更自由地往最優化跑。
 # 權重檔裡存的實際值是 3(不是 config.example.toml 的 5),先對齊它。
-min_q_weight = 3
+min_q_weight = 1
 
 [aux]
 next_rank_weight = 0.2
