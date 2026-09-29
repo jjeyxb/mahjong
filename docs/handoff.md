@@ -1289,6 +1289,72 @@ bootstrap 重抽的單位必須是**場**:同一場裡的各局是相關的(點�
 
 ---
 
+### 風格權重接上 UI(2026-09-30)
+
+**不需要寫新程式碼。** 引擎層本來就吃多份權重:`--mortal` 是 `action="append"`,
+每一份用檔名當引擎名,`EngineGroup` 並行送同一條事件流,`ViewState.engines`
+並排顯示,分歧的那幾手標 ⚠。
+
+```powershell
+# 側邊視窗 + Overlay,兩種風格並排
+python tools/ui.py --live --mortal models/style_call_high.pth --mortal models/style_call_low.pth
+
+# 不開 UI,只看文字對照(適合拿來確認權重真的載對了)
+python tools/advise.py data/live/<錄影>/ws.jsonl --no-baseline \
+    --mortal models/style_call_high.pth --mortal models/style_call_low.pth
+```
+
+實測(`data/live/20260918-102302/ws.jsonl`,4 個決策點):
+
+```
+#1  局面 dahai(actor=0 pai=7m)
+      [style_call_high] chi 7m ← 8m 9m
+    = [style_call_low]  跳過
+    真人 dahai(actor=1 pai=1s)
+```
+
+同一個局面、同一份基準模型,只差微調用的名單 —— 一個吃,一個放過。
+**這就是 0.0741 那個副露率差距在單一手牌上的樣子。**
+
+#### ⚠ 而這一手原本標不出來
+
+`GroupResult.is_unanimous` 與 `ViewState.is_unanimous` 都只比**有動作**的建議。
+一個引擎吃、另一個跳過時,答案集合裡只有「吃」一個元素 → 判定為一致。
+`advise.py` 因此印出「引擎之間一致 4/4 (100%)」,UI 也不會標 ⚠。
+
+**而「鳴或不鳴」正是副露率這條軸的全部內容。** 這個 bug 剛好讓整個功能 3
+在最該說話的地方沉默。
+
+分辨的材料一直都在:`Advice.declined`(被問了但選擇不動作)與
+`GroupResult.decisions` 早就寫好了,只是比對的時候沒用上。修法是把「跳過」
+當成一個答案放進集合裡比,兩邊一起改 —— 只改一邊的話工具列與側邊視窗會對
+同一手給出不同判斷。
+
+順帶修 `advise.py` 的一致率:真人的「跳過」在牌譜裡**看不見**(沒有人會記錄
+「我不碰」),所以要從「他接下來不是鳴牌」反推。不反推的話,選擇不鳴的引擎
+在每一個鳴牌機會都被算成與真人不一致 —— 副露率低的那份權重會被系統性低估。
+修正後上面那份錄影:`call_high` 25%、`call_low` 50%(原本兩份都是 25%)。
+
+#### 還沒做的
+
+* **設定檔裡沒有權重路徑。** 現在只能從命令列給,`config/default.yaml`
+  沒有對應欄位。要在 UI 裡切換風格而不重開程式,得先有那個。
+* **一個引擎壞掉就整場移出。** 兩份權重同時跑,記憶體是兩倍(各 130MB
+  權重 + 各自的 torch),沒實測過長時間對局。
+
+#### ⚠ 自己的評測牌譜餵不進自己的工具
+
+`data/datasets/eval_1v3/` 那些 `one_vs_three` 牌譜**不能**直接丟給
+`advise.py` / `tools/ui.py --replay`:MIA 的 `StartGame` 要求 `id`(自己坐哪),
+而那是**給某一家的事件流**才有的欄位;第三人稱的牌譜沒有 `id`,解析當場失敗,
+接著被誤判成 WebSocket 錄影,最後只說「裡面沒有事件」——
+錯誤訊息跟真正的原因一點關係都沒有。
+
+要用的話得先決定「以哪一家的視角重播」並補上 `id`。目前沒做,因為
+`data/live/` 的真實錄影本來就走得通,而那才是產品實際會遇到的輸入。
+
+---
+
 ### 剩下什麼 —— 順序不能換
 
 | # | 步驟 | 狀態 |

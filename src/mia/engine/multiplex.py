@@ -24,6 +24,10 @@ from mia.utils.logging import logger
 
 __all__ = ["EngineGroup", "GroupResult"]
 
+#: 「被問了但選擇不動作」在答案集合裡的代表。不能用 ``None`` 或空字串 ——
+#: 它要跟 ``str(action)`` 放在同一個集合裡比,得是個不可能撞名的值。
+_DECLINED = "<跳過>"
+
 
 @dataclass(frozen=True, slots=True)
 class GroupResult:
@@ -53,13 +57,19 @@ class GroupResult:
 
     @property
     def is_unanimous(self) -> bool:
-        """所有有動作的引擎是否給了同一個答案。
+        """所有**被問到的**引擎是否給了同一個答案。
 
-        少於兩個引擎有動作時為 True —— 沒有分歧可言。**分歧才是要看的東西**,
+        少於兩個引擎被問到時為 True —— 沒有分歧可言。**分歧才是要看的東西**,
         UI 應該把 False 的那幾手標出來。
+
+        ⚠ 比的是 :attr:`decisions` 而不是 :attr:`actions`,因為**「跳過」也是
+        一個答案**。只比有動作的那些,一個引擎吃、另一個跳過會被算成一致
+        (答案集合只有「吃」一個元素)—— 而「鳴或不鳴」正是副露率那條風格軸
+        上最典型的分歧。2026-09-30 實測:同一手 `style_call_high` 吃 7m、
+        `style_call_low` 跳過,舊的算法報「一致 4/4 (100%)」。
         """
-        actions = {str(a.action) for a in self.actions}
-        return len(actions) <= 1
+        answers = {str(a.action) if a.is_action else _DECLINED for a in self.decisions}
+        return len(answers) <= 1
 
     def __str__(self) -> str:
         if not self.advices:

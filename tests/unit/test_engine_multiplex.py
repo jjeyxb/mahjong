@@ -12,7 +12,7 @@ import pytest
 
 from mia.engine import Advice, EngineError, EngineGroup
 from mia.engine.multiplex import GroupResult
-from mia.mjai import Dahai, MjaiEvent, Reach, Tsumo
+from mia.mjai import Dahai, MjaiEvent, Pon, Reach, Tsumo
 
 TSUMO = Tsumo(actor=0, pai="3s")
 
@@ -25,11 +25,15 @@ class FakeEngine:
         name: str,
         action: MjaiEvent | None = None,
         *,
+        meta: dict[str, object] | None = None,
         fail_at: int | None = None,
         fail_start: bool = False,
     ) -> None:
         self._name = name
         self.action = action
+        #: 有 meta 才分得出「跳過」與「沒人在問」—— 兩者都是 action is None,
+        #: 靠合法動作數才分得開(見 mia.engine.actions.is_decision)。
+        self.meta = meta
         self.fail_at = fail_at
         self.fail_start = fail_start
         self.seen: list[MjaiEvent] = []
@@ -49,7 +53,7 @@ class FakeEngine:
         self.seen.append(event)
         if self.fail_at is not None and len(self.seen) >= self.fail_at:
             raise EngineError(f"{self._name} 崩了")
-        return Advice(self._name, self.action)
+        return Advice(self._name, self.action, self.meta)
 
     def close(self) -> None:
         self.closed = True
@@ -57,6 +61,10 @@ class FakeEngine:
 
 DAHAI_A = Dahai(actor=0, pai="1m", tsumogiri=False)
 DAHAI_B = Dahai(actor=0, pai="9p", tsumogiri=False)
+PON = Pon(actor=1, target=0, pai="N", consumed=["N", "N"])
+#: 兩個合法動作(碰 / 跳過)—— 代表遊戲真的在問。少了它,回 None 的引擎
+#: 只是「沒人在問」,那不是答案。
+ASKED: dict[str, object] = {"mask_bits": 0b11}
 
 
 class TestBroadcast:
@@ -103,6 +111,41 @@ class TestAgreement:
         result = group.react(TSUMO)
         assert result.is_unanimous
         assert result.actions == ()
+
+    def test_calling_versus_declining_is_a_disagreement(self) -> None:
+        """**這是風格比較最重要的一種分歧,而它曾經被算成一致。**
+
+        2026-09-30 拿 style_call_high / style_call_low 跑同一場錄影:同一手
+        high 吃 7m、low 跳過,而 advise.py 報「引擎之間一致 4/4 (100%)」。
+        原因是舊的算法只比有動作的建議,答案集合裡只有「吃」一個元素。
+
+        鳴或不鳴正是副露率那條軸的全部內容 —— 漏掉它,UI 永遠標不出
+        風格差異。
+        """
+        group = EngineGroup(
+            [FakeEngine("call", PON, meta=ASKED), FakeEngine("skip", None, meta=ASKED)]
+        )
+        group.start()
+        result = group.react(TSUMO)
+        assert not result.is_unanimous
+        assert len(result.actions) == 1
+        assert len(result.decisions) == 2
+
+    def test_both_declining_is_unanimous(self) -> None:
+        """兩個都說不鳴,那是一致 —— 不能因為改了判準就反過來全標成分歧。"""
+        group = EngineGroup(
+            [FakeEngine("a", None, meta=ASKED), FakeEngine("b", None, meta=ASKED)]
+        )
+        group.start()
+        assert group.react(TSUMO).is_unanimous
+
+    def test_declining_does_not_clash_with_an_engine_that_was_not_asked(self) -> None:
+        """一個被問了說跳過、另一個根本沒被問 —— 只有一個答案,算一致。"""
+        group = EngineGroup([FakeEngine("asked", None, meta=ASKED), FakeEngine("idle")])
+        group.start()
+        result = group.react(TSUMO)
+        assert result.is_unanimous
+        assert len(result.decisions) == 1
 
 
 class TestFailure:
