@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -46,6 +47,7 @@ from PySide6.QtWidgets import QApplication
 
 from mia.calibration.canvas import Canvas, CanvasChoice, best_fit
 from mia.engine import AIEngine, DummyEngine, EngineGroup
+from mia.engine.styles import StyleChoice, StyleProfile
 from mia.live.runtime import LiveRuntime
 from mia.mjai import MjaiEvent
 from mia.mjai.handstate import HandTracker
@@ -54,7 +56,7 @@ from mia.ui.panel.window import PanelWindow, present
 from mia.ui.state import UiState
 from mia.ui.viewmodel import ViewModel
 from mia.utils.logging import logger, setup_logging
-from mia.utils.paths import DATA_DIR
+from mia.utils.paths import DATA_DIR, PROJECT_ROOT
 
 #: 瀏覽器設定檔的預設位置 —— **有預設值是刻意的**。
 #:
@@ -73,21 +75,63 @@ DEMO_HAND = ("1m", "1m", "2m", "3s", "4m", "5pr", "6m", "8p", "8s", "8s", "9m", 
 #: 「調慢」不會漏資訊,只會讓畫面晚 0.1 秒 —— 遠小於遊戲自己的動畫時間。
 PUMP_INTERVAL_MS = 100
 
+#: `--mortal` 指定的那一項在風格選單裡叫什麼。**不寫回 ui_state** ——
+#: 下次沒帶旗標啟動時這個名字不存在,記了也對不上。
+CLI_STYLE = "命令列指定"
 
-def build_engines(args: argparse.Namespace) -> list[AIEngine]:
+
+def build_engines(args: argparse.Namespace, weights: Sequence[Path | str] = ()) -> list[AIEngine]:
     """建引擎。**模型排在規則式 baseline 之前。**
 
     順序就是 ``ViewState.primary`` 的優先序。baseline 排前面的話,headline 會
     顯示 baseline 的建議、真正的模型被擠到下面那排,而 Q 值長條會整段消失
     (baseline 沒有 meta)—— 那正是實際跑起來看到的症狀。
-    """
-    engines: list[AIEngine] = []
-    for weights in args.mortal or []:
-        from mia.engine.mortal import mortal_engine
 
-        engines.append(mortal_engine(weights, seat=args.seat, name=Path(weights).stem))
+    Args:
+        args: 只用到 ``seat``(子程序啟動時的暫定座位)。
+        weights: 要載的權重。即時模式由風格選單決定,所以是參數而不是從
+            ``args.mortal`` 讀 —— 那個只是啟動時的初值,使用者換了風格之後
+            再回頭讀它就會載回舊的。
+    """
+    from mia.engine.mortal import mortal_engine
+
+    engines: list[AIEngine] = [
+        mortal_engine(w, seat=args.seat, name=Path(w).stem) for w in weights
+    ]
     engines.append(DummyEngine())
     return engines
+
+
+def build_styles(args: argparse.Namespace, ui_state: UiState) -> StyleChoice:
+    """組出風格選單的內容。
+
+    來源有兩個,而 ``--mortal`` 排在前面:命令列是明確的一次性指定,設定檔是
+    常備清單。命令列給了就自成一項並選它 —— 但**其他項仍然留著**,所以用
+    ``--mortal`` 開起來之後照樣可以在 UI 上換去別的風格。
+
+    上次選的那個(``ui_state.style``)優先於設定檔的 ``default``,除非命令列
+    有指定。設定檔改過之後舊名字可能已經不在,:class:`StyleChoice` 會自己
+    退回第一個可用的。
+    """
+    from mia.config.loader import load_config
+
+    profiles: list[StyleProfile] = []
+    if args.mortal:
+        profiles.append(
+            StyleProfile(CLI_STYLE, tuple(_abs(w) for w in args.mortal)),
+        )
+    config = load_config()
+    profiles.extend(
+        StyleProfile(p.name, tuple(_abs(w) for w in p.weights)) for p in config.engines.profiles
+    )
+    wanted = CLI_STYLE if args.mortal else (ui_state.style or config.engines.default)
+    return StyleChoice(tuple(profiles), wanted)
+
+
+def _abs(weights: Path | str) -> Path:
+    """設定檔裡的相對路徑是相對**專案根目錄**,不是相對執行時的工作目錄。"""
+    path = Path(weights).expanduser()
+    return path if path.is_absolute() else PROJECT_ROOT / path
 
 
 def load_events(path: Path) -> list[MjaiEvent]:
@@ -170,8 +214,43 @@ class _RememberedCanvas:
         self._state.save()
 
 
+class _RememberedStyle:
+    """把風格的選擇轉給 runtime,順手記到磁碟。
+
+    與 :class:`_RememberedCanvas` 同一個模式,理由也一樣:「記住」是接線層的
+    事,:class:`LiveRuntime` 不該知道 ``data/ui_state.json`` 存不存在。
+
+    用 ``--mortal`` 開起來時**不記**:那一項是命令列臨時指定的,名字
+    「命令列指定」在下次沒帶旗標的啟動裡會對不上任何東西。使用者在 UI 上
+    改成別的風格才寫回去 —— 那是他真的選的。
+    """
+
+    def __init__(self, runtime: LiveRuntime, state: UiState) -> None:
+        self._runtime = runtime
+        self._state = state
+
+    def can_pick_style(self) -> bool:
+        return self._runtime.can_pick_style()
+
+    def styles(self) -> tuple[str, ...]:
+        return self._runtime.styles()
+
+    def style(self) -> str | None:
+        return self._runtime.style()
+
+    def set_style(self, name: str) -> None:
+        self._runtime.set_style(name)
+        if name != CLI_STYLE:
+            self._state.style = name
+            self._state.save()
+
+
 def build_live_runtime(
-    args: argparse.Namespace, model: ViewModel, *, canvas: CanvasChoice | None = None
+    args: argparse.Namespace,
+    model: ViewModel,
+    *,
+    canvas: CanvasChoice | None = None,
+    style: StyleChoice | None = None,
 ) -> LiveRuntime:
     """組出 runtime。**什麼都還沒開始** —— 瀏覽器等使用者按「開始遊戲」,
     兩個功能等使用者撥開關。
@@ -226,7 +305,15 @@ def build_live_runtime(
         def make_packets() -> Worker:
             # from_start=True:座位、寶牌、誰立直了全在先前的事件裡,所以
             # 中途才打開開關也要從頭讀一遍把局面追上來
-            return PacketWorker(bus, dump=dump_path(), engines=build_engines(args), from_start=True)
+            #
+            # 權重在**這裡**才從 style 讀,不是在外面先取出來存著 —— 使用者
+            # 換風格靠的正是「關掉再開」,先取出來的話第二次開起來還是舊的。
+            return PacketWorker(
+                bus,
+                dump=dump_path(),
+                engines=build_engines(args, style.weights if style else ()),
+                from_start=True,
+            )
 
         feature_list.append(Feature(features.ADVICE, make_packets))
 
@@ -249,7 +336,9 @@ def build_live_runtime(
     if not feature_list:
         raise SystemExit("--no-vision 與 --no-packets 同時給了,那就沒有東西可以顯示")
 
-    return LiveRuntime(model, bus, features=feature_list, capture=capture, canvas=canvas)
+    return LiveRuntime(
+        model, bus, features=feature_list, capture=capture, canvas=canvas, style=style
+    )
 
 
 def start_live(runtime: LiveRuntime, model: ViewModel) -> None:
@@ -449,11 +538,14 @@ def main(argv: list[str] | None = None) -> int:
     # 「開始遊戲」會用自動偵測開,使用者要再改一次選單才生效。
     ui_state = UiState.load()
     canvas = CanvasChoice(Canvas.parse(_default_canvas(app, ui_state)))
+    # 同理:上次選的風格也要在建 runtime 之前就備好,否則第一次打開
+    # 「AI 建議」會載預設那份,使用者得再動一次選單。
+    style = build_styles(args, ui_state)
 
     # runtime 必須在視窗**之前**建好:視窗上的開關要接到它。反過來的話開關
     # 只能先畫成停用,之後再想辦法補接 —— 而那正是最容易忘記做的一步。
     runtime: LiveRuntime | None = (
-        build_live_runtime(args, model, canvas=canvas) if args.live else None
+        build_live_runtime(args, model, canvas=canvas, style=style) if args.live else None
     )
 
     # options 是**兩個視窗共用**的,所以只放兩邊都收的參數。側邊視窗獨有的
@@ -475,6 +567,7 @@ def main(argv: list[str] | None = None) -> int:
         overlay=overlay,
         launcher=runtime,
         canvas=_RememberedCanvas(runtime, ui_state) if runtime is not None else None,
+        style=_RememberedStyle(runtime, ui_state) if runtime is not None else None,
         **options,  # type: ignore[arg-type]
     )
     model.subscribe(window.apply)

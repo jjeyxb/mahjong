@@ -36,6 +36,8 @@ from typing import Protocol
 
 from mia import features
 from mia.calibration.canvas import CanvasChoice
+from mia.engine.base import EngineError
+from mia.engine.styles import StyleChoice
 from mia.features import NAMES
 from mia.live.bus import Advices, CvHand, Dangers, PacketHand, UpdateBus, WorkerStatus
 from mia.live.source import CaptureLauncher
@@ -114,6 +116,9 @@ class LiveRuntime:
         bus: 工作執行緒投遞的郵箱。
         features: 可以獨立開關的功能。**預設全部關閉。**
         capture: 開遊戲的東西;沒有(``--tail``、``--no-packets``)時為 ``None``。
+        style: 打法風格的共用格子;沒有 AI 建議那條路時為 ``None``。
+            引擎工廠讀它決定載哪幾份權重,所以改了要重啟才生效 ——
+            見 :meth:`set_style`。
 
     功能預設**全部關閉**,使用者用側邊視窗上的開關打開。
 
@@ -145,13 +150,17 @@ class LiveRuntime:
         features: Sequence[Feature] = (),
         capture: CaptureLauncher | None = None,
         canvas: CanvasChoice | None = None,
+        style: StyleChoice | None = None,
     ) -> None:
         self._viewmodel = viewmodel
         self._bus = bus
         self._features = {f.key: f for f in features}
         self._capture = capture
         self._canvas = canvas
+        self._style = style
         self._running = False
+        #: 最近一次「功能起不來」的理由。見 :meth:`_enable`。
+        self._failure: str | None = None
 
     # ------------------------------------------------------------------ 生命週期
 
@@ -247,14 +256,76 @@ class LiveRuntime:
         assert self._canvas is not None
         self._capture.control.write(canvas=self._canvas.key)
 
+    # ------------------------------------------------------------------ 風格
+
+    def style(self) -> str | None:
+        """現在選的風格名稱。"""
+        return self._style.name if self._style is not None else None
+
+    def styles(self) -> tuple[str, ...]:
+        """可以選的風格。權重缺檔的已經被濾掉,所以列出來的都真的載得起來。"""
+        return tuple(p.name for p in self._style.profiles) if self._style is not None else ()
+
+    def can_pick_style(self) -> bool:
+        """這個模式下換風格有沒有意義。
+
+        三個條件:有這個格子、裡面至少有一個可用的風格、而且 AI 建議那條路
+        真的存在(``--no-packets`` 時它整個不存在,換風格沒有東西可換)。
+        """
+        return (
+            self._style is not None
+            and bool(self._style.profiles)
+            and self.available(features.ADVICE)
+        )
+
+    def set_style(self, name: str) -> None:
+        """改選打法風格。
+
+        **會把 AI 建議整個重啟** —— 引擎是建構時吃權重的,換權重沒有別的路。
+        代價是重載 130MB 權重(每份實測 0.5~0.6 秒)加上重播一次事件流把局面
+        追上來(``from_start=True``),那段時間畫面上沒有建議。
+
+        功能關著的時候只是換掉格子裡的值,不做任何事 —— 下次打開就會用新的。
+        """
+        if self._style is None:
+            logger.warning("這個模式不支援換風格,忽略")
+            return
+        if not self._style.set(name):
+            return
+        logger.info("打法風格改為 {}", self._style)
+        self._restart(features.ADVICE)
+        self.pump()
+
     def _restart(self, key: str) -> None:
-        """把一個開著的功能關掉再開。關著的話什麼都不做。"""
+        """把一個開著的功能關掉再開。關著的話什麼都不做。
+
+        ⚠ 重開**可能失敗**:引擎工廠會去檢查權重檔在不在,不在就丟
+        :class:`~mia.engine.base.EngineError`。那個例外要是漏出去,呼叫端是
+        Qt 的 slot —— 整個程式當場掛掉,而使用者只是換了個選單。所以這裡接住,
+        讓功能停在關閉狀態,理由寫進日誌與狀態列。
+        """
         feature = self._features.get(key)
         if feature is None or not feature.enabled:
             return
         feature.disable()
         self._clear_output(key)
-        feature.enable()
+        self._enable(feature)
+
+    def _enable(self, feature: Feature) -> None:
+        """開一個功能,並接住「根本起不來」。
+
+        起不來的原因是使用者改得了的(權重檔不在),所以要說出來而不是只寫
+        日誌。訊息存進 :attr:`_failure` 而不是直接塞進 ViewModel ——
+        :meth:`_sync_notices` 每一輪都會整批換掉狀態列,直接塞的話下一次
+        pump 就被洗掉,使用者只看到它閃一下。
+        """
+        try:
+            feature.enable()
+        except EngineError as exc:
+            self._failure = f"{feature.name}:起不來 — {exc}"
+            logger.error(self._failure)
+        else:
+            self._failure = None
 
     def stop(self, *, timeout: float = 3.0) -> None:
         """停掉所有東西。可重複呼叫。
@@ -296,11 +367,18 @@ class LiveRuntime:
         if feature is None:
             logger.warning("沒有名為 {!r} 的功能,忽略", key)
             return
+
+        # 撥到關**一定**要撤掉「起不來」那句話,即使它本來就是關的。
+        # 起不來之後功能停在關閉狀態,所以開關畫出來就是關的 —— 使用者再撥
+        # 一次是想把那句話關掉,而 `on == feature.enabled` 會讓它什麼都不做。
+        if not on:
+            self._failure = None
         if on == feature.enabled:
+            self.pump()
             return
 
         if on:
-            feature.enable()
+            self._enable(feature)
         else:
             feature.disable()
             self._clear_output(key)
@@ -379,6 +457,10 @@ class LiveRuntime:
         看不到那個差異,那句黏住的話會一直留在畫面上。
         """
         parts: list[str] = []
+        # 起不來的那個排最前面 —— 它沒有 worker,所以下面那個迴圈看不到它,
+        # 而「開關明明是開的卻什麼都沒發生」是最需要解釋的一種狀態。
+        if self._failure is not None:
+            parts.append(self._failure)
         for source in self._sources():
             message = source.read()
             if message:
