@@ -1,0 +1,68 @@
+# 風格評測設定(one_vs_three)—— M8 的第 5 步,也是唯一能回答「風格轉移了嗎」的一步
+#
+# 第 4 步產出的四份權重只證明了「可學參數走了 1.9%、而且兩條軸在權重空間留下
+# 可辨識的結構」。那是幾何,不是行為。這一步問的是實際打起來:
+#
+#   1. 副露率有沒有往名單那群人的方向移動?(高組 0.374 對 低組 0.282)
+#   2. 平均順位有沒有守住 2.5?—— 掉了就是訓出比較弱的 Mortal,不是風格
+#
+# 用法:
+#
+#   cd engines/mortal/Mortal/mortal
+#   MORTAL_CFG=../../eval.toml PYTHONUTF8=1 ../../.venv/Scripts/python.exe -u one_vs_three.py
+#
+# challenger 坐 1 家、champion 坐 3 家(都是未微調的 mortal_298k)。
+# `seeds_per_iter = games_per_iter // 4`,每個種子跑 4 局讓 challenger 輪坐四個
+# 位子 —— 所以座位優勢是平衡掉的,不必自己處理。
+
+[1v3]
+# ⚠ **一定要固定,不能留 -1。**
+#
+# `one_vs_three.py` 在 seed_key == -1 時用 `secrets.randbits(64)` 隨機產生。
+# 那樣四份模型會打到**完全不同的牌局**,而每份只有 3,000 場 —— 平均順位的標準誤
+# 約 0.020,四份之間的差異會被牌運淹掉。
+#
+# 固定成同一個 key,四份就打到**完全相同的牌山與配牌**,比較變成配對比較
+# (paired),牌運從差異裡消掉。這是這份設定裡最重要的一行。
+seed_key = 20260929
+
+# 3,000 場。games_per_iter 必須能被 4 整除(seeds_per_iter = // 4)。
+#
+# 為什麼是 3,000:這個數字不是為平均順位挑的(3,000 場的順位標準誤約 0.020,
+# 而風格造成的順位差本來就該接近 0),是為**行為統計**挑的 —— 3,000 場約有
+# 45 萬個捨牌決策點,副露率這種比例量在那個樣本下精確到小數第三位。
+#
+# iters = 1:跑一輪就好。上游預設 500 輪是訓練中持續評測用的。
+games_per_iter = 3000
+iters = 1
+log_dir = 'F:/mahjong/data/datasets/eval_1v3'
+
+# challenger = 要評測的那份風格權重。**每評一份就改這裡**,
+# 而且 log_dir 要跟著換,否則四份的牌譜會混在同一個目錄裡分不開。
+[1v3.challenger]
+device = 'cuda:0'
+name = 'style'
+state_file = 'F:/mahjong/models/style_call_high.pth'
+stochastic_latent = false
+enable_compile = false
+enable_amp = true
+enable_rule_based_agari_guard = true
+
+# champion = **未微調的原始權重**。這是刻意的:要問的是「微調後對上原本的
+# 自己,打法變了嗎、還打得一樣好嗎」,所以對照組必須是同一個模型的未微調版本,
+# 不是別的模型。
+[1v3.champion]
+device = 'cuda:0'
+name = 'baseline'
+state_file = 'F:/mahjong/models/mortal_298k.pth'
+stochastic_latent = false
+enable_compile = false
+enable_amp = true
+enable_rule_based_agari_guard = true
+
+[1v3.akochan]
+# akochan 是另一個麻將 AI,拿它當對手要額外編譯它。這裡不用 —— 我們要的
+# 對照組是「未微調的自己」,不是「比別人強嗎」。
+enabled = false
+dir = ''
+tactics = ''
