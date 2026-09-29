@@ -295,6 +295,73 @@ class TestEnginePicker:
         assert sum(shown(row) for row in window._advice._rows) == 2  # noqa: SLF001
 
 
+class FakeStylePicker:
+    """滿足 :class:`~mia.ui.switchboard.StylePicker` 的最小實作。"""
+
+    def __init__(self, names: tuple[str, ...] = ("標準", "愛鳴牌"), current: str = "標準") -> None:
+        self._names = names
+        self._current = current
+        self.asked: list[str] = []
+
+    def can_pick_style(self) -> bool:
+        return bool(self._names)
+
+    def styles(self) -> tuple[str, ...]:
+        return self._names
+
+    def style(self) -> str | None:
+        return self._current
+
+    def set_style(self, name: str) -> None:
+        self.asked.append(name)
+        self._current = name
+
+
+class TestStylePicker:
+    """風格下拉選單。
+
+    使用者的原話:「主要只有自動能選,沒有風格讓我調整」。「主要引擎」只決定
+    已經在跑的那幾個裡誰當 headline,**換不了權重** —— 那是兩個層級的事。
+    """
+
+    def test_the_configured_styles_are_listed(self, qtbot) -> None:  # noqa: ARG002
+        picker = FakeStylePicker()
+        window = PanelWindow(ViewModel(), style=picker)
+        combo = window._style_picker  # noqa: SLF001
+        assert [combo.itemData(i) for i in range(combo.count())] == ["標準", "愛鳴牌"]
+
+    def test_it_starts_on_the_current_style(self, qtbot) -> None:  # noqa: ARG002
+        """選單一打開就要顯示現在跑的那個,不然看起來像沒生效。"""
+        window = PanelWindow(ViewModel(), style=FakeStylePicker(current="愛鳴牌"))
+        assert window._style_picker.currentText() == "愛鳴牌"  # noqa: SLF001
+
+    def test_picking_one_asks_for_the_change(self, qtbot) -> None:  # noqa: ARG002
+        picker = FakeStylePicker()
+        window = PanelWindow(ViewModel(), style=picker)
+        window._style_picker.setCurrentIndex(1)  # noqa: SLF001
+        assert picker.asked == ["愛鳴牌"]
+
+    def test_showing_the_current_style_does_not_ask_for_a_change(self, qtbot) -> None:  # noqa: ARG002
+        """初始化時把選單切到現在那個,不能被當成使用者按的 —— 那會在開窗的
+        瞬間重啟一次引擎(重載 130MB 權重)。
+        """
+        picker = FakeStylePicker(current="愛鳴牌")
+        PanelWindow(ViewModel(), style=picker)
+        assert picker.asked == []
+
+    def test_without_a_picker_the_combo_is_disabled(self, panel) -> None:
+        """重播與 ``--no-packets`` 的引擎是命令列決定的。可按而按了沒事發生,
+        看起來就是壞掉。
+        """
+        _, window = panel
+        assert not window._style_picker.isEnabled()  # noqa: SLF001
+
+    def test_no_available_styles_disables_the_combo(self, qtbot) -> None:  # noqa: ARG002
+        """權重不隨專案散布 —— 別人的機器上可能一份都沒有。"""
+        window = PanelWindow(ViewModel(), style=FakeStylePicker(names=()))
+        assert not window._style_picker.isEnabled()  # noqa: SLF001
+
+
 class TestAlwaysOnTopToggle:
     def test_toggling_it_off_keeps_the_window_visible(self, panel) -> None:
         """改 window flag 會讓已顯示的視窗被隱藏 —— 必須重新 show 一次。"""

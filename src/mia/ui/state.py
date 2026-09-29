@@ -53,10 +53,15 @@ class UiState:
             用來分開「還沒選過」與「選過了,而且選的就是自動偵測」——
             兩者的 :attr:`canvas` 都是 ``None``,但前者該由程式挑一個放得下的
             固定尺寸(那才是穩的路),後者是使用者明確要的,不能覆蓋。
+        style: 上次選的打法風格名稱(``config`` 的 ``engines.profiles``
+            其中一項)。設定檔改過之後這個名字可能已經不存在 —— 那時
+            :class:`~mia.engine.styles.StyleChoice` 會退回第一個可用的,
+            不報錯。
     """
 
     canvas: str | None = None
     canvas_chosen: bool = False
+    style: str | None = None
     overlay_visible: bool = False
     overlay_expanded: bool = False
     overlay_danger: bool = False

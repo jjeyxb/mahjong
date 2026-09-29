@@ -49,7 +49,7 @@ from mia import APP_TITLE, features
 from mia.calibration.canvas import PRESETS as CANVAS_PRESETS
 from mia.calibration.canvas import Canvas
 from mia.ui.style import CAPTION, MUTED, MUTED_COLOR
-from mia.ui.switchboard import CanvasPicker, GameLauncher, Switchboard, is_on
+from mia.ui.switchboard import CanvasPicker, GameLauncher, StylePicker, Switchboard, is_on
 from mia.ui.viewmodel import ViewModel, ViewState
 from mia.ui.widgets.advice import AdviceTab
 from mia.ui.widgets.analysis import AnalysisTab
@@ -139,6 +139,8 @@ class PanelWindow(QMainWindow):
         launcher: 「開始遊戲」要接到誰。``None``(重播、``--tail``、
             ``--no-packets``)時按鈕畫成停用 —— 那些模式裡遊戲不是 MIA 開的。
         canvas: 畫布尺寸選單要接到誰。``None`` 時選單畫成停用。
+        style: 打法風格選單要接到誰。``None``(重播、``--no-packets``)時
+            選單畫成停用 —— 那些模式裡引擎是命令列決定的。
         overlay: 要控制的 Overlay。設定頁上的四個勾選都作用在它身上;
             ``None`` 時那四個畫成停用。
 
@@ -157,6 +159,7 @@ class PanelWindow(QMainWindow):
         switchboard: Switchboard | None = None,
         launcher: GameLauncher | None = None,
         canvas: CanvasPicker | None = None,
+        style: StylePicker | None = None,
         overlay: OverlayWindow | None = None,
     ) -> None:
         super().__init__()
@@ -171,6 +174,7 @@ class PanelWindow(QMainWindow):
         self._switchboard = switchboard
         self._launcher = launcher
         self._canvas = canvas
+        self._style = style
         self._overlay = overlay
         self._switches: dict[str, ToggleSwitch] = {}
         icons = TileIcons(skin)
@@ -297,6 +301,21 @@ class PanelWindow(QMainWindow):
         若排在模型前面,headline 就會顯示 baseline、Q 值長條整段消失。
         下拉選單讓使用者直接指定,不必去改啟動參數。
         """
+        # 「風格」排在「主要引擎」之前,因為它們是兩個層級:風格決定**載哪幾份
+        # 權重**(換了要重啟引擎),主要引擎只決定**已經在跑的這幾個裡誰當
+        # headline**。順序放反會讓人以為後者是前者的細項。
+        self._style_picker = QComboBox(self._advice_page)
+        self._style_picker.setMinimumWidth(140)
+        self._advice_page.add_setting("風格", self._style_picker)
+        if self._style is None or not self._style.can_pick_style():
+            self._style_picker.addItem("(命令列指定)")
+            self._style_picker.setEnabled(False)
+        else:
+            for name in self._style.styles():
+                self._style_picker.addItem(name, name)
+            _select_data(self._style_picker, self._style.style())
+            self._style_picker.currentIndexChanged.connect(self._on_style_picked)
+
         self._engine_picker = QComboBox(self._advice_page)
         self._engine_picker.setMinimumWidth(140)
         self._engine_picker.addItem("(自動)", None)
@@ -580,6 +599,21 @@ class PanelWindow(QMainWindow):
         key = self._canvas_picker.itemData(index)
         self._canvas.set_canvas(key)
         self.apply(self._viewmodel.state)
+
+    def _on_style_picked(self, index: int) -> None:
+        """換打法風格 —— **引擎會整個重啟**。
+
+        重啟要重載權重(每份 130MB,實測 0.5~0.6 秒)並從頭重播事件流把局面
+        追上來,那段時間畫面上沒有建議、狀態列會說「啟動引擎…」。
+
+        不在這裡擋重複選擇::meth:`StylePicker.set_style` 自己會比對,
+        選到同一項時什麼都不做。擋兩次只是把同一個判斷寫兩份。
+        """
+        if self._style is None:
+            return
+        name = self._style_picker.itemData(index)
+        if name is not None:
+            self._style.set_style(name)
 
     def _on_engine_picked(self, index: int) -> None:
         self._viewmodel.set_preferred_engine(self._engine_picker.itemData(index))

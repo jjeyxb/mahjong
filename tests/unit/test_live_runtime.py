@@ -13,7 +13,8 @@ import pytest
 
 from mia import features
 from mia.calibration.canvas import Canvas, CanvasChoice
-from mia.engine.base import Advice
+from mia.engine.base import Advice, EngineError
+from mia.engine.styles import StyleChoice, StyleProfile
 from mia.live.bus import Advices, CvHand, PacketHand, UpdateBus, WorkerStatus
 from mia.live.control import ControlFile
 from mia.live.runtime import Feature, LiveRuntime
@@ -681,6 +682,131 @@ class TestCanvas:
         runtime.set_canvas("1280x720")
         assert spy.made == []
         assert not feature.enabled
+
+
+class TestStyle:
+    """換打法風格。見 :mod:`mia.engine.styles`。
+
+    使用者的原話:「主要只有自動能選,沒有風格讓我調整」、「我覺得這個功能
+    是必要的」。
+    """
+
+    def _choice(self, tmp_path: Path) -> StyleChoice:
+        made = []
+        for name in ("base", "high"):
+            path = tmp_path / f"{name}.pth"
+            path.write_bytes(b"x")
+            made.append(StyleProfile(name, (path,)))
+        return StyleChoice(tuple(made), "base")
+
+    def test_no_choice_means_the_option_is_unavailable(
+        self, model: ViewModel, bus: UpdateBus
+    ) -> None:
+        """重播與示範模式的引擎是命令列決定的,UI 要把選單畫成停用。"""
+        feature, _ = _feature(features.ADVICE)
+        runtime = LiveRuntime(model, bus, features=[feature])
+        assert not runtime.can_pick_style()
+        assert runtime.style() is None
+        assert runtime.styles() == ()
+
+    def test_unavailable_without_advice(
+        self, model: ViewModel, bus: UpdateBus, tmp_path: Path
+    ) -> None:
+        """``--no-packets`` 時引擎那條路整個不存在 —— 沒有東西可換。"""
+        feature, _ = _feature(features.VISION)
+        runtime = LiveRuntime(model, bus, features=[feature], style=self._choice(tmp_path))
+        assert not runtime.can_pick_style()
+
+    def test_setting_it_restarts_the_engines(
+        self, model: ViewModel, bus: UpdateBus, tmp_path: Path
+    ) -> None:
+        """引擎是**建構時**吃權重的,不重開就還在跑舊的那份。
+
+        不重開的症狀是「換了風格但建議一模一樣」,而那看起來正好像是
+        「兩份權重其實沒差別」—— 會讓人去懷疑 M8 的結論,而不是懷疑接線。
+        """
+        feature, spy = _feature(features.ADVICE)
+        runtime = LiveRuntime(model, bus, features=[feature], style=self._choice(tmp_path))
+        runtime.start()
+        runtime.set_enabled(features.ADVICE, True)
+        assert len(spy.made) == 1
+
+        runtime.set_style("high")
+        assert runtime.style() == "high"
+        assert len(spy.made) == 2, "換了風格卻沒有重建 worker"
+        runtime.stop()
+
+    def test_picking_the_same_style_does_not_restart(
+        self, model: ViewModel, bus: UpdateBus, tmp_path: Path
+    ) -> None:
+        """重啟要重載 130MB 權重並斷掉一巡建議。在選單上重選同一項很常見。"""
+        feature, spy = _feature(features.ADVICE)
+        runtime = LiveRuntime(model, bus, features=[feature], style=self._choice(tmp_path))
+        runtime.start()
+        runtime.set_enabled(features.ADVICE, True)
+        runtime.set_style("base")
+        assert len(spy.made) == 1
+        runtime.stop()
+
+    def test_changing_it_while_off_does_not_start_anything(
+        self, model: ViewModel, bus: UpdateBus, tmp_path: Path
+    ) -> None:
+        """關著的時候換風格只是換掉格子裡的值 —— 不該偷偷把 130MB 權重載起來。"""
+        feature, spy = _feature(features.ADVICE)
+        runtime = LiveRuntime(model, bus, features=[feature], style=self._choice(tmp_path))
+        runtime.start()
+        runtime.set_style("high")
+        assert spy.made == []
+        assert runtime.style() == "high"
+
+
+class TestFeatureThatCannotStart:
+    """工廠丟 EngineError 時不能讓整個程式掛掉。
+
+    呼叫端是 Qt 的 slot —— 例外漏出去就是當場關窗,而使用者只是撥了個開關
+    或換了個選單。
+    """
+
+    class _Broken:
+        def __init__(self) -> None:
+            self.tries = 0
+
+        def __call__(self) -> FakeWorker:
+            self.tries += 1
+            raise EngineError("權重不見了")
+
+    def test_enabling_a_broken_feature_says_why(self, model: ViewModel, bus: UpdateBus) -> None:
+        broken = self._Broken()
+        runtime = LiveRuntime(model, bus, features=[Feature(features.ADVICE, broken)])
+        runtime.start()
+        runtime.set_enabled(features.ADVICE, True)
+
+        assert broken.tries == 1
+        assert not runtime.is_enabled(features.ADVICE)
+        assert any("權重不見了" in n for n in model.state.notices)
+
+    def test_the_reason_survives_the_next_pump(self, model: ViewModel, bus: UpdateBus) -> None:
+        """狀態列每一輪都整批換掉,訊息不能只閃一下就被洗掉。"""
+        runtime = LiveRuntime(model, bus, features=[Feature(features.ADVICE, self._Broken())])
+        runtime.start()
+        runtime.set_enabled(features.ADVICE, True)
+        runtime.pump()
+        assert any("權重不見了" in n for n in model.state.notices)
+
+    def test_turning_it_off_clears_the_reason(self, model: ViewModel, bus: UpdateBus) -> None:
+        """使用者自己撥回關,那句話就沒有意義了 —— 留著只會擋住別的訊息。
+
+        ⚠ 起不來之後功能**停在關閉狀態**,開關畫出來就是關的。所以這一撥的
+        `on` 與 `feature.enabled` 相等,原本會被「值沒變」那個提前返回擋掉,
+        而使用者看到的是「我把它關了但錯誤訊息還在」。
+        """
+        runtime = LiveRuntime(model, bus, features=[Feature(features.ADVICE, self._Broken())])
+        runtime.start()
+        runtime.set_enabled(features.ADVICE, True)
+        assert not runtime.is_enabled(features.ADVICE), "起不來卻算成開著了"
+
+        runtime.set_enabled(features.ADVICE, False)
+        assert not any("權重不見了" in n for n in model.state.notices)
 
 
 class TestStartupHint:

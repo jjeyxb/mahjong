@@ -90,3 +90,37 @@ roi:
   # 副露的**內容**不需要辨識:向聽數只要知道副露的「組數」,而組數可由
   # 手牌張數反推((13 - 手牌數) / 3)。
   own_hand: [0.1150, 0.8533, 0.7083, 0.1437]
+
+# AI 引擎:UI 上「風格」選單的內容。
+#
+# 每一項是一個可選的風格,`weights` 可以列**多份** —— 那一項就變成並排比較,
+# 兩個引擎看同一個局面,分歧的那幾手會被標出來。順序就是優先序,想當主角的
+# 排前面(ViewState.primary 取第一個有動作的)。
+#
+# 路徑相對專案根目錄。**權重不隨專案散布**(Mortal 是 AGPL-3.0),所以這裡
+# 列的檔案在別人機器上很可能不存在 —— 缺檔的項目會被濾掉而不出現在選單裡,
+# 不會報錯。整組都不在就只剩規則式 baseline,選單畫成停用。
+#
+# 風格權重的來歷見 docs/handoff.md 的「M8」:同一份 mortal_298k 起步,
+# 只換了微調用的玩家名單,副露率兩端差 0.0741(20 個標準誤),平均順位沒掉。
+engines:
+  profiles:
+    - name: 標準(未微調)
+      weights: [models/mortal_298k.pth]
+    - name: 愛鳴牌
+      weights: [models/style_call_high.pth]
+    - name: 不愛鳴牌
+      weights: [models/style_call_low.pth]
+    - name: 愛立直
+      weights: [models/style_reach_high.pth]
+    - name: 不愛立直
+      weights: [models/style_reach_low.pth]
+    # 底下兩項是並排比較:同一個局面兩種風格各給一個答案,
+    # 「一個鳴、一個不鳴」那種分歧正是副露率這條軸的全部內容。
+    - name: 比較:鳴牌傾向
+      weights: [models/style_call_high.pth, models/style_call_low.pth]
+    - name: 比較:立直傾向
+      weights: [models/style_reach_high.pth, models/style_reach_low.pth]
+
+  # 啟動時選哪一個。找不到就取第一個可用的。
+  default: 標準(未微調)

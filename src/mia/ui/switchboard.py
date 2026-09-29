@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-__all__ = ["CanvasPicker", "GameLauncher", "Switchboard", "is_on"]
+__all__ = ["CanvasPicker", "GameLauncher", "StylePicker", "Switchboard", "is_on"]
 
 
 class Switchboard(Protocol):
@@ -51,6 +51,24 @@ class CanvasPicker(Protocol):
     def can_pick_canvas(self) -> bool: ...
     def canvas(self) -> str | None: ...
     def set_canvas(self, key: str | None) -> None: ...
+
+
+class StylePicker(Protocol):
+    """能換打法風格的東西。
+
+    又是一個獨立的 Protocol,理由與 :class:`CanvasPicker` 相同:換風格只在
+    「AI 建議這條路存在」時有意義。錄影重播與示範資料裡引擎是命令列決定的,
+    ``--no-packets`` 則根本沒有引擎。
+
+    ⚠ **換風格會把引擎整個重啟**(關掉再開,重載權重)。這不是可以順手多按
+    幾次的操作 —— 每份權重 130MB,實測 0.5~0.6 秒,而且重啟期間那一巡的建議
+    會斷掉。所以 :meth:`set_style` 在「選的跟現在一樣」時什麼都不該做。
+    """
+
+    def can_pick_style(self) -> bool: ...
+    def styles(self) -> tuple[str, ...]: ...
+    def style(self) -> str | None: ...
+    def set_style(self, name: str) -> None: ...
 
 
 def is_on(switchboard: Switchboard | None, key: str) -> bool:
