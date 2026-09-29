@@ -274,7 +274,10 @@ class AdviceTab(QWidget):
         for (name, value), engine in zip(self._other_labels, others, strict=False):
             name.setText(engine.name)
             text = engine.headline
-            if not state.is_unanimous and engine.action is not None:
+            # 跳過的引擎也要標。這一手的分歧可能正是「它鳴、我不鳴」,
+            # 而不標的話畫面上只有鳴的那一邊被標成分歧,看起來像它自己跟
+            # 自己不一致。
+            if not state.is_unanimous and (engine.action is not None or engine.declined):
                 text += "   ⚠ 分歧"
             value.setText(text)
             name.setVisible(True)
