@@ -25,8 +25,8 @@
 version = 4
 online = false          # 離線訓練(CQL),不是自我對弈
 
-state_file = 'F:/mahjong/models/style_call_high_q1.pth'
-best_state_file = 'F:/mahjong/models/style_call_high_q1_best.pth'
+state_file = 'F:/mahjong/models/style_call_high.pth'
+best_state_file = 'F:/mahjong/models/style_call_high_best.pth'
 tensorboard_dir = 'F:/mahjong/data/datasets/finetune_log'
 
 device = 'cuda:0'
@@ -137,7 +137,15 @@ num_blocks = 40
 # **這是 README 說的「風格 vs 強度」旋鈕。** 調高 = 更貼近該群玩家的實際打法
 # (風格更明顯),調低 = 更自由地往最優化跑。
 # 權重檔裡存的實際值是 3(不是 config.example.toml 的 5),先對齊它。
-min_q_weight = 1
+#
+# 2026-09-30 實際掃過 1 / 3 / 10(同一份名單、同一批牌局,見 handoff.md
+# 「第 6 步」):**這個旋鈕沒什麼用。** 跨一個數量級,副露率最大只差 0.0060,
+# 而換名單的兩端差距是 0.0741 —— 名單的力量是它的 12 倍。曲線在 3 就飽和
+# (3 → 10 只有 1.4σ,方向還往回),三個 q 的平均順位也都在雜訊內,
+# 預期的「風格越貼越犧牲強度」根本沒出現。
+#
+# 所以留在 3,不要再花時間調它。要推更遠得從訓練長度、學習率、名單極端度下手。
+min_q_weight = 3
 
 [aux]
 next_rank_weight = 0.2
