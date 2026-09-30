@@ -1609,6 +1609,7 @@ tools/  ui.py(側邊視窗)  gt.py(封包擷取/檢視)  advise.py(離線重播�
 docs/   decisions.md  ← 方向轉折與全部決策理由(最重要)
         live.md       ← 即時模式操作手冊 + 狀態列對照表 + Overlay 怎麼用
         recording.md  ← 錄製資料集的檢查清單
+        eval_1v3.md   ← 風格權重的 1v3 評測紀錄 + 怎麼跑 + 踩過的坑
         handoff.md    ← 這一份
 ```
 
