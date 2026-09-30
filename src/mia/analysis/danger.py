@@ -74,6 +74,31 @@
 別人打過的牌對他安全。那份安全牌一路累積,所以立直家越到後面越好防;三副露
 的人拿不到這個扣抵,他的危險度到中盤通常**已經高於**立直家了。真正缺的是
 他根本沒被指名 —— 有人坐在三副露上,標題卻寫著「沒有人立直」。
+
+副露的**內容**也會講話(2026-09-28 加)
+----------------------------------------
+在這之前,副露只被拿來做兩件事:數幾組(上一節),以及數壁的時候算「看得見
+的牌」。**內容從來沒被讀過** —— 有人碰了三組白板,系統只知道「3 副露」。
+
+拿 14,544 場鳳凰卓牌譜量過之後補了兩條,兩條都在
+:mod:`~mia.mjai.table` 那邊,常數旁邊附了完整的數字與信賴區間:
+
+* :data:`~mia.mjai.table.MELD_THREAT_WITH_YAKUHAI` —— 「2 副露 + 役牌」的
+  放銃率(1.488%)與「3 副露無役牌」(1.465%)信賴區間重疊,是同一級威脅,
+  而舊的純計數門檻只認得後者。
+* :data:`~mia.mjai.table.SUIT_READ_MELDS` —— 總副露 ≥ 3 且數牌全同色時,
+  他的待牌有一半以上擠在那一色(三組全同色時是 81.3%)。
+
+**兩條都沒有碰等級。** 它們是估計,而等級是排除法數出來的 —— 這個界線是這個
+模組唯一的賣點。染手讀牌尤其不能混進去:三組同色萬子的人仍然可以做斷么九或
+對對和,那時他的待牌可以在任何花色,而實測也確實只有 81.3% 落在同色。那是
+**很強的傾向,不是規則保證**,跟振聽、筋、壁完全不同一個等級的東西。
+
+所以染手只做兩件事:寫進指名他的那句話(:attr:`SeatDanger.stance`),以及
+**在等級相同時把那個花色排到後面**(:func:`assess` 的排序)。實際效果是反過來
+講的那一半 —— 面對三副露全同色的人,實測打他色的放銃率 0.327%,跟對門清家
+打數牌的 0.288% 幾乎一樣。系統現在能把那兩色排到前面,而不是只會喊
+「3 副露,全場危險」。
 """
 
 from __future__ import annotations
@@ -81,9 +106,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import IntEnum
+from typing import TypedDict
 
-from mia.mjai.table import MELD_THREAT, TableTracker
-from mia.mjai.tiles import normalize_red, tile_name
+from mia.mjai.table import Player, TableTracker
+from mia.mjai.tiles import normalize_red, suit_name, tile_name
 
 __all__ = [
     "DangerLevel",
@@ -161,8 +187,11 @@ class SeatDanger:
         furiten: 他打過這張牌 —— 振聽,規則保證的安全。
         reach: 他有沒有立直。立直代表**確定聽牌**;沒立直不代表沒聽,
             只代表我們不知道。
-        melds: 他副露幾組。到 :data:`~mia.mjai.table.MELD_THREAT` 組就算
-            **推定聽牌**(見模組說明)。
+        melds: 他副露幾組。
+        is_threat: 值不值得指名他(立直、三副露、或兩副露帶役牌)。直接取自
+            :attr:`~mia.mjai.table.Player.is_threat` —— 門檻的依據都在那邊,
+            這裡不重算一份,兩邊會走鐘。
+        suit_read: 他的副露像染手時,那個花色。**是估計**,見模組說明。
     """
 
     seat: int
@@ -170,6 +199,8 @@ class SeatDanger:
     furiten: bool = False
     reach: bool = False
     melds: int = 0
+    is_threat: bool = False
+    suit_read: str | None = None
 
     @property
     def level(self) -> DangerLevel:
@@ -177,24 +208,22 @@ class SeatDanger:
 
     @property
     def threat(self) -> bool:
-        """值不值得指名他。立直(確定聽牌)或三副露(推定聽牌)。
+        """值不值得指名他。立直(確定聽牌)、三副露或兩副露帶役牌(推定聽牌)。
 
         **不影響 :attr:`level`。** 等級是排除法數出來的,而這個是估計 ——
         混進去會讓等級失去它唯一的意思。
         """
-        return self.reach or self.melds >= MELD_THREAT
+        return self.reach or self.is_threat
 
     @property
     def stance(self) -> str:
         """指名他的時候要加的那個括號。不是威脅就是空字串。
 
         立直排在前面:兩者都成立時,「確定聽牌」比「大概聽了」值得寫出來。
+        染手則是**附加**的 —— 它講的不是「他聽不聽」而是「聽在哪」,兩個問題
+        不衝突,所以立直家在染也照寫。
         """
-        if self.reach:
-            return "立直"
-        if self.melds >= MELD_THREAT:
-            return f"{self.melds}副露"
-        return ""
+        return _stance(self.reach, self.melds, self.is_threat, self.suit_read)
 
     @property
     def reason(self) -> str:
@@ -241,6 +270,18 @@ class TileDanger:
         return max((s.level for s in self.seats if s.threat), default=DangerLevel.SAFE)
 
     @property
+    def suit_flagged(self) -> bool:
+        """有沒有威脅家正在染**這張牌的花色**。
+
+        這是這個模組裡唯一一個進到排序、卻不是排除法算出來的東西。它**不碰
+        等級**,只在等級相同時把染色的牌壓到後面 —— 而真正的用處是反過來
+        那一半:其他兩色會浮到前面。實測面對三副露全同色的人,打他色的放銃率
+        0.327%,與對門清家打數牌的 0.288% 幾乎相同(見模組說明)。
+        """
+        suit = self.tile[-1]
+        return any(s.suit_read == suit for s in self.seats if s.threat)
+
+    @property
     def waits(self) -> int:
         """三家加起來還有幾型。**排序用的總數**,不是等級的依據 ——
         等級取的是最危險那一家(放銃只需要中一個人)。"""
@@ -274,10 +315,24 @@ class Threat:
     seat: int
     reach: bool = False
     melds: int = 0
+    is_threat: bool = False
+    suit_read: str | None = None
 
     @property
     def label(self) -> str:
-        return "立直" if self.reach else f"{self.melds}副露"
+        return _stance(self.reach, self.melds, self.is_threat, self.suit_read)
+
+
+def _stance(reach: bool, melds: int, is_threat: bool, suit_read: str | None) -> str:
+    """「立直」/「3副露」/「2副露 染萬子」這一類的短標籤。
+
+    :class:`SeatDanger` 與 :class:`Threat` 兩邊都要用同一句話 —— 分開寫的話
+    某天只會改到一邊,而畫面上會出現同一家有兩種描述。
+    """
+    if not (reach or is_threat):
+        return ""
+    base = "立直" if reach else f"{melds}副露"
+    return f"{base} 染{suit_name(suit_read)}" if suit_read else base
 
 
 @dataclass(frozen=True, slots=True)
@@ -314,6 +369,34 @@ def _worst(seats: Sequence[SeatDanger]) -> SeatDanger:
     其實是巧合。
     """
     return max(seats, key=lambda s: (s.level, len(s.waits), s.threat, s.reach))
+
+
+class _Read(TypedDict):
+    """:class:`SeatDanger` 與 :class:`Threat` 共用的那幾個欄位。
+
+    寫成 ``dict[str, object]`` 的話 ``**`` 展開過不了型別檢查(每個欄位都變成
+    ``object``),而那正是這裡最該被檢查的東西 —— 欄位名打錯就會靜靜地掉回
+    預設值,畫面上只會少一個標籤。
+    """
+
+    reach: bool
+    melds: int
+    is_threat: bool
+    suit_read: str | None
+
+
+def _read(player: Player) -> _Read:
+    """把一家的公開狀態抄成 :class:`SeatDanger` / :class:`Threat` 的關鍵字。
+
+    兩個型別的那四個欄位名字是一樣的,抄的地方有三處(現物、一般、指名清單)
+    —— 展開寫三次的話,某天多一個欄位只會補到其中兩處。
+    """
+    return {
+        "reach": player.reach,
+        "melds": player.melded,
+        "is_threat": player.is_threat,
+        "suit_read": player.suit_read,
+    }
 
 
 def _ranks(tile: str) -> tuple[int, str] | None:
@@ -397,22 +480,22 @@ def assess(
         seats = []
         for seat in seats_to_check:
             player = table.players[seat]
-            reach, melds = player.reach, player.melded
             if tile in player.safe:
-                seats.append(SeatDanger(seat, (), True, reach, melds))
+                seats.append(SeatDanger(seat, (), True, **_read(player)))
                 continue
             waits = (
                 *_sequence_waits(tile, player.safe, remaining),
                 *_pair_waits(tile, remaining),
             )
-            seats.append(SeatDanger(seat, tuple(waits), reach=reach, melds=melds))
+            seats.append(SeatDanger(seat, tuple(waits), **_read(player)))
         report.append(TileDanger(tile, tuple(seats)))
 
-    report.sort(key=lambda d: (d.level, d.against_threats, d.waits, d.tile))
-    threats = tuple(
-        Threat(i, reach=table.players[i].reach, melds=table.players[i].melded)
-        for i in table.threats
+    # ``suit_flagged`` 夾在等級與型數中間:等級是排除法算的,不能被估計蓋過;
+    # 但同一級之內,「有人在染這色」比「總共還剩幾型」更值得決定先打哪張。
+    report.sort(
+        key=lambda d: (d.level, d.against_threats, d.suit_flagged, d.waits, d.tile)
     )
+    threats = tuple(Threat(i, **_read(table.players[i])) for i in table.threats)
     return DangerReport(threats, tuple(report), table.seat)
 
 

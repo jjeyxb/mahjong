@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from mia.analysis import AGARI, TENPAI
 from mia.engine.base import Advice
-from mia.mjai import Chi, Dahai, Reach
+from mia.mjai import Chi, Dahai, Pon, Reach
 from mia.ui.viewmodel import ViewModel, ViewState, q_fraction, shanten_text
 
 # 123m 456m 789m + 11p 對子 + 23p 兩面 = 聽 1p/4p。
@@ -166,6 +166,32 @@ class TestAdvices:
         """大部分事件不需要任何人動作,那不算分歧。"""
         m = model()
         m.update_advices([self._advice("a", None), self._advice("b", None)])
+        assert m.state.is_unanimous
+
+    def test_calling_versus_declining_is_a_disagreement(self) -> None:
+        """**鳴或不鳴就是副露率那條風格軸的全部內容**,不能算成一致。
+
+        `mask_bits` 有兩個位元代表遊戲真的在問(碰 / 跳過),所以回 None
+        的那個引擎是「跳過」而不是「沒人在問」。與
+        `GroupResult.is_unanimous` 同一個 bug,兩邊要一起看。
+        """
+        asked = {"mask_bits": 0b11}
+        m = model()
+        m.update_advices(
+            [
+                Advice("call", Pon(actor=1, target=0, pai="N", consumed=["N", "N"]), asked, 12.0),
+                Advice("skip", None, asked, 12.0),
+            ]
+        )
+        assert not m.state.is_unanimous
+        # 碰要寫出用掉哪兩張(用不用赤是兩個不同的決定),所以 label 帶 consumed
+        assert [e.headline for e in m.state.engines] == ["碰 北 ← 北 北", "跳過"]
+
+    def test_both_declining_is_unanimous(self) -> None:
+        """兩個都說不鳴是一致 —— 改了判準不能反過來把它標成分歧。"""
+        asked = {"mask_bits": 0b11}
+        m = model()
+        m.update_advices([Advice("a", None, asked, 12.0), Advice("b", None, asked, 12.0)])
         assert m.state.is_unanimous
 
     def test_q_values_become_labelled_candidates(self) -> None:

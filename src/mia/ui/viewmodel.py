@@ -44,6 +44,11 @@ from mia.mjai.tiles import UNKNOWN, mjai_to_ms, ms_to_mjai
 
 __all__ = ["EngineView", "ViewModel", "ViewState", "q_fraction", "shanten_text"]
 
+#: 「跳過」在比對答案時的代表。:attr:`EngineView.action` 是人看的字串
+#: (``action_label`` 保證不同動作給不同字串),所以這裡用一個不可能撞名的值
+#: 讓「跳過」也能參與比較 —— 見 :attr:`ViewState.is_unanimous`。
+_DECLINED = "<跳過>"
+
 
 def q_fraction(q: float, *, low: float, high: float) -> float:
     """一個 Q 值的長條要畫多滿(0~1)。
@@ -284,9 +289,19 @@ class ViewState:
 
     @property
     def is_unanimous(self) -> bool:
-        """有動作的引擎是否給了同一個答案。分歧的那幾手才值得停下來看。"""
-        actions = {e.action for e in self.engines if e.action is not None}
-        return len(actions) <= 1
+        """被問到的引擎是否給了同一個答案。分歧的那幾手才值得停下來看。
+
+        ⚠ **「跳過」算一個答案。** 只看有動作的那些,一個引擎鳴、另一個跳過
+        會被當成一致 —— 而那正是副露率這條風格軸上最典型的分歧,也就是這個
+        畫面最該標出來的東西。與 :attr:`EngineGroup.is_unanimous` 同一個理由,
+        兩邊要一起改,否則工具列與側邊視窗會對同一手給出不同判斷。
+        """
+        answers = {
+            e.action if e.action is not None else _DECLINED
+            for e in self.engines
+            if e.action is not None or e.declined
+        }
+        return len(answers) <= 1
 
 
 class ViewModel:

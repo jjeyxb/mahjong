@@ -1,5 +1,10 @@
 # 開發工具 — 安裝於主環境 (Python 3.14)
 #   .venv/bin/pip install -r requirements-dev.txt
+#   .venv/bin/pip install -e . --no-deps
+#
+# 第二行不能省:tests/conftest.py 直接 `import mia`,這裡沒有任何東西會把
+# src/ 插進 sys.path。pytest 能找到 mia 全靠這個 editable install。
+# --no-deps 是因為相依已經在上面 requirements.txt 裝過,重複解析沒有意義。
 
 -r requirements.txt
 
@@ -11,7 +16,16 @@ pytest-cov>=6.0
 # --- 靜態檢查 ---
 ruff>=0.9
 mypy>=1.14
+types-PyYAML                 # config/loader.py 用到 yaml,mypy 少了它會炸 import-untyped
+types-protobuf                # groundtruth/ 的 liqi.proto 產物,同上
+scipy-stubs                   # tools/style_profile.py 用 scipy.cluster.vq 做 k-means,同上
 
 # --- CV 開發輔助 ---
 scikit-image>=0.26          # 影像相似度指標 (SSIM),模板品質評估用
 matplotlib>=3.10            # eval 報告的混淆矩陣 / 準確率圖表
+
+# --- 風格分析 (M8) ---
+# tools/style_profile.py 的 k-means 與階層分群。先前是靠 scikit-image 把它
+# 順便拉進來的,沒有明寫 —— 那代表哪天 scikit-image 換掉相依,這支工具會
+# 在 import 就死掉,而錯誤訊息跟真正的原因一點關係都沒有。
+scipy>=1.14

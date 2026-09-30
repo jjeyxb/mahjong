@@ -1,15 +1,32 @@
 """Windows 擷取後端 —— PrintWindow + PW_RENDERFULLCONTENT。
 
-.. warning::
-   **本模組尚未在真實 Windows 機器上驗證過。** 開發環境為 macOS。
-   首次在 Windows 上執行時請先跑 ``python tools/capture_probe.py --list --capture ...``
-   逐項確認,特別是下列三點:
+**2026-09-18 首次在真實 Windows 機器上驗證**(RX 9070、主螢幕 2560×1440 @125%、
+副螢幕 1920×1080 @100%)。原本列的三個風險,現況:
 
-   1. ``PW_RENDERFULLCONTENT`` 對硬體加速視窗(Chrome / Edge / Electron)是否
-      真的抓得到內容,而不是一片全黑。若全黑,改用 dxcam 或 Windows Graphics
-      Capture(見下方「備案」)。
-   2. DPI 縮放下 ``DwmGetWindowAttribute`` 回傳的邊界是否與擷取影像尺寸一致。
-   3. 遊戲視窗被其他視窗遮擋時是否仍能取得完整內容。
+1. ``PW_RENDERFULLCONTENT`` 對硬體加速視窗是否抓到全黑 —— **不會**。拿一個
+   正在播影片的 Chrome 視窗實測,抓到的是正常畫面(mean=111、std=58)。
+   下方「備案」那兩條因此都不需要走。
+2. DPI 縮放下邊界與影像尺寸對不對得上 —— **原本對不上,已修**。成因不是
+   ``DwmGetWindowAttribute`` 不準(它很準),而是**兩種「邏輯像素」被混為
+   一談**:視窗座標(宣告 DPI aware 之後等同實體像素)與瀏覽器的 CSS 像素。
+   詳見 :meth:`WindowsCaptureBackend.capture` 裡的長註解。
+3. 遊戲視窗被遮擋時能不能抓到完整內容 —— **2026-09-28 驗過了,沒問題**。
+   這裡原本寫的理由是「自動化 session 搶不到前景視窗」,那個理由是錯的:
+   要製造遮擋根本不需要把別人搶到前景,自己開一個 ``WS_EX_TOPMOST`` 的視窗
+   蓋上去就好,那條路不受 foreground lock 管。用 mss 抓螢幕確認覆蓋率 100%
+   (使用者眼裡就是一塊純色)的同時,PrintWindow 拿到的仍是持續變化的內容,
+   全遮與半遮都一樣。見 ``tools/occlusion_probe.py``。
+
+   兩點限制講清楚:
+
+   * 這證明的是**擷取獨立於螢幕上的疊放**。實測中 Chrome 的
+     ``document.visibilityState`` 始終是 ``visible`` —— 它從頭到尾沒發現自己
+     被蓋住(連拿掉 Playwright 那三個保護旗標也一樣),所以「Chrome 主動把
+     被遮擋的視窗當成隱藏、停掉合成」這個狀態沒有被走到。它在未來的 Chrome
+     版本上有可能被走到,屆時的症狀與解法寫在 ``occlusion_probe.py`` 的
+     ``judge()`` 裡。
+   * **最小化是另一回事,而且原本會出事。** 見 :meth:`WindowsCaptureBackend.capture`
+     裡的 ``IsIconic`` 那段。
 
 備案
 ----
@@ -43,6 +60,7 @@ from mia.utils.logging import logger
 __all__ = ["WindowsCaptureBackend", "enable_dpi_awareness", "list_windows"]
 
 try:  # pragma: no cover - 僅 Windows
+    import pywintypes
     import win32api
     import win32con
     import win32gui
@@ -50,8 +68,12 @@ try:  # pragma: no cover - 僅 Windows
     import win32ui
 
     _WIN32_AVAILABLE = True
+    #: pywin32 在 GDI 呼叫失敗時拋的例外。視窗在擷取途中被關掉就會遇到 ——
+    #: handle 跟著失效,之後每一個 GDI 呼叫都會拋。
+    _GDI_ERRORS: tuple[type[BaseException], ...] = (win32ui.error, pywintypes.error)
 except ImportError:  # pragma: no cover
     _WIN32_AVAILABLE = False
+    _GDI_ERRORS = ()
 
 
 # PrintWindow 旗標:渲染完整內容,含 DirectComposition / 硬體加速圖層。
@@ -64,6 +86,11 @@ DWMWA_CLOAKED = 14
 
 # SetProcessDpiAwarenessContext
 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = ctypes.c_void_p(-4)
+
+# GetDpiForMonitor / MonitorFromWindow
+USER_DEFAULT_SCREEN_DPI = 96
+MONITOR_DEFAULTTONEAREST = 2
+MDT_EFFECTIVE_DPI = 0
 
 _dpi_awareness_set = False
 
@@ -106,6 +133,18 @@ def _extended_frame_bounds(hwnd: int) -> Rect:
     ``GetWindowRect`` 在 Windows 10 以後會包含視窗周圍那圈不可見的縮放邊框
     (通常每邊 7~8 px),直接拿來當擷取尺寸會多出黑邊。DWM 的
     ``DWMWA_EXTENDED_FRAME_BOUNDS`` 才是視覺上的真實邊界。
+
+    Returns:
+        視窗邊界;**視窗在查詢當下消失的話回傳 ``Rect(0, 0, 0, 0)``**。
+        兩個呼叫端都已經把「尺寸 <= 0」當成「這個視窗不能用」處理
+        (:func:`list_windows` 跳過它,:meth:`WindowsCaptureBackend.capture`
+        轉成 :class:`CaptureFailedError`),所以這裡不需要再多一種例外。
+
+        **不能讓 ``pywintypes.error`` 漏出去。** 這不是假設性的:
+        :func:`list_windows` 是在 ``EnumWindows`` 的回呼裡對**每一個**視窗
+        呼叫這裡,而桌面上隨時有視窗正在關 —— 只要撞上一次,整趟列舉就炸,
+        而 ``find_window`` 的呼叫端只接 ``CaptureError``,於是擷取執行緒
+        直接被收掉。2026-09-28 全套測試隨機排序時真的撞到了。
     """
     rect = wintypes.RECT()
     hresult = ctypes.windll.dwmapi.DwmGetWindowAttribute(
@@ -114,10 +153,60 @@ def _extended_frame_bounds(hwnd: int) -> Rect:
         ctypes.byref(rect),
         ctypes.sizeof(rect),
     )
-    if hresult != 0:  # 失敗就退回 GetWindowRect
+    if hresult == 0:
+        return Rect.from_bounds(rect.left, rect.top, rect.right, rect.bottom)
+
+    # DWM 失敗就退回 GetWindowRect。它對已經消失的 handle 會拋,
+    # 而「視窗剛剛沒了」正是 DWM 會失敗的主要原因之一。
+    try:
         left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-        return Rect.from_bounds(left, top, right, bottom)
-    return Rect.from_bounds(rect.left, rect.top, rect.right, rect.bottom)
+    except _GDI_ERRORS as exc:
+        logger.debug("問不到視窗 {} 的邊界(多半剛被關掉): {}", hwnd, exc)
+        return Rect(0, 0, 0, 0)
+    return Rect.from_bounds(left, top, right, bottom)
+
+
+def _dpi_scale(hwnd: int) -> float:
+    """視窗所在螢幕的 DPI 縮放:1.0 / 1.25 / 1.5 / 2.0 …
+
+    **這就是 `Frame.scale` 要的那個值**,理由見 :meth:`WindowsCaptureBackend.capture`
+    裡的說明。
+
+    取的是**視窗所在的那一個螢幕**而不是主螢幕 —— 多螢幕各自縮放不同是很常見的
+    設定(這台開發機就是主螢幕 125%、副螢幕 100%),拿主螢幕的值套到另一個螢幕上
+    的視窗會整組算錯。
+
+    Note:
+        這個值等同於瀏覽器的 ``window.devicePixelRatio``,**前提是瀏覽器縮放為
+        100%**。MIA 的瀏覽器是自己開的(見 :mod:`mia.groundtruth.cdp`),不會去
+        動縮放,所以這個前提成立。實測 125% 螢幕上兩者都是 1.25,分毫不差。
+        使用者手動按 Ctrl+ 放大頁面的話這個假設會破 —— 那時候畫布校正會說
+        「對不上」,而不是安靜地給一個偏掉的矩形。
+    """
+    dpi = 0
+    # GetDpiForWindow 是 Windows 10 1607+ 才有的,舊版沒有這個符號
+    get_dpi_for_window = getattr(ctypes.windll.user32, "GetDpiForWindow", None)
+    if get_dpi_for_window is not None:
+        dpi = int(get_dpi_for_window(wintypes.HWND(hwnd)))
+
+    if not dpi:  # 退回:問視窗所在的螢幕
+        monitor = ctypes.windll.user32.MonitorFromWindow(
+            wintypes.HWND(hwnd), wintypes.DWORD(MONITOR_DEFAULTTONEAREST)
+        )
+        dpi_x, dpi_y = wintypes.UINT(), wintypes.UINT()
+        hresult = ctypes.windll.shcore.GetDpiForMonitor(
+            monitor,
+            ctypes.c_int(MDT_EFFECTIVE_DPI),
+            ctypes.byref(dpi_x),
+            ctypes.byref(dpi_y),
+        )
+        if hresult == 0:
+            dpi = dpi_x.value
+
+    if not dpi:
+        logger.warning("問不到視窗 {} 的 DPI,當成 100% 縮放", hwnd)
+        return 1.0
+    return dpi / USER_DEFAULT_SCREEN_DPI
 
 
 def _is_cloaked(hwnd: int) -> bool:
@@ -174,9 +263,21 @@ def list_windows(*, include_all: bool = False) -> list[WindowInfo]:
             if _is_cloaked(hwnd):
                 return True
 
-        bounds = _extended_frame_bounds(hwnd)
-        if not include_all and (bounds.width <= 0 or bounds.height <= 0):
+        physical = _extended_frame_bounds(hwnd)
+        if not include_all and (physical.width <= 0 or physical.height <= 0):
             return True
+
+        # 與 capture() 一致:對外一律報**邏輯座標**。不一致的話,
+        # 「列出來的視窗」與「擷取回來的那一幀」會是兩種單位,而 base.py 的
+        # min_width / min_height 過濾又是吃這裡的值 —— 混用了不會報錯,
+        # 只會在高 DPI 螢幕上默默篩掉或篩進錯的視窗。
+        scale = _dpi_scale(hwnd) if physical.width > 0 else 1.0
+        bounds = Rect(
+            round(physical.x / scale),
+            round(physical.y / scale),
+            round(physical.width / scale),
+            round(physical.height / scale),
+        )
 
         collected.append(
             WindowInfo(
@@ -215,11 +316,32 @@ class WindowsCaptureBackend(CaptureBackend):
         if not win32gui.IsWindow(hwnd):
             raise CaptureFailedError(f"視窗已不存在: {window}")
 
+        # 最小化必須在這裡明確攔下來,**不能指望下面那道尺寸檢查**。
+        # 實測(2026-09-28,tools/occlusion_probe.py 順手挖出來的):
+        #
+        #   IsWindowVisible  → 1      ← 還是「可見」,list_windows 不會濾掉它
+        #   GetWindowRect    → (-32000, -32000, -31801, -31966)
+        #   DWM 擴展邊界      → 183x26 @(-31992,-32000)      ← **正數**
+        #
+        # 於是 `width <= 0` 永遠不成立,PrintWindow 還**回傳成功**,拿到的是
+        # 一張 183x26 的縮圖,而且每一幀都一模一樣。呼叫端收到的是「擷取成功」
+        # 外加一張過期畫面 —— 那比拋例外糟得多:辨識層會拿著凍結的畫面繼續算,
+        # 狀態列上不會有任何異常,錯只會出現在建議裡。
+        #
+        # 轉成 CaptureFailedError,VisionWorker 走的就是既有的「失敗幾次就重新
+        # 找視窗」,使用者把視窗還原之後會自己接回來。
+        if win32gui.IsIconic(hwnd):
+            raise CaptureFailedError(f"視窗已最小化,沒有可擷取的內容: {window}")
+
         # 用當下的邊界而非快取的 window.bounds —— 使用者可能剛剛縮放了視窗。
-        bounds = _extended_frame_bounds(hwnd)
-        width, height = bounds.width, bounds.height
+        # 這裡拿到的是**實體像素**(本行程宣告了 per-monitor DPI aware),
+        # PrintWindow 的點陣圖必須照這個尺寸開,不能用邏輯座標。
+        physical = _extended_frame_bounds(hwnd)
+        width, height = physical.width, physical.height
         if width <= 0 or height <= 0:
-            raise CaptureFailedError(f"視窗尺寸無效({width}x{height}),可能已最小化: {window}")
+            raise CaptureFailedError(
+                f"視窗尺寸無效({width}x{height}),多半是剛被關掉: {window}"
+            )
 
         window_dc = mfc_dc = mem_dc = bitmap = None
         try:
@@ -248,24 +370,63 @@ class WindowsCaptureBackend(CaptureBackend):
             # 用 cv2.cvtColor 而非 numpy 切片,原因見 capture/macos.py 的同段註解。
             bgra = np.frombuffer(raw, dtype=np.uint8).reshape((height, width, 4))
             array = cv2.cvtColor(bgra, cv2.COLOR_BGRA2BGR)
+        except _GDI_ERRORS as exc:
+            # 視窗在擷取途中沒了 —— 對呼叫端而言這就只是「這一幀失敗」,
+            # 和 PrintWindow 回傳失敗是同一件事。轉成 CaptureFailedError,
+            # VisionWorker 才走得到它既有的「失敗幾次就重新找視窗」那條路;
+            # 讓原始的 win32ui.error 漏出去的話,它只會一路衝到執行緒最外層
+            # 把整條擷取執行緒收掉。
+            raise CaptureFailedError(f"GDI 呼叫失敗(視窗可能剛被關掉): {window} — {exc}") from exc
         finally:
-            if bitmap is not None:
-                win32gui.DeleteObject(bitmap.GetHandle())
-            if mem_dc is not None:
-                mem_dc.DeleteDC()
-            if mfc_dc is not None:
-                mfc_dc.DeleteDC()
-            if window_dc is not None:
-                win32gui.ReleaseDC(hwnd, window_dc)
+            # 清理一律 best-effort。視窗一沒,這些 handle 全部失效,
+            # DeleteDC 會拋 win32ui.error —— 而那是**清理階段**的錯誤,
+            # 不該取代真正的結果,更不該取代上面那個 CaptureFailedError。
+            #
+            # 實測(2026-09-18):使用者關掉瀏覽器(live.md 明講那就是結束
+            # 一場的方法)時,DeleteDC failed 這個例外會從 finally 竄出去,
+            # 把整條擷取執行緒打死,畫面上只留一句「擷取執行緒異常結束」。
+            for release in (
+                lambda: win32gui.DeleteObject(bitmap.GetHandle()) if bitmap else None,
+                lambda: mem_dc.DeleteDC() if mem_dc else None,
+                lambda: mfc_dc.DeleteDC() if mfc_dc else None,
+                lambda: win32gui.ReleaseDC(hwnd, window_dc) if window_dc else None,
+            ):
+                try:
+                    release()
+                except _GDI_ERRORS as exc:
+                    logger.debug("釋放 GDI 資源失敗(視窗多半已經關了): {}", exc)
 
-        # 已宣告 per-monitor DPI aware,GetWindowRect 回傳的就是實際像素,
-        # 因此 scale 恆為 1.0。留著這個計算是為了讓上層邏輯與 macOS 一致。
-        scale = array.shape[1] / bounds.width if bounds.width else 1.0
+        # bounds 回報**邏輯座標**、scale 是螢幕的 DPI 縮放 —— 這才符合
+        # base.py 與 geometry.py 白紙黑字寫的約定(「bounds 為邏輯座標」、
+        # 「scale 即 pixel / logical 的比值」),也才與 macOS 那一份一致。
+        #
+        # 這裡原本寫的是「已宣告 per-monitor DPI aware,所以 scale 恆為 1.0」。
+        # 那句話單看擷取層是對的 —— 以視窗座標為單位,影像確實是 1:1。但它讓
+        # **兩種不同的「邏輯像素」被混為一談**:
+        #
+        #   視窗座標(DPI aware 之後 = 實體像素)  vs  瀏覽器的 CSS 像素
+        #
+        # 而 Canvas.table_rect 要換算的是後者 —— 畫布 1600×900 是 CSS 像素,
+        # 在 125% 螢幕上佔 2000 實體像素。scale 給 1.0 的話它會拿 1600 去對
+        # 2004 的影像寬,差 404px 當場判定「畫布對不上」,畫面辨識整個鎖不上。
+        # macOS 上碰巧不會出事:Retina 的 backing scale 與 devicePixelRatio
+        # 都是 2.0,兩種單位剛好同值,於是混用了也看不出來。
+        #
+        # 實測(125% 螢幕、畫布 1600×900):改成這樣之後畫布上方剩給瀏覽器介面
+        # 的高度從荒謬的 337 變成 89.6 個邏輯像素,而 macOS 實測的 Chrome
+        # 工具列是 87 —— 幾何關係一下就對上了,這是這個修法正確的旁證。
+        scale = _dpi_scale(hwnd)
+        logical = Rect(
+            round(physical.x / scale),
+            round(physical.y / scale),
+            round(physical.width / scale),
+            round(physical.height / scale),
+        )
         current = WindowInfo(
             handle=window.handle,
             title=window.title,
             owner=window.owner,
-            bounds=bounds,
+            bounds=logical,
             pid=window.pid,
         )
         return Frame(image=array, window=current, scale=scale, captured_at=captured_at)

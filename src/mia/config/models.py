@@ -13,7 +13,9 @@ __all__ = [
     "AppConfig",
     "CalibrationConfig",
     "CaptureConfig",
+    "EnginesConfig",
     "RoiConfig",
+    "StyleProfileConfig",
     "WindowMatchConfig",
 ]
 
@@ -188,8 +190,37 @@ class RoiConfig(_Base):
     )
 
 
+class StyleProfileConfig(_Base):
+    """一個可以在 UI 上挑的打法風格。
+
+    ``weights`` 可以列**多份** —— 那一項就變成「並排比較」,兩個引擎看同一個
+    局面,UI 把分歧的那幾手標出來。順序就是優先序,想當主角的排前面。
+
+    路徑相對專案根目錄。權重不隨專案散布(Mortal 是 AGPL-3.0),所以列在這裡
+    的檔案在別人機器上很可能不存在 —— 缺檔的項目會被濾掉而不出現在選單裡,
+    不會報錯。
+    """
+
+    name: str = Field(description="給人看的名字,同時是識別字")
+    weights: list[str] = Field(description="要同時載入的權重,相對專案根目錄")
+
+
+class EnginesConfig(_Base):
+    """AI 引擎:有哪些風格可選、預設選哪一個。"""
+
+    profiles: list[StyleProfileConfig] = Field(
+        default_factory=list,
+        description="可選的風格。空的話 UI 上的風格選單會停用",
+    )
+    default: str | None = Field(
+        None,
+        description="啟動時選的風格名稱。None 或找不到時取第一個可用的",
+    )
+
+
 class AppConfig(_Base):
     log_level: str = Field("INFO", description="主控台日誌等級")
     capture: CaptureConfig = Field(default_factory=CaptureConfig)
     calibration: CalibrationConfig = Field(default_factory=CalibrationConfig)
     roi: RoiConfig = Field(default_factory=RoiConfig)
+    engines: EnginesConfig = Field(default_factory=EnginesConfig)

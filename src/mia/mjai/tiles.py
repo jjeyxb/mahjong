@@ -22,13 +22,16 @@ from __future__ import annotations
 __all__ = [
     "HONOR_NAMES",
     "HONOR_ORDER",
+    "SUIT_NAMES",
     "UNKNOWN",
     "TileError",
     "is_red_five",
     "mjai_to_ms",
     "ms_to_mjai",
+    "normalize_honor",
     "normalize_red",
     "sort_key",
+    "suit_name",
     "tile_name",
 ]
 
@@ -97,6 +100,24 @@ _TO_NAME = {
 }
 
 
+_TO_HONOR = {f"{i + 1}z": code for i, code in enumerate(HONOR_ORDER)}
+
+
+def normalize_honor(tile: str) -> str:
+    """``1z`` → ``E``。把字牌統一成 MJAI 的字母式。數牌原樣回傳。
+
+    專案裡兩種記法都會出現(:func:`tile_name` 也刻意兩種都收),**比對字牌時
+    一定要先過這裡**。不統一的話 ``"1z" in {"E", ...}`` 永遠是 ``False``,
+    而症狀是「那條規則靜靜地不生效」—— 不會拋例外、不會有日誌,只會少一個
+    警告。實測 :class:`~mia.mjai.table.Player` 的役牌門檻就是這樣被吃掉的,
+    連原本的測試都照樣通過。
+
+    >>> normalize_honor("1z"), normalize_honor("E"), normalize_honor("3m")
+    ('E', 'E', '3m')
+    """
+    return _TO_HONOR.get(tile, tile)
+
+
 def tile_name(tile: str) -> str:
     """給人看的牌名。兩種表示法都收。
 
@@ -110,6 +131,23 @@ def tile_name(tile: str) -> str:
     ('東', '東', '3m')
     """
     return _TO_NAME.get(tile, tile)
+
+
+#: 花色的中文名。
+#:
+#: :func:`tile_name` 刻意讓數牌維持 ``3m``,理由是要對得上畫面上的牌。這裡
+#: 不一樣:花色是**單獨出現在句子裡**的(「下家 3 副露、染萬子」),那種場合
+#: 寫 ``m`` 反而要讀者自己翻譯。個別的牌與句子裡的花色是兩種用途。
+SUIT_NAMES = {"m": "萬子", "p": "筒子", "s": "索子"}
+
+
+def suit_name(suit: str) -> str:
+    """``m`` → ``萬子``。認不得的原樣回傳,理由同 :func:`tile_name`。
+
+    >>> suit_name("m"), suit_name("z")
+    ('萬子', 'z')
+    """
+    return SUIT_NAMES.get(suit, suit)
 
 
 #: 顯示用的花色順序:萬 → 筒 → 索 → 字牌。
