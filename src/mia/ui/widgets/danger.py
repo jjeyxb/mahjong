@@ -101,11 +101,21 @@ def _detail(danger: TileDanger, seat: int | None) -> str:
     """「對誰、憑什麼」那一句。
 
     三家都是現物時收成一句話 —— 那是最好的情況,不必把三行一樣的東西攤開。
-    否則只寫最危險那一家:其餘的資訊量低,而這一列的寬度有限。
+    否則寫最危險那一家,**再加上哪幾家是現物**。
+
+    Note:
+        現物是「其餘的資訊量低」那條規則的例外。原本這裡只寫最危險的一家,
+        於是「對立直家是現物、對另外兩家全新」這種局面在畫面上完全看不出
+        前半段 —— 而那半段是規則保證的不可能,不是「比較不危險」,正好是
+        打牌時最想知道的東西。等級仍然只由最危險那家決定(放銃只需要中一個),
+        這裡加的是**描述**,不是等級。
     """
     if all(s.furiten for s in danger.seats):
         return "三家都是現物"
-    return f"對{_who(danger, seat)}:{_worst(danger).reason}"
+    worst = _worst(danger)
+    line = f"對{_named(worst, seat)}:{worst.reason}"
+    note = _furiten_note(danger, seat, exclude=worst)
+    return f"{line} · {note}" if note else line
 
 
 def danger_note(danger: TileDanger, seat: int | None) -> str:
@@ -126,7 +136,9 @@ def danger_note(danger: TileDanger, seat: int | None) -> str:
     if danger.level is DangerLevel.SAFE:
         return "對三家都排除了"
     worst = _worst(danger)
-    return f"對{_who(danger, seat)}・還 {len(worst.waits)} 型"
+    note = _furiten_note(danger, seat, exclude=worst, verb=False)
+    tail = f"・{note}現物" if note else ""
+    return f"對{_who(danger, seat)}・還 {len(worst.waits)} 型{tail}"
 
 
 def _who(danger: TileDanger, seat: int | None) -> str:
@@ -135,15 +147,49 @@ def _who(danger: TileDanger, seat: int | None) -> str:
     括號裡那個字**不能省**:「對下家危險」與「對下家(3副露)危險」是不同
     份量的話,而使用者要靠那個份量決定要不要繞路。
     """
-    worst = _worst(danger)
-    who = seat_name(seat, worst.seat)
-    return f"{who}({worst.stance})" if worst.stance else who
+    return _named(_worst(danger), seat)
+
+
+def _named(sd: SeatDanger, seat: int | None) -> str:
+    """一家的稱呼:相對座位 + 憑什麼被指名。"""
+    who = seat_name(seat, sd.seat)
+    return f"{who}({sd.stance})" if sd.stance else who
+
+
+def _furiten_note(
+    danger: TileDanger, seat: int | None, *, exclude: SeatDanger, verb: bool = True
+) -> str:
+    """「這幾家是現物」。沒有可講的就回空字串。
+
+    Args:
+        exclude: 已經在句子前半段被指名的那一家。**一定要排除** ——
+            0 型又立直的家有可能同時是 :func:`_worst` 選中的那個,那時
+            「對對家(立直):現物 · 對家(立直)是現物」會把同一件事說兩次。
+        verb: 要不要帶「是現物」那兩個字。Overlay 版不帶,由呼叫端接上 ——
+            HUD 的寬度是從牌桌上搶來的,省得下來的就要省。
+
+    Note:
+        **括號裡的立直 / 副露不省。** 「對家是現物」與「對家(立直)是現物」
+        份量差很多:後者是說那個確定在聽的人打不到你,那正是這一句最有用的
+        時候。省掉它省不到幾個字,卻剛好省掉了重點。
+    """
+    others = [s for s in danger.seats if s.furiten and s is not exclude]
+    if not others:
+        return ""
+    who = "、".join(_named(s, seat) for s in others)
+    return f"{who}是現物" if verb else who
 
 
 def _worst(danger: TileDanger) -> SeatDanger:
-    """最該提的那一家。與 :func:`mia.analysis.danger._worst` 同一個排序 ——
-    平手時優先講立直的那個,不然 ``max`` 回的是座位編號最小的那家。"""
-    return max(danger.seats, key=lambda s: (s.level, len(s.waits), s.reach))
+    """最該提的那一家。
+
+    **與分析層同一個排序,靠測試釘著。** 這裡原本漏掉 ``s.threat``,
+    於是三副露的人與一個什麼都沒做的人平手時,名字落在座位編號小的那個 ——
+    畫面上就變成「對下家危險」,而真正露出馬腳的上家一個字都沒提到。
+    那正是 ``docs/decisions.md`` 第十八節說「平手不寫死就是拿巧合當道理」
+    的那個坑,分析層修好了,這份抄過來的沒有跟上。
+    """
+    return max(danger.seats, key=lambda s: (s.level, len(s.waits), s.threat, s.reach))
 
 
 class AnalysisDangerTab(QWidget):
