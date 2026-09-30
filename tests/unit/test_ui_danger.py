@@ -9,13 +9,19 @@ from __future__ import annotations
 import pytest
 
 from mia.analysis import DangerLevel, assess
+from mia.analysis.danger import _worst as _analysis_worst
 from mia.mjai import Dahai, Pon, Reach, StartGame, StartKyoku
 from mia.mjai.table import TableTracker
 from mia.ui.viewmodel import ViewModel
 
 pytest.importorskip("PySide6", reason="UI 測試需要 PySide6")
 
-from mia.ui.widgets.danger import AnalysisDangerTab, seat_name
+from mia.ui.widgets.danger import (
+    AnalysisDangerTab,
+    _worst,
+    danger_note,
+    seat_name,
+)
 from mia.ui.widgets.tiles import TileIcons
 
 
@@ -151,6 +157,71 @@ class TestWhatItSays:
         assert report.tiles[0].level is DangerLevel.SAFE
         _apply(tab, report)
         assert tab._rows[0]._detail.text() == "三家都是現物"  # noqa: SLF001
+
+    def test_a_partly_furiten_tile_says_which_seats(self, tab) -> None:
+        """**使用者回報的那個洞。** 只有一家是現物時,原本那一列完全不提它 ——
+        只寫最危險的那一家,於是規則保證的那半段在畫面上消失了。
+
+        現物不是「比較不危險」,是不可能。它是「其餘的資訊量低」那條規則的例外。
+        """
+        table = _table(seat=0)
+        table.handle(Reach(actor=2))
+        table.handle(Dahai(actor=2, pai="3m", tsumogiri=False))  # 對家的現物
+        report = assess(["3m"], table)
+        # 另外兩家沒打過 3m,所以這張牌整體仍然危險 —— 等級不因描述改變
+        assert report.tiles[0].level is not DangerLevel.SAFE
+        _apply(tab, report)
+        assert "對家(立直)是現物" in tab._rows[0]._detail.text()  # noqa: SLF001
+
+    def test_the_named_seat_is_not_repeated(self, tab) -> None:
+        """0 型又立直的家可能同時是被指名的那一家。那時不能把同一件事說兩次。"""
+        table = _table(seat=0)
+        table.handle(Reach(actor=2))
+        table.handle(Dahai(actor=2, pai="3m", tsumogiri=False))
+        # 另外兩家也打掉 3m,三家全現物 → 走收成一句話那條路
+        table.handle(Dahai(actor=1, pai="3m", tsumogiri=False))
+        table.handle(Dahai(actor=3, pai="3m", tsumogiri=False))
+        _apply(tab, assess(["3m"], table))
+        assert tab._rows[0]._detail.text().count("現物") == 1  # noqa: SLF001
+
+    def test_a_melded_seat_wins_the_tie_over_nobody(self, tab) -> None:
+        """三副露的人與什麼都沒做的人危險度相同時,要指名前者。
+
+        這一列原本漏掉 `threat`,名字就落在座位編號最小的那家 —— 畫面寫
+        「對下家危險」,而真正露出馬腳的上家一個字都沒提。
+        """
+        table = _table(seat=0)
+        for pai in ("1z", "2z", "3z"):
+            table.handle(Pon(actor=3, target=0, pai=pai, consumed=[pai, pai]))
+        _apply(tab, assess(["3m"], table))
+        assert "上家(3副露)" in tab._rows[0]._detail.text()  # noqa: SLF001
+
+    def test_the_row_and_the_analysis_agree_on_who_to_name(self) -> None:
+        """兩層各有一份「最該提的哪一家」,而它們**必須同一個排序**。
+
+        分析層那份的 docstring 寫得很清楚為什麼要這樣排,而這一份是抄過去的
+        —— 抄過去的東西會走鐘,這個測試就是為了讓它走鐘時有人喊。
+        """
+        table = _table(seat=0)
+        for pai in ("1z", "2z", "3z"):
+            table.handle(Pon(actor=3, target=0, pai=pai, consumed=[pai, pai]))
+        table.handle(Reach(actor=1))
+        table.handle(Dahai(actor=1, pai="9p", tsumogiri=False))
+        table.handle(Dahai(actor=2, pai="3m", tsumogiri=False))
+        report = assess(["1m", "3m", "5m", "9m", "E"], table)
+        for tile in report.tiles:
+            assert _worst(tile).seat == _analysis_worst(tile.seats).seat
+
+    def test_the_overlay_note_also_says_it(self) -> None:
+        """Overlay 砍掉的是待牌型的清單,不是「對誰」—— 現物屬於後者。"""
+        table = _table(seat=0)
+        table.handle(Reach(actor=3))
+        table.handle(Dahai(actor=3, pai="3m", tsumogiri=False))
+        report = assess(["3m"], table)
+        note = danger_note(report.tiles[0], report.seat)
+        assert "上家(立直)現物" in note
+        # 型的清單才是被砍掉的那個 —— 別把它加回來
+        assert "兩面" not in note
 
 
 class TestRowPool:
