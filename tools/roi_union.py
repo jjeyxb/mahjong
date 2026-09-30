@@ -19,13 +19,12 @@ ROI 一定會低估 —— 外框要留的是**最極端**的情況(牌河疊到
 
 用法::
 
-    .venv/bin/python tools/roi_union.py data/recordings/g2/frames --out data/roi_ref/union.png
-    .venv/bin/python tools/roi_union.py data/recordings/*/frames --out data/roi_ref/union.png
+    python tools/roi_union.py data/recordings/g2/frames --out data/roi_ref/union.png
+    python tools/roi_union.py data/recordings/*/frames --out data/roi_ref/union.png
 
 輸出的圖可以直接餵給 roi_annotate.py::
 
-    .venv/bin/python tools/roi_annotate.py \
-        --image data/roi_ref/union.png --out data/roi_ref/roi.yaml
+    python tools/roi_annotate.py --image data/roi_ref/union.png --out data/roi_ref/roi.yaml
 """
 
 from __future__ import annotations
