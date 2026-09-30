@@ -67,9 +67,15 @@ Apache License 2.0 全文:https://www.apache.org/licenses/LICENSE-2.0
 (子程序 + 明確 IPC 協定是否構成獨立作品)在法律上並無判例支撐,
 也不影響本專案的合規性。
 
-模型權重不隨本專案散布,請依 Mortal 專案的規範自行取得。
-微調權重是否構成 AGPL 意義下的衍生作品目前無定論;若日後散布,
-本專案採保守立場一併以 AGPL-3.0 標示。
+模型權重不隨本專案的 git repo 散布(`models/` 在 .gitignore 裡)。
+本專案微調出的四份風格權重與自訓的 GRP 權重公開於
+https://huggingface.co/jjeyxb/mia-mortal-style ,一併以 AGPL-3.0 標示。
+微調權重是否構成 AGPL 意義下的衍生作品目前無定論;本專案採保守立場,
+散布時一併標示 AGPL-3.0。
+
+該處的 mortal_298k.pth 是 https://huggingface.co/VoidShine/mortal-298k
+的轉載,非本專案產出,放置目的僅為一個連結取齊所有權重;
+要取得原始檔請以該上游為準。
 
 
 3. 雀魂協定定義 liqi.json

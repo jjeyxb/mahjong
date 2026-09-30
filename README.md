@@ -137,7 +137,7 @@ src/mia/
 ├── vision/        純 CV,無狀態:roi + tiles/(手牌定位 hand + 牌面分類 classify)
 ├── analysis/      shanten(向聽 / 進張)+ danger(放銃危險度,純排除法)
 ├── mjai/          events / tiles(牌表示轉換)/ handstate(自己的手牌)/ table(整桌)
-├── engine/        base / subprocess_engine / mortal / dummy / multiplex
+├── engine/        base / subprocess_engine / mortal / dummy / multiplex / styles
 ├── live/          即時模式:bus / vision / packets / danger / runtime / source
 ├── ui/            viewmodel + state(記住的位置)+ switchboard + style(深色模式)
 │                  + panel/ overlay/ widgets/
@@ -147,12 +147,18 @@ src/mia/
 └── utils/
 
 engines/mortal/    Mortal 子程序的獨立環境 (Python 3.12)
-tools/             開發用 CLI:capture_probe / roi_annotate / roi_union / record / gt / fetch_*
+tools/             開發用 CLI:ui / advise / capture_probe / occlusion_probe
+                   roi_annotate / roi_union / record / gt / evaluate
+                   style_profile(風格名單)/ fetch_tenhou / fetch_tiles / fetch_liqi
 assets/tiles/      牌面模板圖(37 張/皮膚),由 tools/fetch_tiles.py 產生
 config/            ROI 定義、skin profile YAML
 data/              錄製資料集、ui_state.json(記住的 Overlay 位置)(gitignore)
-models/            權重 .pth (gitignore)
-docs/decisions.md  方向轉折的完整記錄
+models/            權重 .pth (gitignore,見下方「M8」的下載說明)
+docs/decisions.md  方向轉折與全部決策理由(最重要)
+docs/handoff.md    交接文件:現況、跑法、踩過的坑
+docs/live.md       即時模式操作手冊 + 狀態列對照表
+docs/eval_1v3.md   風格權重的 1v3 評測紀錄
+docs/recording.md  錄製配對素材的檢查清單
 tests/fixtures/    靜態截圖 + 期望輸出
 ```
 
@@ -317,14 +323,14 @@ python3.14 -m venv .venv
 | M7-1 | **放銃分析** | ✅ 完成 —— 排除法算每張牌的危險度,獨立頁面 + 可選的 Overlay 清單。見下方「放銃分析實測」 |
 | M8 | **打法風格微調**(見下節) | ✅ 六步全數完成 —— 語料 25,543 場鳳凰卓、GRP 自訓、**兩條風格軸各自在 `one_vs_three` 上重現**(副露率 81% / 立直率 98%)且順位沒掉。四份權重各 **15,000 場**複驗,平均順位的 **95% CI 全部含 2.500**,見 [docs/eval_1v3.md](docs/eval_1v3.md)。UI 上可直接切換風格權重 |
 
-目前 **1283 個測試**(其中 9 個只在 Windows 上跑)、ruff + mypy 乾淨。
+目前 **1292 個測試**(其中 9 個只在 Windows 上跑)、ruff + mypy 乾淨。
 
 ### M3 的三個子項
 
 1. ~~**修校正不穩**~~ —— ✅ 已完成（`calibration/stable.py`）。多幀取樣 →
    丟掉離譜候選 → 逐分量中位數。用實測分布做蒙地卡羅，「誤差 > 1%」的機率
    從 **13.4% 降到 0%**，最差情況從 287 px 降到 11 px。
-   尚未對真實錄影端對端複驗（原始錄影已刪除）。
+   **已對真實錄影端對端複驗** —— 2026-08-01 錄的 12599 幀,見下方「M3-1b 實測」。
 2. ~~**擺脫可自訂牌背的色相依賴**~~ —— ✅ 已完成（`vision/tiles/hand.py`）。
    改用**固定槽位模型** `x_k = origin + k*pitch`（實測殘差 < 1 px），佔用以
    標準差判斷，完全不看顏色。原本要做的「開局就地量測色相」整項取消。
@@ -337,7 +343,7 @@ python3.14 -m venv .venv
 
 ## M8：打法風格微調
 
-**狀態：完成（2026-09-30）。** 產出是數份 `.pth`，放進 `models/` 就能被
+**狀態：完成（2026-09-30；權重 2026-10-01 上架 HuggingFace）。** 產出是數份 `.pth`，放進 `models/` 就能被
 `engine/multiplex.py` 當成額外的引擎載入 —— 與 CV、UI 完全解耦。
 側邊視窗的「風格」下拉可以直接切換，不必重開程式。
 
@@ -486,7 +492,7 @@ Mortal。對照組：一次已知失敗的微調量到的順位差是 0.057，�
 | 1 | 全螢幕擷取會把自己的 Overlay 拍進去 | 主路徑用**單視窗擷取**：macOS `CGWindowListCreateImage(windowID)`、Windows `PrintWindow` + `PW_RENDERFULLCONTENT` | ✅ 兩個平台都解決了（見下方兩張實測表） |
 | 2 | macOS Retina 邏輯座標 ≠ 像素座標 | ROI 一律存成相對牌桌矩形的 0~1 正規化座標，執行期再乘實際像素尺寸 | ✅ 已實作，並在畫布 480~3840 實測驗證（見下方「解析度獨立性」） |
 | 3 | 視窗擷取含 OS 標題列 / 瀏覽器工具列 | 多輪邊緣剝除：從四邊往內剝「整條顏色一致」的帶狀區域 | ✅ 已實作，Chromium 上也正確 |
-| 4 | 單幀校正是啟發式，會被動畫與立繪干擾（216 幀產生 21 種 `table_rect`，16% 明顯錯誤） | `StableCalibrator`：多幀取樣 → 丟掉離譜候選 → 逐分量中位數 | ✅ 已修，尚未對真實錄影複驗 |
+| 4 | 單幀校正是啟發式，會被動畫與立繪干擾（216 幀產生 21 種 `table_rect`，16% 明顯錯誤） | `StableCalibrator`：多幀取樣 → 丟掉離譜候選 → 逐分量中位數 | ✅ 已修，並在 2026-08-01 的真實錄影上端對端複驗（配到 4327 幀） |
 | 5 | 玩家自訂牌背改變切牌的色相基準 | 改用固定槽位 + 標準差判斷佔用，不看顏色 | ✅ 已解決，色相依賴整個移除 |
 | 6 | 雀魂 3D 傾斜視角 | 手牌接近正面平視，可直接處理 | ✅ 牌河已移出範圍，不再是問題 |
 
@@ -622,6 +628,13 @@ system green）。打開 AI 建議會開一個載著 130MB 權重的子程序、
 寶牌都補得回來（實測追完整場約 2 秒）。擷取子程序**不受開關影響**，因為綁上去
 的話關掉再打開會殺掉瀏覽器、整場對局就沒了。
 
+**「AI 建議」頁上的「風格」下拉可以換打法風格**,選項來自 `config/default.yaml`
+的 `engines.profiles`：五個單一權重（標準／愛鳴牌／不愛鳴牌／愛立直／不愛立直）
+與兩個並排比較（`比較:鳴牌傾向`、`比較:立直傾向`，同一個局面兩份權重各給一個
+答案，分歧的那幾手才是風格差異的實際內容）。**權重檔不在 `models/` 的選項會被
+濾掉**，所以列出來的都真的載得起來。換風格會**整個重啟引擎**（再付一次 0.5~0.6
+秒的載入），因為 Mortal 子程序的權重是啟動時載的，沒有換權重的協定。
+
 `--live` 會開一個 `tools/gt.py cdp` 子程序抓封包，同時擷取遊戲視窗跑 CV。
 **封包錄影是副產品**：即時建議與離線準確率評測用的是同一份 `ws.jsonl`，
 不必為了產生資料集再打一場。
@@ -646,8 +659,8 @@ Qt 事件迴圈要顧。代價是多一次落地與讀回，換到的是「三�
 | 郵箱合併 | 投遞 210 筆 → UI 只收到 **12 次**通知 |
 | 半截行處理 | 1398 行、**0 個壞行**（刻意在第 400 行切一次） |
 
-**尚未一起驗過的是「畫面與封包同時在真實對局上跑」** —— 兩條路各自都在真實
-素材上驗過了，但需要一次實機對局才能驗它們一起跑。
+**畫面與封包同時在真實對局上跑,2026-09-18 在 Windows 上驗過了** ——
+牌桌校正鎖上、16 次手牌辨識與封包建議同時在跑,兩條路互不干擾。
 
 操作步驟、狀態列訊息對照表、卡住時怎麼查 —— 見 **[docs/live.md](docs/live.md)**。
 
