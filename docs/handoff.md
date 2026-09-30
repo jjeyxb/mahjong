@@ -124,7 +124,7 @@ git clone / pull 之後**還缺四樣東西** —— 它們都在 gitignore 裡,
 
 | 缺什麼 | 怎麼補 | 大小 |
 |---|---|---|
-| `models/mortal_298k.pth` | `curl -L -o models/mortal_298k.pth https://huggingface.co/VoidShine/mortal-298k/resolve/main/mortal_298k.pth` | 130 MB |
+| `models/*.pth` | `hf download jjeyxb/mia-mortal-style --local-dir models`(要先 `pip install huggingface_hub`)。四份風格權重 + `grp.pth` + 基準權重一次拿齊。基準權重的原始出處是 [VoidShine/mortal-298k](https://huggingface.co/VoidShine/mortal-298k) | 625 MB |
 | `engines/mortal/Mortal/` | `git clone --depth 1 https://github.com/Equim-chan/Mortal.git engines/mortal/Mortal` | |
 | Playwright 的 Chromium | `.venv\Scripts\python.exe -m playwright install chromium` | |
 | 兩個 venv | 見下 | |
@@ -365,7 +365,7 @@ GDI 例外轉成 `CaptureFailedError` —— `VisionWorker._tick` 只接這個�
 | `engines/mortal/.venv` | 689 M | Python 3.12 引擎環境(torch 佔大部分) |
 | `engines/mortal/Mortal` | 382 M | Mortal 的 clone,含 Rust 編譯產物 |
 | `data/gt` | 286 M | ground truth |
-| `models/` | 125 M | 權重,HuggingFace 隨時能重抓 |
+| `models/` | 1.0 G | 權重,HuggingFace 隨時能重抓(`jjeyxb/mia-mortal-style`)|
 | 其他 | ~30 M | `.git` 6.4M、`logs` 2.8M、`assets` 616K |
 
 ### 專案目錄外 —— 約 1.9 GB(要手動清)

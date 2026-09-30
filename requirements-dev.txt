@@ -29,3 +29,8 @@ matplotlib>=3.10            # eval 報告的混淆矩陣 / 準確率圖表
 # 順便拉進來的,沒有明寫 —— 那代表哪天 scikit-image 換掉相依,這支工具會
 # 在 import 就死掉,而錯誤訊息跟真正的原因一點關係都沒有。
 scipy>=1.14
+
+# --- 權重散布 ---
+# 微調出來的風格權重放在 HuggingFace(不隨 repo 散布,見 docs/decisions.md 第七節)。
+# 只有要上傳新權重時才需要,一般開發與執行都用不到。
+huggingface_hub>=0.30

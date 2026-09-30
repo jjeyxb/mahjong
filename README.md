@@ -454,9 +454,19 @@ Mortal。對照組：一次已知失敗的微調量到的順位差是 0.057，�
 這一步同時驗證建置、GPU 環境、權重相容性三件事，失敗的話也是最早、最便宜的失敗點。
 （2026-09-18 已在 Windows 上驗過，與真人一致率 66%，與 macOS 記錄的數字相同。）
 
-> ⚠ **權重不隨 repo 散布。** `models/` 在 `.gitignore` 裡，`mortal_298k.pth`
-> 要自己從 [HuggingFace](https://huggingface.co/VoidShine/mortal-298k) 下載，
-> 微調出來的風格權重也不上傳。理由見[授權與使用聲明](#授權與使用聲明)。
+> ⚠ **權重不進版控,但都放在 HuggingFace。** `models/` 在 `.gitignore` 裡
+> （125 MB 一份，超過 GitHub 的單檔上限）。四份風格權重、自訓的 `grp.pth`
+> 與基準權重都在 **[jjeyxb/mia-mortal-style](https://huggingface.co/jjeyxb/mia-mortal-style)**，
+> 下載後放進 `models/` 即可。
+>
+> ```
+> pip install huggingface_hub
+> hf download jjeyxb/mia-mortal-style --local-dir models
+> ```
+>
+> 基準權重的原始出處是 [VoidShine/mortal-298k](https://huggingface.co/VoidShine/mortal-298k)
+> —— 上面那個 repo 只是轉載一份好讓連結拿得齊，**要原始檔請以上游為準**。
+> 授權立場見[授權與使用聲明](#授權與使用聲明)。
 
 ### 硬體與環境
 
@@ -795,11 +805,16 @@ bug 的形狀：它一次只弄壞**一張**牌，而整手正確是 13 張裡�
 
 ### 模型權重
 
-- 上游權重與 M8 微調產出的權重**都不隨本 repo 散布**，請依 Mortal 專案的規範自行取得。
+- 權重**不隨本 repo 散布**（`models/` 在 `.gitignore` 裡），改放在
+  **[jjeyxb/mia-mortal-style](https://huggingface.co/jjeyxb/mia-mortal-style)**，
+  一併以 **AGPL-3.0** 標示。
 - 微調權重是否構成 AGPL 意義下的「衍生作品」，目前**法律上並無定論**
   （一派視權重為資料、一派視為訓練程式的產物，尚無判例）。
-  本專案採保守立場：若日後散布微調權重，一併以 AGPL-3.0 標示。
+  本專案採保守立場：散布時一併以 AGPL-3.0 標示。
   這個不確定性應在論文中如實陳述，而非略過。
+- 上游的 `mortal_298k.pth` 在該 repo 裡是**轉載**，只為了一個連結拿得齊所有
+  權重。原始出處是 [VoidShine/mortal-298k](https://huggingface.co/VoidShine/mortal-298k)，
+  要原始檔請以上游為準。
 
 ### 第三方成果
 
