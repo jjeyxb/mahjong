@@ -111,9 +111,14 @@ class TestMeldsAreThreatsToo:
     """三副露也算威脅。實測那場最重的一次榮和,和牌的就是一個三副露、
     沒立直的人,而三副露的曝光量與立直是同一個量級。"""
 
-    @staticmethod
-    def _pon(t, seat: int, count: int):
-        for pai in ("1z", "2z", "3z")[:count]:
+    #: 對座位 0 與 2(``_start`` 的 ``oya=0``、場風東)都不是役牌,而且兩個
+    #: 不同花色所以湊不出染手。原本是 ``1z 2z 3z``,但 ``1z`` 就是場風 ——
+    #: 「兩副露不算威脅」那條當時其實在測「兩副露帶役牌」。
+    _NEUTRAL = ("9p", "9s", "2z")
+
+    @classmethod
+    def _pon(cls, t, seat: int, count: int):
+        for pai in cls._NEUTRAL[:count]:
             t.handle(Pon(actor=seat, target=(seat + 3) % 4, pai=pai, consumed=[pai, pai]))
         return t
 
@@ -237,3 +242,132 @@ class TestAgainstARealGame:
         for event in replay:
             tracker.handle(event)
         assert tracker.seat == 2
+
+
+class TestYakuhaiLowersTheThreshold:
+    """「2 副露 + 役牌」與「3 副露無役牌」是同一級威脅。
+
+    2026-09-28 拿 14,544 場鳳凰卓量的:1.488% [1.459, 1.518] 對
+    1.465% [1.358, 1.579],信賴區間重疊。而舊的純計數門檻只認得後者 ——
+    實測牌譜裡我們自己那次放銃,和牌的人正是 2 副露(未解 #15)。
+    """
+
+    @staticmethod
+    def _table(oya: int = 0) -> TableTracker:
+        t = TableTracker()
+        t.handle(StartGame(id=0))
+        t.handle(
+            StartKyoku(
+                bakaze="E", kyoku=1, honba=0, kyotaku=0, oya=oya, dora_marker="1z",
+                tehais=[["?"] * 13 for _ in range(4)], scores=[25000] * 4,
+            )
+        )
+        return t
+
+    @staticmethod
+    def _pon(t: TableTracker, seat: int, *tiles: str) -> TableTracker:
+        for pai in tiles:
+            t.handle(Pon(actor=seat, target=(seat + 3) % 4, pai=pai, consumed=[pai, pai]))
+        return t
+
+    def test_two_melds_with_a_dragon_is_a_threat(self) -> None:
+        assert self._pon(self._table(), 2, "P", "9s").threats == [2]
+
+    def test_two_melds_without_one_is_not(self) -> None:
+        """對照組。差別只在其中一組是不是役牌。"""
+        assert self._pon(self._table(), 2, "9p", "9s").threats == []
+
+    def test_one_meld_with_a_dragon_is_not(self) -> None:
+        """門檻只降到 2,不再往下。
+
+        量出來的「1 副露有役牌」是 0.750%,比「1 副露無役牌」的 0.811% **還低**
+        (樣本各 125 萬與 150 萬,不是雜訊)—— 單獨一個役牌碰多半是慢手的
+        起手,不是聽牌訊號。
+        """
+        assert self._pon(self._table(), 2, "P").threats == []
+
+    def test_the_round_wind_counts(self) -> None:
+        """場風東,所以東對每一家都是役牌。"""
+        assert self._pon(self._table(), 2, "E", "9s").threats == [2]
+
+    def test_a_wind_that_is_nobodys_is_not(self) -> None:
+        """莊家在 0,所以 2 家的自風是西;南對他既不是場風也不是自風。"""
+        assert self._pon(self._table(), 2, "S", "9s").threats == []
+
+    def test_the_seat_wind_counts_and_it_is_per_seat(self) -> None:
+        """同一張西,對自風西的那家是役牌,對別家不是。
+
+        役牌是**每家一份**而不是全桌一份,這條就是在釘那件事。
+        """
+        assert self._pon(self._table(), 2, "W", "9s").threats == [2]
+        assert self._pon(self._table(), 3, "W", "9s").threats == []
+
+    def test_both_honour_notations_work(self) -> None:
+        """``1z`` 與 ``E`` 是同一張牌 —— 兩種記法專案裡都會出現。
+
+        **這一條是回歸測試。** 第一版拿 ``E`` 建役牌集合、卻直接跟副露裡的
+        ``1z`` 比對,結果門檻永遠不成立 —— 不拋例外、不寫日誌,只是靜靜地
+        少一個警告。當時的測試全部照樣通過。
+        """
+        assert self._pon(self._table(), 2, "1z", "9s").threats == [2]
+        assert self._pon(self._table(), 2, "5z", "9s").threats == [2]
+
+
+class TestSuitRead:
+    """副露的**內容**:數牌全同色就是染手(混一色 / 清一色)的形狀。
+
+    門檻是「總副露 ≥ 3 組」,看的是總組數而不是同色的數牌組數 —— 因為實測
+    帶訊號的是字牌組。14,544 場裡取自摸和牌(和牌張沒有被任何人挑選過),
+    看和牌張落在他集中那色的比例,虛無假設 33.3%。
+    """
+
+    @staticmethod
+    def _table() -> TableTracker:
+        t = TableTracker()
+        t.handle(StartGame(id=0))
+        t.handle(
+            StartKyoku(
+                bakaze="E", kyoku=1, honba=0, kyotaku=0, oya=0, dora_marker="1z",
+                tehais=[["?"] * 13 for _ in range(4)], scores=[25000] * 4,
+            )
+        )
+        return t
+
+    def test_three_melds_in_one_suit_reads_as_that_suit(self) -> None:
+        """3 組同色:81.3% [72.1, 88.0]。整份資料裡最強的訊號。"""
+        t = self._table()
+        for pai in ("1m", "5m", "9m"):
+            t.handle(Pon(actor=1, target=0, pai=pai, consumed=[pai, pai]))
+        assert t.players[1].suit_read == "m"
+
+    def test_honour_melds_do_not_break_it(self) -> None:
+        """2 組同色 + 1 組字牌:50.5% [45.8, 55.1]。
+
+        混一色本來就允許字牌面子,所以字牌組不但不破壞條件,**它才是帶訊號的
+        那一個** —— 同樣 2 組同色,沒字牌只有 36.8%。
+        """
+        t = self._table()
+        t.handle(Chi(actor=1, target=0, pai="3p", consumed=["4p", "5p"]))
+        t.handle(Pon(actor=1, target=0, pai="7p", consumed=["7p", "7p"]))
+        t.handle(Pon(actor=1, target=0, pai="P", consumed=["P", "P"]))
+        assert t.players[1].suit_read == "p"
+
+    def test_two_melds_is_not_enough(self) -> None:
+        """2 組同色、總共也只有 2 組:36.8% [33.3, 40.4],下界壓在基準上。"""
+        t = self._table()
+        for pai in ("1s", "5s"):
+            t.handle(Pon(actor=1, target=0, pai=pai, consumed=[pai, pai]))
+        assert t.players[1].suit_read is None
+
+    def test_mixed_suits_read_as_nothing(self) -> None:
+        t = self._table()
+        for pai in ("1m", "5p", "9s"):
+            t.handle(Pon(actor=1, target=0, pai=pai, consumed=[pai, pai]))
+        assert t.players[1].suit_read is None
+
+    def test_all_honours_read_as_nothing(self) -> None:
+        """全是字牌就沒有「那一色」可講 —— 不是染手,是役牌手。"""
+        t = self._table()
+        for pai in ("P", "F", "C"):
+            t.handle(Pon(actor=1, target=0, pai=pai, consumed=[pai, pai]))
+        assert t.players[1].suit_read is None

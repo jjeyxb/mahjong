@@ -1,0 +1,198 @@
+# 風格微調設定 —— M8 的主要產出
+#
+# 從 `mortal_298k.pth` 起步續訓。README 的可行性調查說「微調本身不需要修改
+# Mortal 任何一行程式碼」,這份設定就是那個結論的具體形式:`train.py` 在
+# `state_file` 存在時會載入 mortal / current_dqn / aux_net(以及 optimizer、
+# scheduler、scaler)並還原 `steps`,指向公開權重就是微調。
+#
+# 實際確認過 `mortal_298k.pth` 裡有:
+#   mortal, current_dqn, aux_net, optimizer, scheduler, scaler, steps=298000, config
+#
+# 用法:
+#
+#   cd engines/mortal/Mortal/mortal
+#   MORTAL_CFG=../../finetune.toml ../../.venv/Scripts/python.exe train.py
+#
+# ⚠ **`state_file` 一定要指向副本,不能指向 models/mortal_298k.pth。**
+# `train.py` 是**讀同一個檔、也寫回同一個檔**,直接指過去等於邊訓練邊覆蓋那份
+# 130MB 的原始權重 —— 而它是從 HuggingFace 下載的基準,一旦被蓋掉,
+# 「微調後 vs 原始」這個比較就永遠做不了了,而且不會有任何錯誤訊息。
+# 先 copy 一份再改這裡。
+
+[control]
+# 這三個必須與 mortal_298k.pth 裡存的 config 相同,否則載進來的張量對不上。
+# 實際從權重檔讀出來的:version=4、resnet 192x40。
+version = 4
+online = false          # 離線訓練(CQL),不是自我對弈
+
+state_file = 'F:/mahjong/models/style_call_high.pth'
+best_state_file = 'F:/mahjong/models/style_call_high_best.pth'
+tensorboard_dir = 'F:/mahjong/data/datasets/finetune_log'
+
+device = 'cuda:0'
+enable_cudnn_benchmark = false
+enable_amp = false
+enable_compile = false
+
+# 上游預設 batch_size=512,那是給資料中心的卡。resnet 192x40 在 16GB 上
+# 開太大會 OOM,而 OOM 發生在跑了一陣子之後最浪費時間。
+#
+# 2026-09-28 第一趟用 16 只是為了幾分鐘內知道管線通不通,實測約 6 batch/s。
+# 64 是往上試的下一格:顯存吃約四倍,而 OOM 會在跑了一陣子之後才發生 ——
+# **真的要放大就先用 --limit 小的語料跑個幾百步確認不 OOM**,再開長跑。
+# `opt_step_every` 是梯度累積:顯存不夠就把 batch_size 降回去、這個調高,
+# 等效批量不變。
+batch_size = 64
+opt_step_every = 1
+
+save_every = 200
+# test_every 會觸發自我對弈評測(test_play.games 場),很貴。
+#
+# ⚠ **它比的是絕對步數,不是「這趟跑了幾步」。** 我原本寫「設得遠遠大於這次
+# 要跑的步數 = 這趟不做評測」—— 那是錯的。微調是從 `mortal_298k.pth` 的
+# 298,000 步**續算**的,所以只要跑 2,000 步就撞到 300,000 這個 20,000 的倍數,
+# 當場觸發 3,000 場自我對弈。2026-09-28 實測:燒掉約五小時 GPU,而且完全
+# 沒有預期到。
+#
+# 要「這趟不評測」,門檻必須大於**續訓後會到達的步數**,不是這趟的步數。
+# 298,000 起步、預計跑幾千步,設 400000 就穩(下一個倍數在 400,000)。
+# train.py 有 `assert test_every % save_every == 0`,所以要是 save_every 的倍數。
+test_every = 400000
+submit_every = 400
+
+[test_play]
+games = 3000
+log_dir = 'F:/mahjong/data/datasets/finetune_test_play'
+
+# ⚠ 這一段**即使不做評測也一定要有**。`train.py` 一開始就無條件建
+# `TestPlayer()`,而它的 `__init__` 當場就把 baseline 權重載進來 ——
+# 不是等到 `test_every` 才載。少了這一段會在載入模型之後、訓練開始之前
+# 直接 `KeyError: 'baseline'`。
+#
+# baseline 指向**未微調的原始權重**是刻意的:評測要問的正是
+# 「微調後的模型對上原本的自己,贏得了嗎」。這也是 README 說的
+# `one_vs_three`(challenger 對三個 champion)那個設計。
+[baseline.test]
+device = 'cuda:0'
+enable_compile = false
+state_file = 'F:/mahjong/models/mortal_298k.pth'
+
+[dataset]
+# 這裡刻意**不**排除 GRP 的驗證月份(9 月)。GRP 是拿來算 reward 的前置模型,
+# 主模型微調與它不是同一個評測;主模型要不要留 held-out 由 [test_play]
+# 的自我對弈回答,那是對戰結果而不是資料切分。
+globs = ['F:/mahjong/data/datasets/tenhou/mjai/**/*.json.gz']
+file_index = 'F:/mahjong/data/datasets/finetune_file_index.pth'
+file_batch_size = 20
+reserve_ratio = 0.0
+# 0 = 在主行程裡載資料,不開 worker 子行程。
+#
+# 2026-09-29 用 num_workers=1 跑到第 29,800 步時,**worker 子行程無聲死掉**:
+# 輸出檔沒有 traceback、記憶體沒爆(31.9GB 總量還剩 10.6GB)、Windows 事件
+# 記錄乾淨,而主行程活著、單核空轉、只剩 1 個執行緒,在等一個永遠不會來的
+# 批次。那是最糟的一種失敗 —— 不報錯、不結束,會一路轉到天亮。
+#
+# 在主行程載會慢一些,但整晚空轉的代價更大。
+num_workers = 0
+
+# **風格微調的關鍵旋鈕就是這一個。** train.py 讀入名單 → 只保留有這些玩家
+# 參與的對局 → 把 player_names 傳給 GameplayLoader,使**只有這些玩家的決策
+# 成為訓練樣本**。空的代表「全部玩家」,也就是還沒分群之前的樣子。
+#
+# 名單由 `tools/style_profile.py` 產出(一行一個名字,train.py 用
+# `filtered_trimmed_lines` 讀,空行會被濾掉)。**一次只填一群** ——
+# 填兩群等於把兩種風格混在一起訓,結果是兩者的平均,那正是我們想避免的東西。
+#
+#   player_names_files = ['F:/mahjong/data/datasets/styles/style_0.txt']
+#
+# ⚠ 換了名單**一定要刪掉下面那個 `file_index`**。它快取的是「有這些玩家參與的
+# 檔案清單」,換群之後沿用舊清單不會有任何提示 —— 訓練會照舊跑、日誌會照樣
+# 印步數,而你訓的是上一群的人。
+# 2026-09-28 語料放大到 25,543 場之後重跑 style_profile 的結果。每條軸一個
+# 子目錄 —— write_lists 會清掉輸出目錄裡不屬於這次的 .txt,兩條軸寫進同一個
+# 目錄的話,跑第二條會把第一條的名單洗掉。
+#
+# 可用的軸只有兩條(拆半信度 >= 0.7,且兩端平均順位接近):
+#   data/datasets/styles/call_rate/副露率_{high,low}.txt    信度 0.884,兩端順位差 0.015
+#   data/datasets/styles/reach_rate/立直率_{high,low}.txt   信度 0.796,兩端順位差 0.029
+#
+# ⚠ **放銃率不能用**,雖然它信度 0.679 看起來夠。它兩端的平均順位差 0.113,
+# 那是**強度不是風格** —— 拿它選人會微調出「比較強的」與「比較弱的」Mortal。
+# 對照:那次失敗微調量到的順位差是 0.057,而這條軸是它的兩倍。
+player_names_files = ['F:/mahjong/data/datasets/styles/call_rate/副露率_high.txt']
+num_epochs = 1
+enable_augmentation = false
+augmented_first = false
+
+[env]
+# 與權重檔裡存的相同
+gamma = 1
+pts = [6.0, 4.0, 2.0, 0.0]
+
+[resnet]
+conv_channels = 192
+num_blocks = 40
+
+[cql]
+# **這是 README 說的「風格 vs 強度」旋鈕。** 調高 = 更貼近該群玩家的實際打法
+# (風格更明顯),調低 = 更自由地往最優化跑。
+# 權重檔裡存的實際值是 3(不是 config.example.toml 的 5),先對齊它。
+#
+# 2026-09-30 實際掃過 1 / 3 / 10(同一份名單、同一批牌局,見 handoff.md
+# 「第 6 步」):**這個旋鈕沒什麼用。** 跨一個數量級,副露率最大只差 0.0060,
+# 而換名單的兩端差距是 0.0741 —— 名單的力量是它的 12 倍。曲線在 3 就飽和
+# (3 → 10 只有 1.4σ,方向還往回),三個 q 的平均順位也都在雜訊內,
+# 預期的「風格越貼越犧牲強度」根本沒出現。
+#
+# 所以留在 3,不要再花時間調它。要推更遠得從訓練長度、學習率、名單極端度下手。
+min_q_weight = 3
+
+[aux]
+next_rank_weight = 0.2
+
+[freeze_bn]
+mortal = false          # online 訓練才需要凍結
+
+[optim]
+eps = 1e-8
+betas = [0.9, 0.999]
+weight_decay = 0.1
+max_grad_norm = 0
+
+[optim.scheduler]
+# ⚠ **續訓時這一整段不生效,設了也沒用。**
+#
+# `train.py:95` 先用這裡的值建 scheduler,但 `train.py:115` 接著
+# `scheduler.load_state_dict(state['scheduler'])`,而 PyTorch 的
+# `LRScheduler.state_dict()` 會把**除了 optimizer 以外的所有屬性**都存進去 ——
+# 包含 peak / final / warm_up_steps / max_steps。所以權重檔裡的舊值會把這裡
+# 整段蓋掉。
+#
+# 2026-09-28 實測:這裡寫 peak=1e-5,而 tensorboard 的 hparam/lr 是 **2.92e-4**
+# (mortal_298k.pth 裡 peak=3e-4、max_steps=2,750,000,跑到 298,000 步餘弦退火
+# 幾乎還沒開始降)。整整 30 倍,而且 dqn / cql / next_rank 三條 loss 一路往上 ——
+# 那是拿完整的原始訓練學習率在推一個已經收斂的模型,叫重練不叫微調。
+#
+# 真正生效的地方是**複製起始權重時直接改掉檔案裡的 scheduler 狀態**,見
+# `setup_finetune.py` 的 `SCHEDULER_OVERRIDE`。不改上游 train.py 的理由跟
+# PYTHONUTF8 那次一樣:Mortal 是 clone 進來的、不在版控裡。
+#
+# 下面這幾行留著是為了讓「從零開始訓練」那條路(state_file 不存在)仍然正確,
+# 而且值要與 SCHEDULER_OVERRIDE 一致,否則兩條路會給出不同的學習率。
+peak = 1e-5
+final = 1e-5
+warm_up_steps = 0
+max_steps = 0
+
+[grp]
+# 離線訓練用它算每一局的 reward。這是整個 M8 的前置關卡,
+# 由 engines/mortal/grp.toml 訓出來。
+#
+# ⚠ 這一行與 `[baseline.test]` 的 `state_file` **都不是** `[control]` 那個。
+# 用前綴比對去改設定會三個一起換掉,而結果是拿 130MB 的 Mortal 權重當 GRP
+# 載入。2026-09-28 真的做過一次,改設定要認區段。
+state_file = 'F:/mahjong/models/grp.pth'
+
+[grp.network]
+hidden_size = 64
+num_layers = 2

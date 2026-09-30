@@ -283,7 +283,7 @@ class SubprocessEngine:
                 continue
 
             if item is _EOF:
-                code = self._process.poll() if self._process else None
+                code = self._exit_code_after_eof()
                 raise EngineError(
                     f"{self.name}: 子程序在{phase}階段結束了(returncode={code})。"
                     f"{self._stderr_hint()}"
@@ -299,6 +299,21 @@ class SubprocessEngine:
                 return dict(json.loads(text))
             except (json.JSONDecodeError, TypeError, ValueError) as exc:
                 raise EngineError(f"{self.name}: 回覆不是合法的 JSON 物件 — {text[:200]}") from exc
+
+    def _exit_code_after_eof(self) -> int | None:
+        """stdout 見到 EOF 之後查 returncode。
+
+        管線關閉與行程真正結束在 Windows 上不是同一個時間點 ——
+        ``poll()`` 不會等,常常還來得及看到 ``STILL_ACTIVE``(對應到
+        ``None``)。EOF 已經代表子程序在收尾了,短暫 ``wait()`` 換一個
+        準確的 returncode,不會真的卡住。
+        """
+        if self._process is None:
+            return None
+        try:
+            return self._process.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            return self._process.poll()
 
     def _to_advice(self, reply: dict[str, Any], elapsed_ms: float) -> Advice:
         if reply.get("type") == "error":

@@ -97,6 +97,35 @@ class TestTableRect:
         assert rect.width == 1920
         assert rect.height == 1080
 
+    @pytest.mark.parametrize(
+        ("canvas", "image", "expect"),
+        [
+            (Canvas(1280, 720), Size(1602, 1009), Rect(1, 109, 1600, 900)),
+            (Canvas(1600, 900), Size(2002, 1234), Rect(1, 109, 2000, 1125)),
+        ],
+    )
+    def test_windows_125_percent_scaling(
+        self, canvas: Canvas, image: Size, expect: Rect
+    ) -> None:
+        """Windows 125% 螢幕的實測值(2026-09-18,首次真機驗證)。
+
+        數字全是量的:主螢幕 2560×1440 @125%,``devicePixelRatio`` 剛好 1.25,
+        把 viewport 調到剛好等於畫布之後擷取到上面那個影像尺寸。
+
+        兩組算出來的工具列高都是 ``(1009-900)/1.25 = 87.2`` 個邏輯像素,
+        而 macOS 實測的 Chrome for Testing 工具列是 **87** —— 兩個平台量到
+        同一個數字,這是這組座標沒算錯的旁證。
+
+        這裡釘住的是一個真的發生過的 bug:``capture/windows.py`` 原本讓
+        ``Frame.scale`` 恆為 1.0(因為宣告了 per-monitor DPI aware 之後,
+        以**視窗座標**為單位影像確實是 1:1)。但畫布尺寸是**瀏覽器的 CSS
+        像素**,那是另一種「邏輯像素」—— 兩者在 125% 螢幕上差 1.25 倍。
+        scale 給 1.0 的話這裡會拿 1600 去對 2002 的影像寬,差 402px 當場
+        判定對不上,畫面辨識整個鎖不上。macOS 上碰巧不會出事:Retina 的
+        backing scale 與 dpr 都是 2.0,兩種單位同值,混用了也看不出來。
+        """
+        assert canvas.table_rect(image, 1.25) == expect
+
     def test_rejects_canvas_taller_than_image(self) -> None:
         """選了一個螢幕放不下的尺寸 —— 瀏覽器會給不了,影像就會比畫布矮。"""
         with pytest.raises(CanvasMismatchError, match="瀏覽器介面"):

@@ -192,6 +192,30 @@ class TestPacketWorker:
     Mortal 子程序本身在 ``test_engine_mortal.py`` 驗過了。
     """
 
+    def test_the_engine_roster_is_posted_before_any_game_starts(self, tmp_path: Path) -> None:
+        """**開局前就要知道有哪些引擎。**
+
+        側邊視窗的「主要引擎」下拉是照 ``ViewState.engines`` 長出來的。清單若
+        等到第一個決策點才有內容,使用者開了兩份風格權重、進對局之前卻只看到
+        「(自動)」—— 看起來像權重根本沒載到,而那正是實際回報的症狀。
+
+        錄影檔不存在,所以這裡**只有**啟動那一則,不會混到任何真的建議。
+        """
+        bus = UpdateBus()
+        worker = PacketWorker(bus, dump=tmp_path / "never_written.jsonl", engines=[DummyEngine()])
+        worker.start()
+        try:
+            collected = _drain_until(bus, lambda got: any(isinstance(u, Advices) for u in got))
+        finally:
+            worker.stop()
+            worker.join(5)
+
+        advices = [u for u in collected if isinstance(u, Advices)]
+        assert advices, "引擎起來了卻沒有報名單"
+        assert [a.engine for a in advices[0].advices] == ["baseline"]
+        # 還沒有任何事件,所以不該有動作 —— 名單是名單,不是建議
+        assert all(a.action is None for a in advices[0].advices)
+
     def test_produces_hands_and_advice_from_a_real_game(
         self, tmp_path: Path, raw_lines
     ) -> None:

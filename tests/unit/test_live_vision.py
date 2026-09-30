@@ -221,7 +221,10 @@ class TestOnlyClassifyingWhatHasStopped:
         worker = VisionWorker(
             bus,
             config=_config(roi),
-            backend=FakeBackend(window, moving),
+            # 幀用完之後模擬擷取失敗,而不是讓 FakeBackend 重複最後一張 ——
+            # 重複的話會被 VisionWorker 誤判成「畫面停下來了」而觸發一次
+            # classify,使這個測試在背景執行緒的時間點上變成賭運氣。
+            backend=FakeBackend(window, [*moving, None]),
             window=window,
         )
         _run_until(worker, lambda: worker.skipped >= len(moving), timeout=3.0)
@@ -293,6 +296,32 @@ class TestDegradedConditions:
         )
         _run_until(worker, lambda: "合法手牌" in worker.status.read(), timeout=3)
         assert worker.reads == 0
+        assert len(bus) == 0
+
+    def test_a_hand_too_small_to_classify_does_not_kill_the_thread(
+        self, window: WindowInfo
+    ) -> None:
+        """視窗縮太小是**使用者救得回來**的狀況,不能是「不玩了」。
+
+        `classify` 對太小的牌框會拋 ``ValueError`` 而不是硬算(那是對的 ——
+        相關係數在十幾個像素上只是在比雜訊)。但那個例外原本一路竄到
+        ``run()`` 的 blanket except,整條擷取執行緒就收掉了:使用者把視窗
+        放大也回不來,只能重開 App。
+
+        走得到這裡的除了「把瀏覽器縮到畫布 480 CSS 像素以下」,還有更常見的
+        一條 —— 校正鎖到一個偏小的假牌桌(單幀校正實測 16% 明顯錯誤)。
+        """
+        tiny = cv2.resize(_hand_image(), (200, 23), interpolation=cv2.INTER_AREA)
+        frame, roi = _frame_with_hand(window, tiny)
+
+        bus = UpdateBus()
+        worker = VisionWorker(
+            bus, config=_config(roi), backend=FakeBackend(window, [frame]), window=window
+        )
+        _run_until(worker, lambda: "太小" in worker.status.read(), timeout=5)
+
+        assert "太小" in worker.status.read(), f"狀態沒說原因: {worker.status.read()!r}"
+        assert "已停止" not in worker.status.read(), "執行緒被打死了"
         assert len(bus) == 0
 
     def test_the_backend_is_closed_when_the_thread_ends(self, window: WindowInfo) -> None:

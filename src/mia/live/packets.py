@@ -32,7 +32,7 @@ import threading
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
-from mia.engine.base import AIEngine, EngineError
+from mia.engine.base import Advice, AIEngine, EngineError
 from mia.engine.multiplex import EngineGroup
 from mia.groundtruth.dump import DumpFrame
 from mia.groundtruth.stream import MjaiDecoder
@@ -172,6 +172,17 @@ class PacketWorker(threading.Thread):
         except EngineError as exc:
             self.status.say(f"引擎啟動失敗:{exc}")
             return
+
+        # 引擎起來就先報名單,不等第一個建議。
+        #
+        # 側邊視窗的「主要引擎」下拉是照 `ViewState.engines` 長出來的,而那份
+        # 清單原本只在 `update_advices` 之後才有內容 —— 也就是要等真的打到一個
+        # 決策點。結果是:開了兩份風格權重,進對局之前選單裡只有「(自動)」,
+        # 看起來像根本沒載到。實測踩過。
+        #
+        # 動作是 None(還沒有任何事件可判斷),但名字現在就知道了,而使用者要
+        # 挑的正是名字。順帶讓狀態列顯示「引擎:…」,載錯權重當場就看得出來。
+        self._bus.post(Advices(tuple(Advice(engine.name) for engine in self._group)))
 
         self.status.say(f"等待對局開始({self._tail.path.name})")
         for frame in self._tail.frames(self._stop):

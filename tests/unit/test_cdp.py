@@ -151,3 +151,104 @@ class TestStats:
     def test_ignored_urls_listed_for_debugging(self, capture: CdpCapture) -> None:
         capture.attach_websocket(FakeWebSocket(OTHER_URL))
         assert OTHER_URL in capture.stats.summary()
+
+
+class FakeWindow:
+    """模仿高 DPI 螢幕上的瀏覽器視窗,重現兩個真機量到的行為。
+
+    1. **DIP → CSS 像素不是 1:1。** 視窗尺寸是 DIP,換算成 CSS 像素中間要過一次
+       實體像素的四捨五入。125% 下實測差一格 DIP 可能讓 CSS 寬不動、也可能跳 2。
+    2. **``getWindowBounds`` 不會原樣回報 ``setWindowBounds`` 送進去的值。**
+       實測送 1614 進去,問回來是 1615、再問是 1617,每問一次漂一點。
+
+    第 2 點是真正咬人的那個:拿回報值當基準去算下一步,基準會一路漂走,
+    最後掃描範圍涵蓋不到正確答案 —— 而畫面上只會看到「調不到畫布」,
+    完全看不出是這個原因。
+    """
+
+    def __init__(self, dpr: float = 1.25, chrome_dip: int = 14) -> None:
+        self.dpr = dpr
+        self.chrome_dip = chrome_dip  # 工具列等等佔掉的 DIP 高度
+        self.width = 1000
+        self.height = 800
+        self._reported_drift = 0
+
+    def _css(self, dip: int) -> int:
+        """DIP → CSS 像素,經過實體像素的四捨五入。"""
+        return int(round(dip * self.dpr) / self.dpr)
+
+    @property
+    def viewport(self) -> list[int]:
+        return [self._css(self.width), self._css(self.height - self.chrome_dip)]
+
+    @property
+    def reported_bounds(self) -> dict[str, int]:
+        self._reported_drift += 1
+        return {
+            "width": self.width + self._reported_drift,
+            "height": self.height + self._reported_drift,
+        }
+
+
+class FakePage:
+    """只提供 _fit_canvas 真正用到的那幾個介面。"""
+
+    def __init__(self, window: FakeWindow) -> None:
+        self.window = window
+        self.context = self
+        self.resizes = 0
+
+    # --- page ---
+    def evaluate(self, _script: str) -> list[int]:
+        return self.window.viewport
+
+    def wait_for_timeout(self, _ms: float) -> None:
+        return None
+
+    # --- context ---
+    def new_cdp_session(self, _page: object) -> FakePage:
+        return self
+
+    # --- cdp session ---
+    def send(self, method: str, params: dict[str, Any] | None = None) -> Any:
+        if method == "Browser.getWindowForTarget":
+            return {"windowId": 1}
+        if method == "Browser.getWindowBounds":
+            return {"bounds": self.window.reported_bounds}
+        if method == "Browser.setWindowBounds":
+            assert params is not None
+            bounds = params["bounds"]
+            # windowState 一定要一起送,否則最大化的視窗會默默忽略寬高
+            assert bounds["windowState"] == "normal"
+            self.window.width = bounds["width"]
+            self.window.height = bounds["height"]
+            self.resizes += 1
+            return {}
+        raise AssertionError(f"沒預期到的 CDP 方法:{method}")
+
+
+class TestFitCanvas:
+    """高 DPI 下把 viewport 調到剛好等於畫布。
+
+    對應 2026-09-18 真機驗證抓到的失敗:125% 螢幕上收斂不到 1600×900、
+    停在 1602×902,於是 ``Canvas.table_rect`` 判定對不上,畫面辨識鎖不上。
+    """
+
+    @pytest.mark.parametrize("dpr", [1.0, 1.25, 1.5, 2.0])
+    def test_hits_the_canvas_exactly(self, dpr: float) -> None:
+        from mia.calibration.canvas import Canvas
+        from mia.groundtruth.cdp import _fit_canvas
+
+        page = FakePage(FakeWindow(dpr=dpr))
+        _fit_canvas(page, Canvas(1600, 900))
+        assert page.window.viewport == [1600, 900], f"dpr={dpr} 收斂不到"
+
+    def test_does_not_trust_reported_bounds(self) -> None:
+        """回報值每問一次漂一點,而結果仍然要精確 —— 這是那個 bug 的本體。"""
+        from mia.calibration.canvas import Canvas
+        from mia.groundtruth.cdp import _fit_canvas
+
+        window = FakeWindow(dpr=1.25)
+        page = FakePage(window)
+        _fit_canvas(page, Canvas(1280, 720))
+        assert window.viewport == [1280, 720]

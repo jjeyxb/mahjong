@@ -38,6 +38,15 @@ DECISIONS = frozenset(
     {"dahai", "reach", "chi", "pon", "ankan", "kakan", "daiminkan", "hora", "ryukyoku", "kita"}
 )
 
+#: 「別人打了一張,你要不要接手」這一類。引擎在這種時候回 ``none`` 的意思是
+#: **跳過**,而真人跳過是看不見的 —— 牌譜裡不會有「我不碰」這個事件,只會是
+#: 他稍後自己摸打。所以真人的答案要這樣反推:下一個動作不在這個集合裡,
+#: 就代表他也跳過了。
+CALLS = frozenset({"chi", "pon", "daiminkan", "kakan", "ankan", "hora"})
+
+#: 「跳過」在比對時的寫法。與 ``str(event)`` 放在一起比,得是個撞不到的值。
+DECLINED = "<跳過>"
+
 
 def load_events(path: Path) -> tuple[list[MjaiEvent], str]:
     """讀事件流。檔案可以是 MJAI 事件流,也可以是原始的 WebSocket 錄影。
@@ -99,6 +108,35 @@ def actual_next(events: list[MjaiEvent], start: int, seat: int) -> MjaiEvent | N
     return None
 
 
+def _answer(action: MjaiEvent | None) -> str:
+    """一個引擎的答案。沒有動作代表它被問了而選擇跳過。"""
+    return DECLINED if action is None else str(action)
+
+
+def _human_answer(human: MjaiEvent | None, declined: bool) -> str | None:
+    """真人在同一個局面的答案。
+
+    Args:
+        human: 真人接下來實際做的第一件事。
+        declined: 拿來比的那個引擎是不是「跳過」。
+
+    Returns:
+        可以直接與 :func:`_answer` 比對的字串;無從判斷時回 ``None``
+        (``None`` 與任何答案都不相等,所以不會被算成一致)。
+
+    Note:
+        **真人的「跳過」在牌譜裡是看不見的。** 沒有人會記錄「我不碰」,
+        只會看到他稍後自己摸打。所以只在對照的引擎也跳過時才反推:
+        真人接下來不是鳴牌,就代表他也放過了這一張。
+
+        不這樣做的話,選擇不鳴的引擎在每一個鳴牌機會都會被算成「與真人不一致」
+        —— 而那正是副露率低的那份權重最常做的事,它的一致率會被系統性低估。
+    """
+    if not declined:
+        return str(human) if human is not None else None
+    return DECLINED if human is None or human.TYPE not in CALLS else str(human)
+
+
 def build_engines(args: argparse.Namespace) -> list[AIEngine]:
     engines: list[AIEngine] = []
     if not args.no_baseline:
@@ -147,14 +185,16 @@ def main(argv: list[str] | None = None) -> int:
         names = [e.name for e in group]
         for index, event in enumerate(events):
             result = group.react(event)
-            if not result.actions:
+            # 用 decisions 而不是 actions:全部引擎都說「跳過」也是一個決策點,
+            # 而且是風格比較裡最有內容的那一種(鳴或不鳴)。
+            if not result.decisions:
                 continue
 
             decisions += 1
             unanimous += result.is_unanimous
             human = actual_next(events, index + 1, args.seat)
-            for advice in result.actions:
-                if human is not None and str(advice.action) == str(human):
+            for advice in result.decisions:
+                if _answer(advice.action) == _human_answer(human, advice.declined):
                     agree_with_human[advice.engine] += 1
 
             if args.only_disagreement and result.is_unanimous:
@@ -162,9 +202,9 @@ def main(argv: list[str] | None = None) -> int:
             if shown < args.limit:
                 shown += 1
                 print(f"#{decisions:<4} 局面 {event}")
-                for advice in result.actions:
-                    mark = "=" if human is not None and str(advice.action) == str(human) else " "
-                    print(f"      {mark} {advice}")
+                for advice in result.decisions:
+                    same = _answer(advice.action) == _human_answer(human, advice.declined)
+                    print(f"      {'=' if same else ' '} {advice}")
                 print(f"      真人 {human if human is not None else '(沒有後續動作)'}\n")
 
         print(f"決策點 {decisions} 個,引擎之間一致 {_pct(unanimous, decisions)}")

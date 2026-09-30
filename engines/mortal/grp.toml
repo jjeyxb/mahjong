@@ -1,0 +1,67 @@
+# GRP(Global Reward Prediction)訓練設定 —— M8 的前置關卡
+#
+# GRP 是一個很小的 GRU,輸入是「現在打到第幾局、本場、供託、四家點數」,
+# 輸出是「最後四家名次的機率分布」(24 種排列)。主模型的離線訓練要靠它算
+# 每一局的 reward —— `dataloader.py` 會 `GRP(**config['grp']['network'])` 並
+# 載入 `config['grp']['state_file']`,少了它整條微調路徑起不來。
+#
+# 為什麼要自己訓:HuggingFace 的 298k repo 只有 `mortal_298k.pth` 與
+# `config.toml`,Mortal 的 GitHub 也沒有任何 release —— 兩處都沒有 `grp.pth`。
+#
+# 用法(要在 Mortal 的 mortal/ 目錄下跑,那些模組彼此用同層 import):
+#
+#   cd engines/mortal/Mortal/mortal
+#   MORTAL_CFG=../../grp.toml ../../.venv/Scripts/python.exe train_grp.py
+#
+# 路徑一律寫成**絕對路徑**:train_grp.py 直接把它們餵給 glob(),而執行時的
+# cwd 必須是上游的 mortal/,相對路徑會對到別的地方去。
+
+[grp]
+state_file = 'F:/mahjong/models/grp.pth'
+
+[grp.network]
+# 與上游 config.example.toml 相同。GRP 很小,不是這裡的瓶頸。
+hidden_size = 64
+num_layers = 2
+
+[grp.control]
+# ROCm 在 PyTorch 裡仍然叫 cuda —— torch.cuda.is_available() 在 RX 9070 上是 True。
+device = 'cuda:0'
+enable_cudnn_benchmark = false
+tensorboard_dir = 'F:/mahjong/data/datasets/grp_log'
+
+# 已經改回上游預設 —— 語料放大之後這些才是對的。
+#
+# 2026-09-28 第一趟(620 場)用的是 batch_size=64 / save_every=200 /
+# val_steps=50,那是為了「幾分鐘內知道管線通不通」而故意調小的,
+# **不是**能產出堪用權重的設定。要再跑一次那種快速驗證就把這三個值換回去。
+batch_size = 512
+save_every = 2000
+val_steps = 400
+
+[grp.dataset]
+# 依日期分層,所以 train / val 用 glob 就切得開 —— 這也是
+# tools/fetch_tenhou.py 把輸出寫成 <YYYY>/<MM>/<DD>/ 的理由。
+#
+# **切在月份而不是日期,而且 val 是比較晚的那一段。** 兩個理由:
+#
+# 1. 同一天的對局玩家高度重疊,切在同一天等於自己考自己。
+# 2. 更重要的是**方向**:用 1~8 月訓練、9 月驗證,問的是「學到的東西對
+#    後來的對局還成不成立」。反過來(或隨機切)問的只是「有沒有背下這批人」,
+#    而那個問題在這裡不重要 —— 真正要用的時候,對手是還沒發生的對局。
+#
+# 語料來源對得上這個切法:`--since 20260101` 走日檔(到 2026-09-18),
+# `--days 10` 走小時檔(2026-09-19 之後)。
+train_globs = [
+    'F:/mahjong/data/datasets/tenhou/mjai/2026/0[1-8]/**/*.json.gz',
+]
+val_globs = [
+    'F:/mahjong/data/datasets/tenhou/mjai/2026/09/**/*.json.gz',
+]
+# 檔案清單的快取。**換了 train_globs 要記得刪掉它**,否則會沿用舊清單
+# 而且不會有任何提示。
+file_index = 'F:/mahjong/data/datasets/grp_file_index.pth'
+file_batch_size = 20
+
+[grp.optim]
+lr = 1e-4
