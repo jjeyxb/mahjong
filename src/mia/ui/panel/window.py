@@ -133,7 +133,7 @@ class PanelWindow(QMainWindow):
         viewmodel: 狀態來源。視窗自己訂閱它,不主動去拉。
         skin: 牌面素材。
         always_on_top: 是否置頂。
-        switchboard: 兩個功能的開關要接到誰。``None``(錄影重播、示範資料)時
+        switchboard: 三個功能的開關要接到誰。``None``(錄影重播、示範資料)時
             開關仍然畫出來,但是**停用**並顯示為開啟 —— 那些模式裡是命令列
             決定跑哪一條路,把開關做成可按的會讓人以為按了有效。
         launcher: 「開始遊戲」要接到誰。``None``(重播、``--tail``、
@@ -245,7 +245,7 @@ class PanelWindow(QMainWindow):
     def _build_start_button(self, parent: QWidget) -> QWidget:
         """開瀏覽器並開始錄封包。
 
-        瀏覽器**不會自己開**,理由與兩個功能預設關閉相同:開一個瀏覽器並開始
+        瀏覽器**不會自己開**,理由與三個功能預設關閉相同:開一個瀏覽器並開始
         往磁碟寫錄影檔該是明確的動作。實際做事的是
         :meth:`~mia.live.runtime.LiveRuntime.start_game`。
         """
@@ -270,9 +270,12 @@ class PanelWindow(QMainWindow):
     def _add_switch(self, page: _Page, key: str) -> None:
         """在一頁的設定列右邊放一個開關。
 
-        兩個功能**預設都關著**,要使用者自己打開。理由不只是省資源:打開
+        三個功能**預設都關著**,要使用者自己打開。理由不只是省資源:打開
         AI 建議會開一個載著 130MB 權重的子程序、打開畫面辨識會開始持續擷取
         螢幕。這兩件事都該是明確的動作,不是打開視窗的副作用。
+
+        放銃分析幾乎沒有執行成本,預設仍然關著 —— 三個開關的行為一致比
+        「只有這個不一樣」好解釋。
         """
         switch = ToggleSwitch(page)
         switch.setToolTip(f"{features.NAMES[key]} —— 開啟後才會開始運作")
@@ -430,9 +433,9 @@ class PanelWindow(QMainWindow):
         對滑鼠是透明的 —— 擺在它自己身上的按鈕會變成死的,而使用者看得到卻按不到
         的按鈕比沒有按鈕糟。所以控制項一律留在側邊視窗這一側。
 
-        Overlay 也**不進 features.py 的開關體系**:那兩個開關管的是「要不要花
-        130MB 載權重 / 要不要持續擷取螢幕」,而這裡只是換一種畫法,沒有任何
-        執行成本。混在一起會讓「開了但沒東西跑」變得難解釋。
+        Overlay 也**不進 features.py 的開關體系**:那些開關管的是「要不要花
+        130MB 載權重 / 要不要持續擷取螢幕 / 要不要跑排除法」,而這裡只是換一種
+        畫法。混在一起會讓「開了但沒東西跑」變得難解釋。
         """
         overlay = self._overlay
         self._overlay_shown = QCheckBox("在遊戲上顯示 Overlay", page)

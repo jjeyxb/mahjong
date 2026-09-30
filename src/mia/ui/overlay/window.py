@@ -193,7 +193,7 @@ class OverlayWindow(QWidget):
         viewmodel: 狀態來源。建構時先畫一次目前的狀態;之後由呼叫端
             ``viewmodel.subscribe(overlay.apply)`` 推過來。
         skin: 牌面素材,與側邊視窗同一套。
-        switchboard: 兩個功能的開關接到誰。``None``(重播、示範)時一律視為
+        switchboard: 三個功能的開關接到誰。``None``(重播、示範)時一律視為
             開著 —— 那些模式是命令列決定跑哪一條路,而它確實在跑。
         ui_state: 跨次啟動記住的位置與勾選。省略時讀預設路徑那一份。
 

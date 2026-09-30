@@ -253,7 +253,7 @@ def build_live_runtime(
     style: StyleChoice | None = None,
 ) -> LiveRuntime:
     """組出 runtime。**什麼都還沒開始** —— 瀏覽器等使用者按「開始遊戲」,
-    兩個功能等使用者撥開關。
+    三個功能等使用者撥開關。
 
     工廠是延遲呼叫的:``PacketWorker`` 一建立就會去組引擎,而 Mortal 要載
     130MB 權重。使用者沒打開 AI 建議的話,那 10 秒完全不該花。
@@ -342,7 +342,7 @@ def build_live_runtime(
 
 
 def start_live(runtime: LiveRuntime, model: ViewModel) -> None:
-    """讓 pump 開始跑。瀏覽器與兩個功能都還沒啟動。"""
+    """讓 pump 開始跑。瀏覽器與三個功能都還沒啟動。"""
     runtime.start()
     timer = QTimer()
     timer.timeout.connect(runtime.pump)
@@ -575,7 +575,7 @@ def main(argv: list[str] | None = None) -> int:
     if runtime is not None:
         start_live(runtime, model)
         _quit_on_signals(app)
-        print("按視窗左下角的「開始遊戲」開啟瀏覽器;兩個功能的開關預設關著。")
+        print("按視窗左下角的「開始遊戲」開啟瀏覽器;三個功能的開關預設關著。")
     elif args.replay:
         run_replay(args, model)
     elif args.session:

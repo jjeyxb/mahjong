@@ -407,7 +407,7 @@ class FakeSwitchboard:
 
 
 class TestFeatureSwitches:
-    """兩個功能的開關。預設關著,打開才會跑。"""
+    """三個功能的開關。預設關著,打開才會跑。"""
 
     @pytest.fixture
     def wired(self, qtbot):
