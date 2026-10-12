@@ -64,6 +64,12 @@ if TYPE_CHECKING:
 #: —— Overlay 也要用它,而那兩個是平行的呈現方式,誰都不該相依誰。
 __all__ = ["PanelWindow", "Switchboard", "present"]
 
+#: 「比較對象」選單上代表「不比較」的那一列。
+#:
+#: 寫成「不比較」而不是留白或「(無)」:這個選單控制的是**要不要多載一份
+#: 130MB 的權重**,而留白看起來像還沒載入完。
+NO_COMPARE = "不比較"
+
 #: 放得下 14 張 44px 高的牌、加上左側功能列。
 MIN_WIDTH = 500
 MIN_HEIGHT = 540
@@ -310,14 +316,21 @@ class PanelWindow(QMainWindow):
         self._style_picker = QComboBox(self._advice_page)
         self._style_picker.setMinimumWidth(140)
         self._advice_page.add_setting("風格", self._style_picker)
+        self._compare_picker = QComboBox(self._advice_page)
+        self._compare_picker.setMinimumWidth(140)
+        self._advice_page.add_setting("比較對象", self._compare_picker)
         if self._style is None or not self._style.can_pick_style():
             self._style_picker.addItem("(命令列指定)")
             self._style_picker.setEnabled(False)
+            self._compare_picker.addItem(NO_COMPARE)
+            self._compare_picker.setEnabled(False)
         else:
             for name in self._style.styles():
                 self._style_picker.addItem(name, name)
             _select_data(self._style_picker, self._style.style())
             self._style_picker.currentIndexChanged.connect(self._on_style_picked)
+            self._sync_compare_picker()
+            self._compare_picker.currentIndexChanged.connect(self._on_compare_picked)
 
         self._engine_picker = QComboBox(self._advice_page)
         self._engine_picker.setMinimumWidth(140)
@@ -617,6 +630,41 @@ class PanelWindow(QMainWindow):
         name = self._style_picker.itemData(index)
         if name is not None:
             self._style.set_style(name)
+        # 換主要風格可能把比較對象撞掉(不能跟自己比),而那個選單上的字
+        # 不會自己改 —— 留著就是畫面寫著一個已經不生效的選擇。
+        self._sync_compare_picker()
+
+    def _on_compare_picked(self, index: int) -> None:
+        """換並排比較的對象 —— 與換風格同樣會重啟引擎。
+
+        ``None``(「不比較」那一列)是合法的值,所以這裡不像
+        :meth:`_on_style_picked` 那樣擋掉它。
+        """
+        if self._style is None:
+            return
+        self._style.set_compare(self._compare_picker.itemData(index))
+
+    def _sync_compare_picker(self) -> None:
+        """重建「比較對象」的清單:不比較,加上**除了主要風格以外**的每一個。
+
+        把主要風格排除掉而不是選了再擋:選單上出現一個按下去沒反應的項目,
+        比它根本不在那裡糟 —— 使用者會以為程式壞了。
+
+        重建期間一定要擋訊號。``clear()`` 與 ``addItem()`` 都會發
+        ``currentIndexChanged``,而接在上面的 slot 會去 ``set_compare`` ——
+        結果是**重建一次選單就重啟一次引擎**,每份權重 130MB。
+        """
+        if self._style is None or not self._style.can_pick_style():
+            return
+        current = self._style.compare()
+        primary = self._style.style()
+        with QSignalBlocker(self._compare_picker):
+            self._compare_picker.clear()
+            self._compare_picker.addItem(NO_COMPARE, None)
+            for name in self._style.styles():
+                if name != primary:
+                    self._compare_picker.addItem(name, name)
+            _select_data(self._compare_picker, current)
 
     def _on_engine_picked(self, index: int) -> None:
         self._viewmodel.set_preferred_engine(self._engine_picker.itemData(index))

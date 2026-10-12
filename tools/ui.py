@@ -125,7 +125,9 @@ def build_styles(args: argparse.Namespace, ui_state: UiState) -> StyleChoice:
         StyleProfile(p.name, tuple(_abs(w) for w in p.weights)) for p in config.engines.profiles
     )
     wanted = CLI_STYLE if args.mortal else (ui_state.style or config.engines.default)
-    return StyleChoice(tuple(profiles), wanted)
+    # 比較對象不受 `--mortal` 影響:那個旗標決定的是「主要跑哪幾份」,而上次
+    # 開著的比較是另一個選擇。撞在一起或名字不存在時 StyleChoice 會當成不比較。
+    return StyleChoice(tuple(profiles), wanted, ui_state.compare_style)
 
 
 def _abs(weights: Path | str) -> Path:
@@ -242,7 +244,18 @@ class _RememberedStyle:
         self._runtime.set_style(name)
         if name != CLI_STYLE:
             self._state.style = name
-            self._state.save()
+        # 換主要風格可能把比較對象撞掉(不能跟自己比),所以兩個欄位一起寫回去
+        # —— 只存主要那個的話,下次啟動會把一個已經被撞掉的比較對象讀回來。
+        self._state.compare_style = self._runtime.compare()
+        self._state.save()
+
+    def compare(self) -> str | None:
+        return self._runtime.compare()
+
+    def set_compare(self, name: str | None) -> None:
+        self._runtime.set_compare(name)
+        self._state.compare_style = self._runtime.compare()
+        self._state.save()
 
 
 def build_live_runtime(

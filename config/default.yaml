@@ -115,12 +115,12 @@ engines:
       weights: [models/style_reach_high.pth]
     - name: 不愛立直
       weights: [models/style_reach_low.pth]
-    # 底下兩項是並排比較:同一個局面兩種風格各給一個答案,
-    # 「一個鳴、一個不鳴」那種分歧正是副露率這條軸的全部內容。
-    - name: 比較:鳴牌傾向
-      weights: [models/style_call_high.pth, models/style_call_low.pth]
-    - name: 比較:立直傾向
-      weights: [models/style_reach_high.pth, models/style_reach_low.pth]
-
   # 啟動時選哪一個。找不到就取第一個可用的。
   default: 標準(未微調)
+
+  # 並排比較不在這裡寫死。UI 的「AI 建議」頁有兩個選單:「風格」挑主要那一份,
+  # 「比較對象」挑要跟誰並排 —— 所以上面五項自然就有 5×4 種組法,而寫死的
+  # 「比較:鳴牌傾向」只覆蓋得到事先想到的那兩種。
+  #
+  # weights 仍然可以列三份以上給特殊用途(EngineGroup 吃任意數量的引擎),
+  # 只是 UI 上的兩個選單不產生那種組合。

@@ -278,6 +278,10 @@ class LiveRuntime:
             and self.available(features.ADVICE)
         )
 
+    def compare(self) -> str | None:
+        """現在跟誰並排比較。``None`` 代表沒有。"""
+        return self._style.compare_name if self._style is not None else None
+
     def set_style(self, name: str) -> None:
         """改選打法風格。
 
@@ -287,10 +291,27 @@ class LiveRuntime:
 
         功能關著的時候只是換掉格子裡的值,不做任何事 —— 下次打開就會用新的。
         """
+        self._pick_style(lambda choice: choice.set(name))
+
+    def set_compare(self, name: str | None) -> None:
+        """改選要並排比較的那一份權重。``None`` 關掉比較。
+
+        與 :meth:`set_style` 一樣會重啟引擎 —— 比較是多載一份權重,而權重是
+        建構時吃的。開著比較時推論成本與記憶體都是兩倍。
+        """
+        self._pick_style(lambda choice: choice.set_compare(name))
+
+    def _pick_style(self, change: Callable[[StyleChoice], bool]) -> None:
+        """套用一次風格選擇,真的變了才重啟。
+
+        兩個選單共用這一段:**「有沒有真的變」的判斷在 StyleChoice 裡**,
+        這裡只負責「變了就重啟」。各寫一份的話其中一個早晚會漏掉重啟,
+        而症狀是「換了風格但建議一模一樣」—— 看起來正好像兩份權重沒差別。
+        """
         if self._style is None:
             logger.warning("這個模式不支援換風格,忽略")
             return
-        if not self._style.set(name):
+        if not change(self._style):
             return
         logger.info("打法風格改為 {}", self._style)
         self._restart(features.ADVICE)

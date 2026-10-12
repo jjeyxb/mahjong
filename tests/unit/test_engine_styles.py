@@ -123,3 +123,112 @@ class TestComparison:
             (StyleProfile("比較:鳴牌傾向", (weights["high"], weights["low"])),)
         )
         assert choice.weights == (weights["high"], weights["low"])
+
+
+class TestCompareSlot:
+    """比較對象是**第二個格子**,由使用者自己挑。
+
+    原本是在設定檔裡寫死幾組(``比較:鳴牌傾向``),而那只覆蓋得到事先想到的
+    那幾種組法。兩個格子的話 N 份權重自然就有 N×(N−1) 種。
+    """
+
+    @pytest.fixture
+    def choice(self, weights: dict[str, Path]) -> StyleChoice:
+        return StyleChoice(
+            (
+                StyleProfile("標準", (weights["base"],)),
+                StyleProfile("愛鳴牌", (weights["high"],)),
+                StyleProfile("不愛鳴牌", (weights["low"],)),
+            )
+        )
+
+    def test_off_by_default(self, choice: StyleChoice) -> None:
+        """預設不比較 —— 開著比較要多載一份 130MB 的權重。"""
+        assert choice.compare is None
+        assert len(choice.weights) == 1
+
+    def test_picking_one_loads_both(
+        self, choice: StyleChoice, weights: dict[str, Path]
+    ) -> None:
+        assert choice.set_compare("愛鳴牌")
+        assert choice.weights == (weights["base"], weights["high"])
+
+    def test_the_primary_stays_in_front(
+        self, choice: StyleChoice, weights: dict[str, Path]
+    ) -> None:
+        """順序就是引擎的優先序,而 headline 取第一個有動作的。
+
+        比較對象排前面的話,開一下比較就換人當主角 —— 使用者會以為主要風格
+        被改掉了。
+        """
+        choice.set_compare("不愛鳴牌")
+        assert choice.weights[0] == weights["base"]
+
+    def test_none_turns_it_off(self, choice: StyleChoice) -> None:
+        choice.set_compare("愛鳴牌")
+        assert choice.set_compare(None)
+        assert choice.compare is None
+
+    def test_it_refuses_to_compare_with_itself(self, choice: StyleChoice) -> None:
+        """同一份權重載兩次會得到兩個答案完全相同的引擎,永遠沒有分歧。
+
+        **那是最糟的一種錯:它長得像一個結論**(「這兩個風格沒差別」)。
+        """
+        assert not choice.set_compare("標準")
+        assert choice.compare is None
+
+    def test_switching_the_primary_onto_the_compare_clears_it(
+        self, choice: StyleChoice, weights: dict[str, Path]
+    ) -> None:
+        """主要風格換成目前的比較對象時,比較要關掉 —— 不然就是跟自己比。"""
+        choice.set_compare("愛鳴牌")
+        assert choice.set("愛鳴牌")
+        assert choice.compare is None
+        assert choice.weights == (weights["high"],)
+
+    def test_an_unrelated_primary_switch_keeps_the_comparison(
+        self, choice: StyleChoice, weights: dict[str, Path]
+    ) -> None:
+        """對照組:換成第三個風格時,比較對象留著。"""
+        choice.set_compare("愛鳴牌")
+        choice.set("不愛鳴牌")
+        assert choice.compare_name == "愛鳴牌"
+        assert choice.weights == (weights["low"], weights["high"])
+
+    def test_an_unknown_name_means_no_comparison(self, choice: StyleChoice) -> None:
+        """從 ui_state.json 讀回來的舊名字可能已經不在設定檔裡了。"""
+        assert not choice.set_compare("上個月刪掉的那個")
+        assert choice.compare is None
+
+    def test_reselecting_the_same_one_reports_no_change(self, choice: StyleChoice) -> None:
+        """回傳值決定要不要重啟引擎,而重選同一項是很常見的動作。"""
+        assert choice.set_compare("愛鳴牌")
+        assert not choice.set_compare("愛鳴牌")
+
+    def test_a_remembered_comparison_is_restored(
+        self, weights: dict[str, Path]
+    ) -> None:
+        choice = StyleChoice(
+            (
+                StyleProfile("標準", (weights["base"],)),
+                StyleProfile("愛鳴牌", (weights["high"],)),
+            ),
+            "標準",
+            "愛鳴牌",
+        )
+        assert choice.weights == (weights["base"], weights["high"])
+
+    def test_a_remembered_comparison_equal_to_the_primary_is_dropped(
+        self, weights: dict[str, Path]
+    ) -> None:
+        """設定檔的 default 改過之後,存著的比較對象可能剛好撞上它。"""
+        choice = StyleChoice(
+            (StyleProfile("標準", (weights["base"],)),), "標準", "標準"
+        )
+        assert choice.compare is None
+
+    def test_it_says_both_names(self, choice: StyleChoice) -> None:
+        """日誌寫的是這個字串 —— 只寫主要那個的話看不出比較開著沒。"""
+        assert str(choice) == "標準"
+        choice.set_compare("愛鳴牌")
+        assert str(choice) == "標準 vs 愛鳴牌"
