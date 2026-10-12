@@ -57,11 +57,15 @@ class UiState:
             其中一項)。設定檔改過之後這個名字可能已經不存在 —— 那時
             :class:`~mia.engine.styles.StyleChoice` 會退回第一個可用的,
             不報錯。
+        compare_style: 上次選的並排比較對象,``None`` 代表不比較。
+            與 :attr:`style` 撞在一起或名字不存在時一律當成不比較 ——
+            開著比較要多載一份 130MB 的權重,**所以對不上的時候寧可不開**。
     """
 
     canvas: str | None = None
     canvas_chosen: bool = False
     style: str | None = None
+    compare_style: str | None = None
     overlay_visible: bool = False
     overlay_expanded: bool = False
     overlay_danger: bool = False

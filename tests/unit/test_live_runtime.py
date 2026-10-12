@@ -759,6 +759,41 @@ class TestStyle:
         assert spy.made == []
         assert runtime.style() == "high"
 
+    def test_setting_a_comparison_restarts_the_engines(
+        self, model: ViewModel, bus: UpdateBus, tmp_path: Path
+    ) -> None:
+        """比較是多載一份權重,而權重是建構時吃的 —— 跟換風格同一件事。"""
+        feature, spy = _feature(features.ADVICE)
+        runtime = LiveRuntime(model, bus, features=[feature], style=self._choice(tmp_path))
+        runtime.start()
+        runtime.set_enabled(features.ADVICE, True)
+        assert len(spy.made) == 1
+
+        runtime.set_compare("high")
+        assert runtime.compare() == "high"
+        assert len(spy.made) == 2, "開了比較卻沒有重建 worker"
+        runtime.stop()
+
+    def test_comparing_with_itself_does_nothing(
+        self, model: ViewModel, bus: UpdateBus, tmp_path: Path
+    ) -> None:
+        """跟自己比永遠沒有分歧,而那看起來像個結論 —— 連重啟都不該付。"""
+        feature, spy = _feature(features.ADVICE)
+        runtime = LiveRuntime(model, bus, features=[feature], style=self._choice(tmp_path))
+        runtime.start()
+        runtime.set_enabled(features.ADVICE, True)
+        runtime.set_compare("base")
+        assert runtime.compare() is None
+        assert len(spy.made) == 1
+        runtime.stop()
+
+    def test_no_choice_means_no_comparison(self, model: ViewModel, bus: UpdateBus) -> None:
+        """重播模式沒有這個格子。問它不該炸,也不該假裝有。"""
+        feature, _ = _feature(features.ADVICE)
+        runtime = LiveRuntime(model, bus, features=[feature])
+        assert runtime.compare() is None
+        runtime.set_compare("high")  # 只寫日誌,不該拋例外
+
 
 class TestFeatureThatCannotStart:
     """工廠丟 EngineError 時不能讓整個程式掛掉。

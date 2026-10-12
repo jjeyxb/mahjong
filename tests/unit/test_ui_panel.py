@@ -301,7 +301,9 @@ class FakeStylePicker:
     def __init__(self, names: tuple[str, ...] = ("標準", "愛鳴牌"), current: str = "標準") -> None:
         self._names = names
         self._current = current
+        self._compare: str | None = None
         self.asked: list[str] = []
+        self.asked_compare: list[str | None] = []
 
     def can_pick_style(self) -> bool:
         return bool(self._names)
@@ -315,6 +317,16 @@ class FakeStylePicker:
     def set_style(self, name: str) -> None:
         self.asked.append(name)
         self._current = name
+        if self._compare == name:
+            # 真的那一份(StyleChoice.set)也是這樣:不能跟自己比
+            self._compare = None
+
+    def compare(self) -> str | None:
+        return self._compare
+
+    def set_compare(self, name: str | None) -> None:
+        self.asked_compare.append(name)
+        self._compare = None if name == self._current else name
 
 
 class TestStylePicker:
@@ -916,3 +928,70 @@ class TestCanvasPicker:
         window = PanelWindow(ViewModel(), switchboard=FakeSwitchboard())
         qtbot.addWidget(window)
         assert not window._canvas_picker.isEnabled()  # noqa: SLF001
+
+
+class TestComparePicker:
+    """「比較對象」選單。使用者的原話:「可以設計成能自己選擇要哪兩個模型」。"""
+
+    def test_it_offers_everything_except_the_primary(self, qtbot) -> None:  # noqa: ARG002
+        """主要風格要從清單裡排除,而不是選了再擋。
+
+        選單上出現一個按下去沒反應的項目,比它根本不在那裡糟 ——
+        使用者會以為程式壞了。
+        """
+        window = PanelWindow(ViewModel(), style=FakeStylePicker(current="標準"))
+        combo = window._compare_picker  # noqa: SLF001
+        assert [combo.itemData(i) for i in range(combo.count())] == [None, "愛鳴牌"]
+
+    def test_it_starts_on_no_comparison(self, qtbot) -> None:  # noqa: ARG002
+        window = PanelWindow(ViewModel(), style=FakeStylePicker())
+        assert window._compare_picker.currentData() is None  # noqa: SLF001
+
+    def test_picking_one_asks_for_it(self, qtbot) -> None:  # noqa: ARG002
+        picker = FakeStylePicker()
+        window = PanelWindow(ViewModel(), style=picker)
+        window._compare_picker.setCurrentIndex(1)  # noqa: SLF001
+        assert picker.asked_compare == ["愛鳴牌"]
+
+    def test_going_back_to_none_asks_for_none(self, qtbot) -> None:  # noqa: ARG002
+        """「不比較」是個合法的值,不能像換風格那樣把 None 擋掉。"""
+        picker = FakeStylePicker()
+        window = PanelWindow(ViewModel(), style=picker)
+        window._compare_picker.setCurrentIndex(1)  # noqa: SLF001
+        window._compare_picker.setCurrentIndex(0)  # noqa: SLF001
+        assert picker.asked_compare == ["愛鳴牌", None]
+
+    def test_switching_the_primary_rebuilds_the_list(self, qtbot) -> None:  # noqa: ARG002
+        """換了主要風格之後,被排除的那一項要跟著換。"""
+        window = PanelWindow(ViewModel(), style=FakeStylePicker(current="標準"))
+        window._style_picker.setCurrentIndex(1)  # noqa: SLF001  → 愛鳴牌
+        combo = window._compare_picker  # noqa: SLF001
+        assert [combo.itemData(i) for i in range(combo.count())] == [None, "標準"]
+
+    def test_rebuilding_the_list_does_not_restart_the_engine(self, qtbot) -> None:  # noqa: ARG002
+        """**這一條是陷阱。**
+
+        ``clear()`` 與 ``addItem()`` 都會發 ``currentIndexChanged``,而接在上面
+        的 slot 會去 ``set_compare`` —— 沒擋訊號的話「重建一次選單」就等於
+        「重啟一次引擎」,每份權重 130MB。
+        """
+        picker = FakeStylePicker()
+        window = PanelWindow(ViewModel(), style=picker)
+        window._style_picker.setCurrentIndex(1)  # noqa: SLF001
+        assert picker.asked_compare == []
+
+    def test_a_cleared_comparison_shows_as_none(self, qtbot) -> None:  # noqa: ARG002
+        """主要風格換成目前的比較對象時,比較被關掉 —— 選單上的字要跟著改。
+
+        留著就是畫面寫著一個已經不生效的選擇。
+        """
+        picker = FakeStylePicker()
+        window = PanelWindow(ViewModel(), style=picker)
+        window._compare_picker.setCurrentIndex(1)  # noqa: SLF001  → 愛鳴牌
+        window._style_picker.setCurrentIndex(1)  # noqa: SLF001  → 主要也換成愛鳴牌
+        assert window._compare_picker.currentData() is None  # noqa: SLF001
+
+    def test_it_is_disabled_when_styles_are_fixed(self, qtbot) -> None:  # noqa: ARG002
+        """重播 / --no-packets 時沒有引擎那條路,兩個選單都該停用。"""
+        window = PanelWindow(ViewModel(), style=FakeStylePicker(names=()))
+        assert not window._compare_picker.isEnabled()  # noqa: SLF001
