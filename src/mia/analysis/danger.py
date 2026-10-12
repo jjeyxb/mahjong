@@ -16,17 +16,24 @@
 ------
 一張牌 ``T`` 可能被哪些待牌型榮和,是可以窮舉的:
 
-======  ==============================  ==========================
-型      牌                              也會和的另一張
-======  ==============================  ==========================
-兩面    ``(T+1, T+2)``                  ``T+3``
-兩面    ``(T-2, T-1)``                  ``T-3``
-嵌張    ``(T-1, T+1)``                  ——
-單騎    ``T``                           ——
-雙碰    ``T, T``                        ——
-======  ==============================  ==========================
+==========  ==============================  ==========================
+型          牌                              也會和的另一張
+==========  ==============================  ==========================
+兩面        ``(T+1, T+2)``                  ``T+3``
+兩面        ``(T-2, T-1)``                  ``T-3``
+嵌張        ``(T-1, T+1)``                  ——
+單騎        ``T``                           ——
+雙碰        ``T, T``                        ——
+國士無双    **一張都不用**                   ——
+==========  ==============================  ==========================
 
 (``T±3`` 超出 1~9 時那一型是**邊張**,只和 ``T`` 一張。)
+
+最後一列是 2026-10-12 被牌譜補上的,而它打破了前五列共有的那個假設。前五列都
+要求對方**手上有牌**,所以四張全見時一律排除 —— 那是壁,對標準型完全正確。
+而國士無双湊十二種、對倒剩下那一種時他**持有零張**,四張全見反而是那一手的
+前提。和牌張只有三種去處:湊面子(兩張)、湊雀頭(一張)、國士第十三種(零張),
+三種都在表上了,所以這不是補丁 —— 見 :func:`_kokushi_waits`。
 
 然後一型一型排除:
 
@@ -108,8 +115,8 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import TypedDict
 
-from mia.mjai.table import Player, TableTracker
-from mia.mjai.tiles import normalize_red, suit_name, tile_name
+from mia.mjai.table import COPIES, Player, TableTracker
+from mia.mjai.tiles import HONOR_ORDER, normalize_red, suit_name, tile_name
 
 __all__ = [
     "DangerLevel",
@@ -122,6 +129,12 @@ __all__ = [
 ]
 
 _SUITS = ("m", "p", "s")
+
+#: 么九字牌 —— 國士無双會和的那十三種,也只和這十三種。
+#:
+#: 這是 :func:`_kokushi_waits` 的第一道門檻,而它是**規則**不是估計:
+#: 國士無双的和牌張必定在這裡面。
+YAOCHU = ("1m", "9m", "1p", "9p", "1s", "9s", *HONOR_ORDER)
 
 
 class DangerLevel(IntEnum):
@@ -451,6 +464,39 @@ def _pair_waits(tile: str, remaining: dict[str, int]) -> list[Wait]:
     return waits
 
 
+def _kokushi_waits(tile: str, player: Player, remaining: dict[str, int]) -> list[Wait]:
+    """國士無双的第十三張 —— **唯一一種「他手上一張都沒有」的待牌型**。
+
+    這是被真實牌譜抓出來的第三個漏洞(2026-10-12,見 ``docs/decisions.md``
+    第十八節)。上面那五種型全都假設對方手上**持有**某幾張牌:順子系要兩張鄰牌、
+    單騎要一張、雙碰要兩張。所以四張全見時它們一律被排除 —— 那是壁,對**標準型**
+    完全正確。
+
+    而國士無双湊十二種、對倒剩下那一種時,**他持有零張**。於是四張全見反而成了
+    那一手的前提:他要的就是場上最後那一張。實測一手
+    ``1m 1p 9m 9p 9s C C E F N P S W`` 聽 1s,而那時四張 1s 全部看得見
+    (三張在牌河、一張在打者自己手上)—— 畫面寫「安全」,打出去是 32,000 點。
+
+    為什麼這樣就補完了:和牌張 ``T`` 只有三種可能的去處 —— 湊成面子(要兩張)、
+    湊成雀頭(單騎,要一張)、或是國士的第十三種(零張)。前兩種上面都有,
+    所以補上這一條之後**不再有「零張也能和」的漏網型**,這不是補丁。
+
+    排除的依據(全部是規則,沒有估計):
+
+    * ``T`` 不是么九字牌 → 國士根本不和它。
+    * 他有副露 → 國士無双是門清限定,一組都不能有。
+    * 其餘十二種裡有任何一種四張全見 → 他湊不出那十二張,這一手不成立。
+
+    十三面聽(十三種各一張、等任一張成對)不走這條路:那時他持有一張 ``T``,
+    已經被單騎蓋到了。
+    """
+    if tile not in YAOCHU or player.melded:
+        return []
+    if any(remaining.get(t, 0) <= 0 for t in YAOCHU if t != tile):
+        return []
+    return [Wait("國士無双", ())]
+
+
 def assess(
     hand: list[str] | tuple[str, ...], table: TableTracker
 ) -> DangerReport:
@@ -473,7 +519,10 @@ def assess(
         return DangerReport((), ())
 
     tiles = sorted({normalize_red(t) for t in hand})
-    remaining = {t: table.remaining(t, hand) for t in _candidate_tiles(tiles)}
+    # `visible` 只算一次。`table.remaining()` 每叫一次就把四家牌河重新數一遍,
+    # 而這裡要問三十幾張牌 —— 掃兩萬五千場牌譜時那是整支工具最熱的一行。
+    visible = table.visible(hand)
+    remaining = {t: max(0, COPIES - visible[t]) for t in _candidate_tiles(tiles)}
 
     report = []
     for tile in tiles:
@@ -486,6 +535,7 @@ def assess(
             waits = (
                 *_sequence_waits(tile, player.safe, remaining),
                 *_pair_waits(tile, remaining),
+                *_kokushi_waits(tile, player, remaining),
             )
             seats.append(SeatDanger(seat, tuple(waits), **_read(player)))
         report.append(TileDanger(tile, tuple(seats)))
@@ -500,7 +550,12 @@ def assess(
 
 
 def _candidate_tiles(tiles: list[str]) -> set[str]:
-    """要查剩餘張數的牌:手上那些,加上它們前後兩張(壁與兩面會用到)。"""
+    """要查剩餘張數的牌:手上那些,加上它們前後兩張(壁與兩面會用到)。
+
+    手上有么九字牌時,**十三種全部都要查** —— :func:`_kokushi_waits` 要靠
+    「其餘十二種有沒有哪一種四張全見」來排除國士,而查不到的種類在那裡會被
+    當成 0 張,結果是把國士一律排除掉 —— 正好是這條規則要補的那個漏洞。
+    """
     needed = set(tiles)
     for tile in tiles:
         parsed = _ranks(tile)
@@ -510,4 +565,6 @@ def _candidate_tiles(tiles: list[str]) -> set[str]:
         for delta in (-2, -1, 1, 2):
             if 1 <= rank + delta <= 9:
                 needed.add(f"{rank + delta}{suit}")
+    if needed & set(YAOCHU):
+        needed.update(YAOCHU)
     return needed

@@ -373,3 +373,81 @@ class TestSuitReadIsAnEstimateNotAnInference:
     def test_the_flag_only_counts_threats(self) -> None:
         """自己染沒有意義 —— 不會放銃給自己。"""
         assert not any(t.suit_flagged for t in assess(["3m"], self._dyeing(seat=0)).tiles)
+
+
+class TestKokushi:
+    """國士無双:**唯一一種「他手上一張都沒有」的待牌型**。
+
+    這一組是 2026-10-12 掃 2,500 場牌譜抓出來的 —— 那之前這個模組對一手
+    ``1m 1p 9m 9p 9s C C E F N P S W`` 聽 1s 的局面寫著「安全」,而四張 1s
+    全部看得見正是那一手成立的前提。詳見 ``docs/decisions.md`` 第十八節。
+    """
+
+    @staticmethod
+    def _exhausted(table: TableTracker, tile: str, *, seat: int = 1) -> TableTracker:
+        """讓 ``tile`` 四張全見 —— 三張進別人的牌河,一張留在自己手上。
+
+        **不要全部四張都丟進牌河**:那會讓它變成對每一家的現物,測到的就是
+        振聽而不是壁。
+        """
+        for actor in (s for s in (1, 2, 3) if s != seat):
+            table.handle(Dahai(actor=actor, pai=tile, tsumogiri=False))
+        table.handle(Dahai(actor=(seat + 1) % 4, pai=tile, tsumogiri=False))
+        return table
+
+    def test_a_terminal_with_all_four_visible_is_not_safe(self) -> None:
+        """壁把前五型全排除了,而國士不需要他持有任何一張。"""
+        t = self._exhausted(_table(), "1s")
+        assert "國士無双" in _kinds(t, "1s", seat=1)
+        assert _danger(t, "1s").level is not DangerLevel.SAFE
+
+    def test_a_meld_rules_it_out(self) -> None:
+        """國士無双是門清限定 —— 一組副露就不可能。"""
+        t = self._exhausted(_meld(_table(), 1, 1), "1s")
+        assert "國士無双" not in _kinds(t, "1s", seat=1)
+
+    def test_furiten_still_wins(self) -> None:
+        """他自己打過這張 → 振聽,國士也和不了。振聽那條在更前面就短路了。"""
+        t = _table()
+        t.handle(Dahai(actor=1, pai="1s", tsumogiri=False))
+        seat = next(s for s in _danger(t, "1s").seats if s.seat == 1)
+        assert seat.waits == ()
+        assert seat.level is DangerLevel.SAFE
+
+    def test_a_middle_tile_never_gets_it(self) -> None:
+        """國士只和么九字牌。中張牌掛上這一型的話,每一手都會多一型。"""
+        assert "國士無双" not in _kinds(self._exhausted(_table(), "5m"), "5m", seat=1)
+
+    def test_exhausting_another_of_the_thirteen_rules_it_out(self) -> None:
+        """其餘十二種裡有一種四張全見 → 他湊不出那十二張。
+
+        這一條才是把範圍收回來的地方:少了它,么九字牌在終盤會幾乎全部被標成
+        「還有一型」,而那一型絕大多數時候根本湊不出來。
+        """
+        t = self._exhausted(_table(), "1s")
+        # 西四張全見 —— 其中三張在牌河、一張在別人的副露裡,都不是 seat 1 的
+        for actor in (2, 3):
+            t.handle(Dahai(actor=actor, pai="W", tsumogiri=False))
+        t.handle(Dahai(actor=2, pai="W", tsumogiri=False))
+        t.handle(Dahai(actor=3, pai="W", tsumogiri=False))
+        assert t.remaining("W") == 0
+        assert "國士無双" not in _kinds(t, "1s", seat=1)
+
+    def test_the_real_hand_from_the_corpus(self) -> None:
+        """那一件真實案例的局面骨架:**五種標準型全部被排除,只剩國士**。
+
+        牌譜裡那一手是 32,000 點,而讓它在修之前被說成「安全」的正是這個組合:
+
+        * 四張 1s 全見 → 單騎、雙碰排除(壁)
+        * 他打過 4s → 兩面 2s3s 排除(筋,``1s``/``4s`` 同一型)
+        * 1s 的嵌張與另一邊的兩面本來就不存在(0s 不是牌)
+
+        少了 4s 那一步,兩面還活著,這個局面就不是當初那個「全部排除」的局面
+        —— 而那才是漏洞會現形的唯一條件。
+        """
+        t = self._exhausted(_table(), "1s")
+        t.handle(Dahai(actor=1, pai="4s", tsumogiri=False))
+        seat = next(s for s in _danger(t, "1s").seats if s.seat == 1)
+        assert not seat.furiten
+        assert [str(w) for w in seat.waits] == ["國士無双"]
+        assert "國士無双" in seat.reason
