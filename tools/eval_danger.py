@@ -186,12 +186,50 @@ def _ron_targets(events: list[MjaiEvent], index: int) -> set[int]:
     return targets
 
 
-def scan_game(events: list[MjaiEvent], seat: int) -> Result:
+def _snapshot(
+    source: str, seat: int, tile: str, tiles: list[str], table: TableTracker, danger: TileDanger
+) -> dict[str, object]:
+    """一次「判了安全卻放銃」的現場。
+
+    夠不夠重建是唯一的標準:檔名 + 視角 + 第幾次捨牌就能重播,而攤開的牌河與
+    副露讓人不必重播就能先看懂。前兩次被真實牌譜推翻都是靠**盯著一個具體例子**
+    才看出規則想窄了,不是靠看總表。
+    """
+    return {
+        "source": source,
+        "seat": seat,
+        "tile": tile,
+        "hand": tiles,
+        "level": int(danger.level),
+        "opponents": {
+            str(s.seat): {
+                "waits": [str(w) for w in s.waits],
+                "furiten": s.furiten,
+                "reach": table.players[s.seat].reach,
+                "melds": [list(m) for m in table.players[s.seat].melds],
+                "river": list(table.players[s.seat].river),
+            }
+            for s in danger.seats
+        },
+    }
+
+
+def scan_game(
+    events: list[MjaiEvent],
+    seat: int,
+    *,
+    source: str = "",
+    dump: list[dict[str, object]] | None = None,
+) -> Result:
     """從 ``seat`` 的視角重播一場,量他每一次捨牌。
 
     座位直接設在兩個追蹤器上,而 ``start_game`` **不餵進去** —— 它帶的 ``id``
     是檔案裡寫的那一家,餵下去會把這裡指定的視角覆蓋掉。這樣也省掉為了四個
     視角把同一個檔案解析四次。
+
+    Args:
+        dump: 不是 ``None`` 時,把每一次「判了安全卻放銃」的現場附進去。
+            那是這份報告裡唯一需要逐件看的東西 —— 總表只說有幾件。
     """
     result = Result(games=1)
     table = TableTracker()
@@ -215,6 +253,8 @@ def scan_game(events: list[MjaiEvent], seat: int) -> Result:
                 result.full.add(full, ron=ron)
                 result.furiten_only.add(furiten, ron=ron)
                 result.reach_only.add(reach_only, ron=ron)
+                if dump is not None and ron and full is DangerLevel.SAFE:
+                    dump.append(_snapshot(source, seat, tile, tiles, table, danger))
         # 先評估再更新 —— 順序反了的話那張牌會變成打者自己的現物
         table.handle(event)
         hand.feed(event)
@@ -276,7 +316,7 @@ def usable_seats(events: list[MjaiEvent]) -> list[int]:
     return []
 
 
-def scan_file(path: Path) -> Result:
+def scan_file(path: Path, *, dump: list[dict[str, object]] | None = None) -> Result:
     """一場 × 每一個手牌已知的視角。"""
     total = Result()
     try:
@@ -284,7 +324,7 @@ def scan_file(path: Path) -> Result:
     except (MjaiFormatError, json.JSONDecodeError, OSError, ValueError):
         return total
     for seat in usable_seats(events):
-        total.merge(scan_game(events, seat))
+        total.merge(scan_game(events, seat, source=str(path), dump=dump))
     return total
 
 
@@ -331,6 +371,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("path", type=Path, help="一個 mjai 檔,或一個裝著它們的目錄")
     parser.add_argument("--limit", type=int, default=0, help="最多幾場(0 = 全部)")
     parser.add_argument("--out", type=Path, help="把統計寫成 JSON")
+    parser.add_argument(
+        "--dump",
+        type=Path,
+        help="把每一次「判了安全卻放銃」的現場寫成 JSONL —— 那是唯一需要逐件看的東西",
+    )
     parser.add_argument("--progress", type=int, default=100, help="每幾場印一次進度")
     parser.add_argument("--log-level", default="ERROR", help="日誌等級,預設 ERROR")
     args = parser.parse_args(argv)
@@ -349,8 +394,9 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"{len(files)} 場,每場量所有手牌已知的視角\n")
     total = Result()
+    violations: list[dict[str, object]] | None = [] if args.dump else None
     for number, path in enumerate(files, 1):
-        total.merge(scan_file(path))
+        total.merge(scan_file(path, dump=violations))
         if args.progress and number % args.progress == 0:
             print(
                 f"  {number}/{len(files)} 場 —— 判安全卻放銃"
@@ -383,6 +429,13 @@ def main(argv: list[str] | None = None) -> int:
             encoding="utf-8",
         )
         print(f"統計寫到 {args.out}")
+
+    if violations is not None and args.dump is not None:
+        args.dump.parent.mkdir(parents=True, exist_ok=True)
+        with args.dump.open("w", encoding="utf-8") as handle:
+            for case in violations:
+                handle.write(json.dumps(case, ensure_ascii=False) + "\n")
+        print(f"「判安全卻放銃」{len(violations)} 件寫到 {args.dump}")
     return 0
 
 
