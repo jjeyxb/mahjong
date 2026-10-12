@@ -136,6 +136,10 @@ _SUITS = ("m", "p", "s")
 #: 國士無双的和牌張必定在這裡面。
 YAOCHU = ("1m", "9m", "1p", "9p", "1s", "9s", *HONOR_ORDER)
 
+#: 國士無双那一型的名字。寫成常數是因為 :meth:`SeatDanger.level` 要把它從
+#: 型數裡挑掉 —— 兩處用字串各寫一次的話,改了一邊就會靜靜地不生效。
+KOKUSHI = "國士無双"
+
 
 class DangerLevel(IntEnum):
     """危險度。由「還有幾型沒被排除」換算,不是機率。"""
@@ -217,7 +221,26 @@ class SeatDanger:
 
     @property
     def level(self) -> DangerLevel:
-        return _level(len(self.waits))
+        """危險度。**國士無双擋得住「安全」,但不計進型數。**
+
+        型數是「有幾條路會中」的代理指標,而它把每一型當成等重 —— 那一直是個
+        近似,到國士這一型就明顯破了:場上一個活的兩面是家常便飯,而國士榮和
+        大約兩千場一次,兩者放在同一個計數器裡不可比。
+
+        實測(同一批 500 場、256,530 次捨牌):把國士當成普通一型去累加,會有
+        **47,580 手**被往上推一級,而中間兩級的放銃率因此糊掉 ——
+        比較安全從 0.41% 升到 0.64%、危險從 1.28% 掉到 0.90%,兩級幾乎貼在
+        一起,而全體平均是 1.03%。**修正了絕對主張,卻弄壞了排序。**
+
+        所以分成兩件事:國士讓這張牌不能叫「安全」(它真的可能中),但不參與
+        型數的累加(它與其他型不同量級)。只剩國士時給一級「比較安全」——
+        那是最低的「非零」等級,而它確實非零。
+        """
+        standard = sum(1 for w in self.waits if w.kind != KOKUSHI)
+        level = _level(standard)
+        if level is DangerLevel.SAFE and standard != len(self.waits):
+            return DangerLevel.LIKELY_SAFE
+        return level
 
     @property
     def threat(self) -> bool:
@@ -494,7 +517,7 @@ def _kokushi_waits(tile: str, player: Player, remaining: dict[str, int]) -> list
         return []
     if any(remaining.get(t, 0) <= 0 for t in YAOCHU if t != tile):
         return []
-    return [Wait("國士無双", ())]
+    return [Wait(KOKUSHI, ())]
 
 
 def assess(
