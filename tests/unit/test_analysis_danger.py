@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from mia.analysis.danger import DangerLevel, _worst, assess
+from mia.analysis.danger import DangerLevel, _level, _worst, assess
 from mia.groundtruth.stream import MjaiDecoder
 from mia.mjai import Dahai, Pon, Reach, StartGame, StartKyoku
 from mia.mjai.table import TableTracker
@@ -451,3 +451,31 @@ class TestKokushi:
         assert not seat.furiten
         assert [str(w) for w in seat.waits] == ["國士無双"]
         assert "國士無双" in seat.reason
+
+    def test_it_blocks_safe_but_does_not_inflate_the_count(self) -> None:
+        """**國士擋得住「安全」,但不計進型數。**
+
+        型數是「有幾條路會中」的代理指標,而它把每一型當成等重。國士是這個近似
+        破掉的地方:活的兩面家常便飯,國士榮和大約兩千場一次。
+
+        實測把它當普通一型累加的代價:同一批 500 場裡有 47,580 手被往上推一級,
+        中間兩級的放銃率糊成 0.64% 對 0.90%(全體平均 1.03%)—— 絕對主張修好了,
+        排序卻壞了。
+        """
+        only = self._exhausted(_table(), "1s")
+        only.handle(Dahai(actor=1, pai="4s", tsumogiri=False))  # 筋,排掉兩面 2s3s
+        seat = next(s for s in _danger(only, "1s").seats if s.seat == 1)
+        assert [str(w) for w in seat.waits] == ["國士無双"]
+        assert seat.level is DangerLevel.LIKELY_SAFE  # 不是安全,但也只差一級
+
+    def test_it_does_not_push_a_tile_up_a_level(self) -> None:
+        """對照組:標準型還活著的時候,國士不該讓等級往上跳。
+
+        少了這一條,么九字牌在中盤會整批從「比較安全」被推進「危險」,
+        而那正是量到的那 47,580 手。
+        """
+        plain = _table()  # 1s 的標準型都還活著
+        with_kokushi = next(s for s in _danger(plain, "1s").seats if s.seat == 1)
+        standard = [w for w in with_kokushi.waits if w.kind != "國士無双"]
+        assert len(standard) < len(with_kokushi.waits), "這個局面本來就該掛著國士"
+        assert with_kokushi.level is _level(len(standard))
