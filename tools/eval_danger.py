@@ -404,39 +404,61 @@ def main(argv: list[str] | None = None) -> int:
                 f" {total.reach_only.ron_when_safe}(只認立直)",
                 flush=True,
             )
+            # 每一次進度都存檔。兩萬五千場要兩小時,而中途被砍掉的話算過的東西
+            # 全部白費 —— 2026-10-12 真的發生過一次,跑到 4,000 場連一個數字
+            # 都沒留下。`eval_1v3.md` 裡我自己寫過同一個坑的警告,然後在新工具
+            # 上又犯了一次。統計是可累加的,所以存檔沒有額外成本。
+            _write_stats(args.out, total)
+            _write_dump(args.dump, violations)
 
     print("\n" + report(total))
-
-    if args.out:
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(
-            json.dumps(
-                {
-                    name: {
-                        "by_level": dict(tally.by_level),
-                        "ron_by_level": dict(tally.ron_by_level),
-                    }
-                    for name, tally in (
-                        ("full", total.full),
-                        ("furiten_only", total.furiten_only),
-                        ("reach_only", total.reach_only),
-                    )
-                }
-                | {"games": total.games, "desyncs": total.desyncs},
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+    if _write_stats(args.out, total):
         print(f"統計寫到 {args.out}")
-
-    if violations is not None and args.dump is not None:
-        args.dump.parent.mkdir(parents=True, exist_ok=True)
-        with args.dump.open("w", encoding="utf-8") as handle:
-            for case in violations:
-                handle.write(json.dumps(case, ensure_ascii=False) + "\n")
-        print(f"「判安全卻放銃」{len(violations)} 件寫到 {args.dump}")
+    if (written := _write_dump(args.dump, violations)) is not None:
+        print(f"「判安全卻放銃」{written} 件寫到 {args.dump}")
     return 0
+
+
+def _write_stats(out: Path | None, total: Result) -> bool:
+    """把統計寫成 JSON。沒給 ``--out`` 就什麼都不做。
+
+    整份重寫而不是附加:統計是**累計值**,不是事件流 —— 附加會留下一串半成品,
+    而讀的人分不出哪一行才是最後那一行。
+    """
+    if out is None:
+        return False
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(
+        json.dumps(
+            {
+                name: {
+                    "by_level": dict(tally.by_level),
+                    "ron_by_level": dict(tally.ron_by_level),
+                }
+                for name, tally in (
+                    ("full", total.full),
+                    ("furiten_only", total.furiten_only),
+                    ("reach_only", total.reach_only),
+                )
+            }
+            | {"games": total.games, "desyncs": total.desyncs},
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return True
+
+
+def _write_dump(out: Path | None, violations: list[dict[str, object]] | None) -> int | None:
+    """把「判安全卻放銃」的現場寫成 JSONL。回寫了幾件,沒開就回 ``None``。"""
+    if out is None or violations is None:
+        return None
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", encoding="utf-8") as handle:
+        for case in violations:
+            handle.write(json.dumps(case, ensure_ascii=False) + "\n")
+    return len(violations)
 
 
 if __name__ == "__main__":
