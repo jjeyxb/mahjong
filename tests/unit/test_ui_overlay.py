@@ -282,11 +282,11 @@ class TestShantenNeedsVision:
         assert shown(window._shanten)  # noqa: SLF001
 
 
-class TestTopTiles:
-    """主要引擎推薦的前三張,畫在右半邊(原本是進張的位置)。
+class TestSecondChoices:
+    """次選:第二、第三好的切牌,與**它們差第一名多少**。
 
-    比進張值錢:進張講的是「摸到什麼會前進」,而手牌本來就看得到;
-    這個講的是「模型第二、第三喜歡什麼」,是遊戲裡沒有的資訊。
+    擺在右半邊(原本是進張的位置)。比進張值錢 —— 進張講的是「摸到什麼會
+    前進」而手牌本來就看得到;這個講的是模型還喜歡什麼、差多少。
     """
 
     #: 三個切牌候選 + 立直,Q 值刻意不照位元順序 —— 要驗它是按分數排,
@@ -297,38 +297,63 @@ class TestTopTiles:
     def _shown(self, overlay):
         overlay[1].set_shown(True)
 
-    def test_it_shows_three(self, overlay) -> None:
-        model, window = overlay
+    def _advise(self, model, meta=None):
         model.update_advices(
-            [Advice("m", Dahai(actor=0, pai="2m", tsumogiri=False), self.META, 1.0)]
+            [Advice("愛鳴牌", Dahai(actor=0, pai="2m", tsumogiri=False), meta or self.META, 1.0)]
         )
-        assert sum(shown(t) for t in window._top) == 3  # noqa: SLF001
+
+    def tiles(self, window):
+        return [t.tile for t, _g in window._second if shown(t)]  # noqa: SLF001
+
+    def test_it_shows_two(self, overlay) -> None:
+        model, window = overlay
+        self._advise(model)
+        assert len(self.tiles(window)) == 2
+
+    def test_the_best_tile_is_not_repeated(self, overlay) -> None:
+        """2m 是第一名,左半邊已經畫了大的 —— 再畫一次只是把同一件事說兩遍。"""
+        model, window = overlay
+        self._advise(model)
+        assert "2m" not in self.tiles(window)
 
     def test_they_are_in_score_order(self, overlay) -> None:
         """2m(5.0)> 3m(1.0)> 1m(-2.0)。立直排第二但不是牌,跳過。"""
         model, window = overlay
-        model.update_advices(
-            [Advice("m", Dahai(actor=0, pai="2m", tsumogiri=False), self.META, 1.0)]
-        )
-        assert [t._tile for t in window._top[:3]] == ["2m", "3m", "1m"]  # noqa: SLF001
+        self._advise(model)
+        assert self.tiles(window) == ["3m", "1m"]
+
+    def test_the_gap_to_the_best_is_shown(self, overlay) -> None:
+        """3m 是 1.0、最好的 2m 是 5.0 —— 差 4.00。
+
+        寫差距而不是原始 Q 值:Q 值只有同一手之內比較才有意義,而 HUD 上
+        一個孤零零的「1.00」沒有參照點。
+        """
+        model, window = overlay
+        self._advise(model)
+        assert window._second[0][1].text() == "-4.00"  # noqa: SLF001
+
+    def test_a_close_second_is_visibly_close(self, overlay) -> None:
+        """**這才是這塊面積的用途。** 差 0.02 跟差 4.00 是完全不同的處境,
+        而原始 Q 值看不出這件事。"""
+        model, window = overlay
+        self._advise(model, {"mask_bits": 0b111, "q_values": [-2.0, 5.0, 4.98]})
+        assert window._second[0][1].text() == "-0.02"  # noqa: SLF001
 
     def test_non_tile_actions_are_skipped(self, overlay) -> None:
         """候選裡也會有立直 / 吃 / 碰,但那些沒有對應的單張牌 ——
-        混進一排牌面裡會變成「第二名是空白」。"""
+        混進一排牌面裡會變成「次選是空白」。"""
         model, window = overlay
-        model.update_advices(
-            [Advice("m", Dahai(actor=0, pai="2m", tsumogiri=False), self.META, 1.0)]
-        )
-        assert "reach" not in [t.tile for t in window._top]  # noqa: SLF001
+        self._advise(model)
+        assert "reach" not in self.tiles(window)
 
     def test_an_engine_without_q_values_shows_nothing(self, overlay) -> None:
         """規則式基準沒有 meta —— 不該留一排上一手的殘影。"""
         model, window = overlay
         model.update_advices(
-            [Advice("baseline", Dahai(actor=0, pai="3s", tsumogiri=False), None, 1.0)]
+            [Advice("規則式基準", Dahai(actor=0, pai="3s", tsumogiri=False), None, 1.0)]
         )
-        assert not any(shown(t) for t in window._top)  # noqa: SLF001
-        assert not shown(window._top_label)  # noqa: SLF001
+        assert not self.tiles(window)
+        assert not shown(window._second_label)  # noqa: SLF001
 
     def test_advice_off_hides_them(self, qtbot, tmp_path) -> None:
         model = ViewModel()
@@ -340,10 +365,8 @@ class TestTopTiles:
         model.subscribe(window.apply)
         qtbot.addWidget(window)
         window.set_shown(True)
-        model.update_advices(
-            [Advice("m", Dahai(actor=0, pai="2m", tsumogiri=False), self.META, 1.0)]
-        )
-        assert not any(shown(t) for t in window._top)  # noqa: SLF001
+        self._advise(model)
+        assert not self.tiles(window)
 
 
 class TestOtherEngines:
