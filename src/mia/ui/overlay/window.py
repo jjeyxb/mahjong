@@ -68,16 +68,16 @@ _MAX_OWN_TILES = 3
 _TILE_HEIGHT = 40
 _CANDIDATE_TILE_HEIGHT = 22
 
-#: 主要引擎推薦的前幾張,畫在右半邊。
+#: 次選最多畫幾張。
 #:
-#: 三張是刻意的:第一張是建議本身(左半邊已經畫了大的),二三名回答的是
-#: 「如果不切那張呢」。超過三名的 Q 值通常已經掉得很遠,列出來只是噪音 ——
-#: 要看完整排序就展開候選,那裡有 Q 值長條。
-_MAX_TOP_TILES = 3
+#: **不含第一名** —— 左半邊已經畫了大的那張,再畫一次只是把同一件事說兩遍。
+#: 兩張回答的是「如果不切那張呢」,而第四名之後的 Q 值通常已經掉得很遠,
+#: 列出來只是噪音。要看完整排序就展開候選,那裡有 Q 值長條。
+_MAX_SECOND_TILES = 2
 
-#: 前三張的牌面高度。比建議那張小 —— 它是「還有哪些選項」,不是要你現在
+#: 次選的牌面高度。比建議那張小 —— 它是「還有哪些選項」,不是要你現在
 #: 做的動作。這塊位置原本是進張,高度沿用同一階。
-_TOP_TILE_HEIGHT = 26
+_SECOND_TILE_HEIGHT = 26
 
 #: 「其他引擎怎麼說」最多列幾行。
 #:
@@ -297,18 +297,24 @@ class OverlayWindow(QWidget):
             layout.addWidget(label)
         layout.addWidget(self._mark)
         layout.addStretch(1)
-        # 前三張推薦。擺在右半邊 —— 那裡原本是進張,而這個比進張值錢:
-        # 進張講的是「摸到什麼會前進」(手牌本來就看得到),這個講的是
-        # 「模型第二、第三喜歡什麼」,是遊戲裡沒有的資訊。
-        self._top_label = QLabel("推薦", row)
-        self._top_label.setStyleSheet(f"color: {_MUTED}; font-size: 11px;")
-        self._top = [TileLabel(self._icons, _TOP_TILE_HEIGHT, row) for _ in range(_MAX_TOP_TILES)]
+        # 次選。擺在右半邊 —— 那裡原本是進張,而這個比進張值錢:進張講的是
+        # 「摸到什麼會前進」(手牌本來就看得到),這個講的是「模型第二喜歡
+        # 什麼、差多少」,是遊戲裡沒有的資訊。
+        self._second_label = QLabel("次選", row)
+        self._second_label.setStyleSheet(f"color: {_MUTED}; font-size: 11px;")
+        self._second: list[tuple[TileLabel, QLabel]] = []
+        for _ in range(_MAX_SECOND_TILES):
+            tile = TileLabel(self._icons, _SECOND_TILE_HEIGHT, row)
+            gap = QLabel("", row)
+            gap.setStyleSheet(f"color: {_MUTED}; font-size: 11px;")
+            self._second.append((tile, gap))
 
         layout.addWidget(self._separator)
         layout.addWidget(self._shanten)
-        layout.addWidget(self._top_label)
-        for label in self._top:
-            layout.addWidget(label)
+        layout.addWidget(self._second_label)
+        for tile, gap in self._second:
+            layout.addWidget(tile)
+            layout.addWidget(gap)
         return row
 
     def _build_others(self) -> QWidget:
@@ -535,7 +541,7 @@ class OverlayWindow(QWidget):
 
         if not advice_on and not vision_on:
             self._show_shanten("")
-            self._show_top(None)
+            self._show_second(None)
             self._show_others(None)
             self._show_candidates(None)
             if danger_on:
@@ -572,7 +578,7 @@ class OverlayWindow(QWidget):
         # 使用者沒有打開任何東西去要的數字。那一頁的開關關著,它的輸出就不該
         # 出現在另一個畫面上。
         self._show_shanten(_shanten_line(state) if vision_on else "")
-        self._show_top(engine)
+        self._show_second(engine)
         self._show_others(state if advice_on else None)
         self._show_candidates(engine if self.expanded else None)
 
@@ -689,22 +695,39 @@ class OverlayWindow(QWidget):
             row.setVisible(False)
         self._others.setVisible(bool(others))
 
-    def _show_top(self, engine: EngineView | None) -> None:
-        """畫主要引擎推薦的前三張。沒有 Q 值的引擎(規則式基準)整段收起來。
+    def _show_second(self, engine: EngineView | None) -> None:
+        """畫次選的牌與**它差第一名多少**。沒有 Q 值的引擎(規則式基準)整段收起來。
+
+        寫差距而不是原始 Q 值:Q 值是相對的,只有同一手之內互相比較才有意義
+        (見 :class:`~mia.engine.actions.Candidate`)。側邊視窗寫原始值是因為
+        那裡有長條給對照,而 HUD 上一個孤零零的 ``-0.18`` 沒有參照點。
+        **差 0.02 跟差 2.0 是完全不同的處境**,而那正是這塊面積要回答的事。
+
+        **跳過第一名。** 左半邊已經畫了大的那張,再畫一次只是把同一件事說兩遍。
 
         **只畫切牌。** 候選裡也可能有立直 / 吃 / 碰,但那些沒有對應的單張牌,
-        混進一排牌面裡會變成「第二名是空白」。鳴牌的建議由左半邊那個動詞講。
+        混進一排牌面裡會變成「次選是空白」。鳴牌的建議由左半邊那個動詞講。
 
         收起來而不是留上一手的殘影:照著一個已經不成立的排序打,比沒有排序
         糟得多 —— 與進張那一排當初被拿掉時是同一個理由。
         """
-        tiles = [c.label for c in engine.candidates if c.is_tile][:_MAX_TOP_TILES] if engine else []
-        for label, tile in zip(self._top, tiles, strict=False):
-            label.set_tile(tile)
-            label.setVisible(True)
-        for label in self._top[len(tiles) :]:
-            label.setVisible(False)
-        self._top_label.setVisible(bool(tiles))
+        tiles = [c for c in engine.candidates if c.is_tile] if engine else []
+        # candidates 已按 Q 由高到低排序,所以第一個就是最好的那張切牌。
+        # 注意**不是** chosen:引擎這一手可能選了立直或鳴牌,那時最好的切牌
+        # 仍然是一個有意義的「如果要切的話」。
+        best = tiles[0].q if tiles else 0.0
+        rest = tiles[1 : 1 + _MAX_SECOND_TILES]
+
+        for (tile, gap), candidate in zip(self._second, rest, strict=False):
+            tile.set_tile(candidate.label)
+            gap.setText(f"{candidate.q - best:+.2f}")
+            gap.setToolTip(f"比最好的那張差 {best - candidate.q:.2f}")
+            tile.setVisible(True)
+            gap.setVisible(True)
+        for tile, gap in self._second[len(rest) :]:
+            tile.setVisible(False)
+            gap.setVisible(False)
+        self._second_label.setVisible(bool(rest))
 
     def _show_shanten(self, text: str) -> None:
         self._shanten.setText(text)
