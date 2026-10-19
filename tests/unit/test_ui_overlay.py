@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 
 from mia import features
@@ -278,6 +280,70 @@ class TestShantenNeedsVision:
         model, window = self.build(qtbot, tmp_path, {features.VISION})
         model.update_packet_hand(TENPAI)
         assert shown(window._shanten)  # noqa: SLF001
+
+
+class TestTopTiles:
+    """主要引擎推薦的前三張,畫在右半邊(原本是進張的位置)。
+
+    比進張值錢:進張講的是「摸到什麼會前進」,而手牌本來就看得到;
+    這個講的是「模型第二、第三喜歡什麼」,是遊戲裡沒有的資訊。
+    """
+
+    #: 三個切牌候選 + 立直,Q 值刻意不照位元順序 —— 要驗它是按分數排,
+    #: 不是按動作索引排。位元:1m(0)、2m(1)、3m(2)、立直(37)。
+    META: ClassVar[dict] = {"mask_bits": 0b111 | (1 << 37), "q_values": [-2.0, 5.0, 1.0, 3.0]}
+
+    @pytest.fixture(autouse=True)
+    def _shown(self, overlay):
+        overlay[1].set_shown(True)
+
+    def test_it_shows_three(self, overlay) -> None:
+        model, window = overlay
+        model.update_advices(
+            [Advice("m", Dahai(actor=0, pai="2m", tsumogiri=False), self.META, 1.0)]
+        )
+        assert sum(shown(t) for t in window._top) == 3  # noqa: SLF001
+
+    def test_they_are_in_score_order(self, overlay) -> None:
+        """2m(5.0)> 3m(1.0)> 1m(-2.0)。立直排第二但不是牌,跳過。"""
+        model, window = overlay
+        model.update_advices(
+            [Advice("m", Dahai(actor=0, pai="2m", tsumogiri=False), self.META, 1.0)]
+        )
+        assert [t._tile for t in window._top[:3]] == ["2m", "3m", "1m"]  # noqa: SLF001
+
+    def test_non_tile_actions_are_skipped(self, overlay) -> None:
+        """候選裡也會有立直 / 吃 / 碰,但那些沒有對應的單張牌 ——
+        混進一排牌面裡會變成「第二名是空白」。"""
+        model, window = overlay
+        model.update_advices(
+            [Advice("m", Dahai(actor=0, pai="2m", tsumogiri=False), self.META, 1.0)]
+        )
+        assert "reach" not in [t.tile for t in window._top]  # noqa: SLF001
+
+    def test_an_engine_without_q_values_shows_nothing(self, overlay) -> None:
+        """規則式基準沒有 meta —— 不該留一排上一手的殘影。"""
+        model, window = overlay
+        model.update_advices(
+            [Advice("baseline", Dahai(actor=0, pai="3s", tsumogiri=False), None, 1.0)]
+        )
+        assert not any(shown(t) for t in window._top)  # noqa: SLF001
+        assert not shown(window._top_label)  # noqa: SLF001
+
+    def test_advice_off_hides_them(self, qtbot, tmp_path) -> None:
+        model = ViewModel()
+        window = OverlayWindow(
+            model,
+            switchboard=FakeSwitchboard({features.VISION}),
+            ui_state=UiState.load(tmp_path / "ui.json"),
+        )
+        model.subscribe(window.apply)
+        qtbot.addWidget(window)
+        window.set_shown(True)
+        model.update_advices(
+            [Advice("m", Dahai(actor=0, pai="2m", tsumogiri=False), self.META, 1.0)]
+        )
+        assert not any(shown(t) for t in window._top)  # noqa: SLF001
 
 
 class TestOtherEngines:

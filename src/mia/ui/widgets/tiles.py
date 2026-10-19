@@ -103,8 +103,19 @@ class TileLabel(QLabel):
         self._height = height
         self.setFixedSize(round(height * TILE_ASPECT), height)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._tile: str | None = None
+
+    @property
+    def tile(self) -> str | None:
+        """現在畫的是哪一張。還沒設過就是 ``None``。
+
+        記下來是因為 QPixmap 問不出它是哪張牌 —— 沒有這個屬性的話,
+        「這一排牌面的順序對不對」只能靠眼睛看,測試與 debug 都接不上。
+        """
+        return self._tile
 
     def set_tile(self, tile: str) -> None:
+        self._tile = tile
         self.setPixmap(self._icons.pixmap(tile, self._height))
         self.setToolTip(tile)
 

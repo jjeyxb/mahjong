@@ -79,26 +79,42 @@ PUMP_INTERVAL_MS = 100
 #: 下次沒帶旗標啟動時這個名字不存在,記了也對不上。
 CLI_STYLE = "命令列指定"
 
+#: 規則式引擎在畫面上叫什麼。
+#:
+#: 程式裡的識別字是 ``baseline``,但那三個字擺在比較欄位上沒有講出任何事情
+#: —— 使用者要知道的是「這一欄不是模型算的」。``DummyEngine`` 的預設名字
+#: 不動(日誌與測試在用),只換畫面上的說法。
+BASELINE_NAME = "規則式基準(不是模型)"
 
-def build_engines(args: argparse.Namespace, weights: Sequence[Path | str] = ()) -> list[AIEngine]:
-    """建引擎。**模型排在規則式 baseline 之前。**
 
-    順序就是 ``ViewState.primary`` 的優先序。baseline 排前面的話,headline 會
-    顯示 baseline 的建議、真正的模型被擠到下面那排,而 Q 值長條會整段消失
-    (baseline 沒有 meta)—— 那正是實際跑起來看到的症狀。
+def build_engines(
+    args: argparse.Namespace, weights: Sequence[tuple[str, Path | str] | Path | str] = ()
+) -> list[AIEngine]:
+    """建引擎。**模型排在規則式基準之前。**
+
+    順序就是 ``ViewState.primary`` 的優先序。基準排前面的話,headline 會顯示
+    基準的建議、真正的模型被擠到下面那排,而 Q 值長條會整段消失(基準沒有
+    meta)—— 那正是實際跑起來看到的症狀。
 
     Args:
         args: 只用到 ``seat``(子程序啟動時的暫定座位)。
-        weights: 要載的權重。即時模式由風格選單決定,所以是參數而不是從
-            ``args.mortal`` 讀 —— 那個只是啟動時的初值,使用者換了風格之後
-            再回頭讀它就會載回舊的。
+        weights: 要載的權重。每一項可以是 ``(名字, 路徑)`` 或單純的路徑;
+            後者會退回用檔名當名字。即時模式由風格選單決定,所以是參數而不是
+            從 ``args.mortal`` 讀 —— 那個只是啟動時的初值,使用者換了風格
+            之後再回頭讀它就會載回舊的。
+
+    Note:
+        **名字是畫面上唯一分得出誰是誰的東西**,所以優先用設定檔寫的風格名
+        (「愛鳴牌」)而不是檔名(``style_call_high``)。後者要使用者在腦裡
+        翻譯一次才知道那是什麼,而比較欄位正是最需要一眼看懂的地方。
     """
     from mia.engine.mortal import mortal_engine
 
-    engines: list[AIEngine] = [
-        mortal_engine(w, seat=args.seat, name=Path(w).stem) for w in weights
-    ]
-    engines.append(DummyEngine())
+    engines: list[AIEngine] = []
+    for item in weights:
+        label, path = item if isinstance(item, tuple) else (Path(item).stem, item)
+        engines.append(mortal_engine(path, seat=args.seat, name=label))
+    engines.append(DummyEngine(name=BASELINE_NAME))
     return engines
 
 
@@ -324,7 +340,7 @@ def build_live_runtime(
             return PacketWorker(
                 bus,
                 dump=dump_path(),
-                engines=build_engines(args, style.weights if style else ()),
+                engines=build_engines(args, style.named_weights if style else ()),
                 from_start=True,
             )
 

@@ -124,8 +124,29 @@ class StyleChoice:
         比較對象接在後面,所以 headline 永遠是主要那一份,不會因為開了比較
         就換人當主角。
         """
-        primary = self._value.weights if self._value else ()
-        return primary + (self._compare.weights if self._compare else ())
+        return tuple(path for _label, path in self.named_weights)
+
+    @property
+    def named_weights(self) -> tuple[tuple[str, Path], ...]:
+        """同一份清單,但每一項帶著**給人看的名字**。
+
+        建引擎時要用這個而不是 :attr:`weights`:引擎的 ``name`` 是畫面上唯一
+        分得出誰是誰的東西,而拿檔名當名字會在比較欄位印出 ``style_call_high``
+        —— 使用者要在腦裡把它翻回「愛鳴牌」才知道那是什麼。設定檔裡本來就
+        寫好名字了,沒有理由不用。
+
+        一個風格帶多份權重時後面加編號(``愛鳴牌 2``):名字必須唯一,
+        不然兩個引擎在比較欄位上長得一模一樣,看起來像同一個引擎自己跟
+        自己不一致。
+        """
+        out: list[tuple[str, Path]] = []
+        for profile in (self._value, self._compare):
+            if profile is None:
+                continue
+            for index, path in enumerate(profile.weights, start=1):
+                label = profile.name if len(profile.weights) == 1 else f"{profile.name} {index}"
+                out.append((label, path))
+        return tuple(out)
 
     def set(self, name: str | None) -> bool:
         """換主要風格。回傳**有沒有真的變**,讓呼叫端決定要不要重啟引擎。
