@@ -177,10 +177,12 @@ class TestShantenLine:
         model.update_packet_hand(TENPAI)
         assert "聽牌" in window._shanten.text()  # noqa: SLF001
 
-    def test_the_ukeire_count_is_there(self, overlay) -> None:
+    def test_the_ukeire_count_is_gone(self, overlay) -> None:
+        """使用者要求拿掉進張。那塊面積在 HUD 上太貴,而真正在決定下一手的是
+        左半邊那個建議。完整的枚數表在側邊視窗的向聽分析頁。"""
         model, window = overlay
         model.update_packet_hand(TENPAI)
-        assert "進張" in window._shanten.text()  # noqa: SLF001
+        assert "進張" not in window._shanten.text()  # noqa: SLF001
 
     def test_an_unreadable_hand_leaves_it_empty(self, overlay) -> None:
         """有一張 CV 認不出來就算不出向聽。空著就好,不要彈錯誤 ——
@@ -204,68 +206,20 @@ class TestShantenLine:
         assert "⚠" in window._shanten.text()  # noqa: SLF001
 
 
-class TestUkeireTiles:
-    """進張要畫成**牌面**,不能只寫枚數。
+class TestWhatTheShantenLineStillSays:
+    """進張拿掉了,但這一行上有兩個判斷要留著。
 
-    Overlay 疊在遊戲上,手牌本來就看得到 —— 再畫一次不增加任何資訊。
-    遊戲沒告訴你的是「哪幾張牌能讓你前進」,那才是這塊面積該換來的東西。
-    使用者的原話:「overlay 沒有顯示圖示,太過無用」。
+    兩個都是當初為了進張才寫的,拿掉進張之後很容易順手刪掉 —— 而它們驗的
+    是**向聽數有沒有前提**,與進張無關。
     """
 
     @pytest.fixture(autouse=True)
     def _shown(self, overlay):
         overlay[1].set_shown(True)
 
-    def test_a_tenpai_hand_shows_the_waits_as_tiles(self, overlay) -> None:
-        model, window = overlay
-        model.update_packet_hand(TENPAI)
-        assert shown(window._ukeire[0])  # noqa: SLF001
-
-    def test_it_works_with_only_vision_running(self, qtbot, tmp_path) -> None:
-        """這正是壞掉的那個情境:只開畫面辨識時,建議那半邊整段收起來,
-        而進張以前只剩一行字 —— 整個 Overlay 一張圖都沒有。"""
-        model = ViewModel()
-        board = FakeSwitchboard({features.VISION})
-        window = OverlayWindow(
-            model, ui_state=UiState.load(tmp_path / "ui.json"), switchboard=board
-        )
-        model.subscribe(window.apply)
-        qtbot.addWidget(window)
-        window.set_shown(True)
-
-        model.update_cv_hand(TENPAI)
-        assert shown(window._ukeire[0]), "只開畫面辨識時也該看得到進張的牌面"  # noqa: SLF001
-
-    def test_unused_slots_are_hidden(self, overlay) -> None:
-        """留著上一巡的殘影會讓人照著一個已經不成立的答案打。"""
-        model, window = overlay
-        model.update_packet_hand(TENPAI)
-        model.update_packet_hand(())
-        assert not any(shown(label) for label in window._ukeire)  # noqa: SLF001
-
-    def test_too_many_waits_are_summarised(self, overlay) -> None:
-        """三向聽以上常有 8~13 種進張,全畫出來 HUD 會橫跨半個牌桌。"""
-        model, window = overlay
-        model.update_packet_hand(["1m", "4m", "7m", "1p", "4p", "7p", "1s", "4s", "7s",
-                                  "E", "S", "W", "N"])
-        visible = [label for label in window._ukeire if shown(label)]  # noqa: SLF001
-        assert len(visible) <= 5
-        assert window._ukeire_more.text().startswith("+")  # noqa: SLF001
-
-    def test_drawing_a_tile_does_not_blank_the_overlay(self, overlay) -> None:
-        """迴歸測試:使用者回報「摸到牌的時候 overlay 顯示信息會消失只剩幾向聽」。
-
-        14 張的手牌 ``analysis.ukeire`` **依定義是空的** —— 要先決定切哪張。
-        原本的寫法在那一刻把整排牌面藏起來,而那正是最需要資訊的一瞬間。
-        改成畫「切掉最優那張之後」的進張。
-        """
-        model, window = overlay
-        # tiles 本來就含摸進來那張(HandTracker.tiles 就是這樣),所以是 14 張
-        model.update_packet_hand([*TENPAI, "9s"], drawn="9s")
-        assert shown(window._ukeire[0]), "摸牌之後仍然該看得到進張"  # noqa: SLF001
-
-    def test_it_says_which_tile_that_ukeire_assumes_discarding(self, overlay) -> None:
-        """不說切哪張的話,「進張 6」是一個沒有前提的數字。"""
+    def test_it_says_which_tile_the_shanten_assumes_discarding(self, overlay) -> None:
+        """14 張的手牌 ``analysis.ukeire`` 依定義是空的 —— 向聽數講的是
+        「切掉某張之後」。不寫是哪張的話那個數字沒有前提。"""
         model, window = overlay
         model.update_packet_hand([*TENPAI, "9s"], drawn="9s")
         assert "切" in window._shanten.text()  # noqa: SLF001
@@ -273,24 +227,136 @@ class TestUkeireTiles:
     def test_a_winning_hand_is_never_told_to_discard(self, overlay) -> None:
         """和了的手牌 ukeire 也是空的,但那時候該做的事是**和牌**。
 
-        少了這個判斷,123m456m789m1p1p234p 會顯示「和了(切1m)進張 10」。
+        少了這個判斷會顯示「和了(切1m)」。進張不畫了,這個判斷還是得留著
+        —— 它靠的是 ``_effective_ukeire``,而那個函式現在只剩這一個用途。
         """
         model, window = overlay
         model.update_packet_hand([*TENPAI, "4p"], drawn="4p")  # 這一手其實已經和了
         assert "和了" in window._shanten.text()  # noqa: SLF001
         assert "切" not in window._shanten.text()  # noqa: SLF001
-        assert not any(shown(label) for label in window._ukeire)  # noqa: SLF001
 
     def test_a_thirteen_tile_hand_has_no_discard_qualifier(self, overlay) -> None:
-        """還沒摸牌時進張就是進張,沒有「切某張之後」這個前提。"""
+        """還沒摸牌時向聽就是向聽,沒有「切某張之後」這個前提。"""
         model, window = overlay
         model.update_packet_hand(TENPAI)
         assert "切" not in window._shanten.text()  # noqa: SLF001
 
-    def test_a_short_wait_list_has_no_overflow_marker(self, overlay) -> None:
-        model, window = overlay
+
+class TestShantenNeedsVision:
+    """向聽**只在畫面辨識開著時**才顯示。
+
+    ``analysis`` 是從手牌算的,而手牌是封包優先 —— 所以只開 AI 建議時它照樣
+    算得出來,於是 HUD 上會冒出一個使用者沒有打開任何東西去要的數字。
+    那一頁的開關關著,它的輸出就不該出現在另一個畫面上。
+    """
+
+    @staticmethod
+    def build(qtbot, tmp_path, on: set[str]):
+        model = ViewModel()
+        window = OverlayWindow(
+            model, switchboard=FakeSwitchboard(on), ui_state=UiState.load(tmp_path / "ui.json")
+        )
+        model.subscribe(window.apply)
+        qtbot.addWidget(window)
+        window.set_shown(True)
+        return model, window
+
+    def test_advice_only_does_not_show_shanten(self, qtbot, tmp_path) -> None:
+        model, window = self.build(qtbot, tmp_path, {features.ADVICE})
         model.update_packet_hand(TENPAI)
-        assert not shown(window._ukeire_more)  # noqa: SLF001
+        assert not shown(window._shanten)  # noqa: SLF001
+
+    def test_vision_on_shows_it(self, qtbot, tmp_path) -> None:
+        """反面 —— 不然「永遠不顯示」也會過。"""
+        model, window = self.build(qtbot, tmp_path, {features.VISION})
+        model.update_cv_hand(TENPAI)
+        assert shown(window._shanten)  # noqa: SLF001
+
+    def test_a_packet_hand_still_counts_when_vision_is_on(self, qtbot, tmp_path) -> None:
+        """封包的手牌比 CV 精確,開著畫面辨識時當然要用它算 —— 閘門管的是
+        「使用者要不要看」,不是「資料從哪來」。"""
+        model, window = self.build(qtbot, tmp_path, {features.VISION})
+        model.update_packet_hand(TENPAI)
+        assert shown(window._shanten)  # noqa: SLF001
+
+
+class TestOtherEngines:
+    """比較對象那幾行。
+
+    挑了比較對象卻只看得到主要引擎,那個選單等於沒作用 —— 而兩份權重真正的
+    差別只在**分歧的那幾手**顯現。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _shown(self, overlay):
+        overlay[1].set_shown(True)
+
+    @staticmethod
+    def _two(primary: str, other: str):
+        return [
+            Advice("call_high", Dahai(actor=0, pai=primary, tsumogiri=False), None, 1.0),
+            Advice("call_low", Dahai(actor=0, pai=other, tsumogiri=False), None, 1.0),
+        ]
+
+    def rows(self, window):
+        return [r for r, _n, _v in window._other_rows if shown(r)]  # noqa: SLF001
+
+    def test_the_second_engine_is_shown(self, overlay) -> None:
+        model, window = overlay
+        model.update_advices(self._two("3s", "7p"))
+        assert len(self.rows(window)) == 1
+        assert window._other_rows[0][1].text() == "call_low"  # noqa: SLF001
+
+    def test_it_says_which_tile_the_other_would_discard(self, overlay) -> None:
+        model, window = overlay
+        model.update_advices(self._two("3s", "7p"))
+        assert "7p" in window._other_rows[0][2].text()  # noqa: SLF001
+
+    def test_disagreement_is_marked(self, overlay) -> None:
+        """九成以上的手兩份權重會給同一個答案,看了也沒用。有價值的是剩下那幾手。"""
+        model, window = overlay
+        model.update_advices(self._two("3s", "7p"))
+        assert "分歧" in window._other_rows[0][2].text()  # noqa: SLF001
+
+    def test_agreement_is_not_marked(self, overlay) -> None:
+        model, window = overlay
+        model.update_advices(self._two("3s", "3s"))
+        assert "分歧" not in window._other_rows[0][2].text()  # noqa: SLF001
+
+    def test_a_declining_engine_is_still_a_disagreement(self, overlay) -> None:
+        """「它鳴、我不鳴」正是副露率那條風格軸的全部內容。不標的話畫面上
+        只有鳴的那一邊被標成分歧,看起來像它自己跟自己不一致。"""
+        model, window = overlay
+        model.update_advices([
+            Advice("call_high", Pon(actor=0, target=3, pai="5m", consumed=["5m", "5m"]),
+                   None, 1.0),
+            # declined 是從 meta 推出來的:action 是 None 而 meta 是一個決策點。
+            # SKIP_META 正好就是那種 meta(碰 / 槓 / 跳過三個位元)。
+            Advice("call_low", None, SKIP_META, 1.0),
+        ])
+        assert "分歧" in window._other_rows[0][2].text()  # noqa: SLF001
+
+    def test_a_single_engine_leaves_the_section_empty(self, overlay) -> None:
+        """沒挑比較對象時不該留一條空的黑線佔著牌桌。"""
+        model, window = overlay
+        model.update_advices(
+            [Advice("m", Dahai(actor=0, pai="3s", tsumogiri=False), None, 1.0)]
+        )
+        assert not shown(window._others)  # noqa: SLF001
+
+    def test_advice_off_hides_it(self, qtbot, tmp_path) -> None:
+        """關掉之後留著最後一手看起來像還在運作。"""
+        model = ViewModel()
+        window = OverlayWindow(
+            model,
+            switchboard=FakeSwitchboard({features.VISION}),
+            ui_state=UiState.load(tmp_path / "ui.json"),
+        )
+        model.subscribe(window.apply)
+        qtbot.addWidget(window)
+        window.set_shown(True)
+        model.update_advices(self._two("3s", "7p"))
+        assert not shown(window._others)  # noqa: SLF001
 
 
 class TestExpanding:

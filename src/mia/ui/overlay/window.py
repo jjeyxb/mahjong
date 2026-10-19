@@ -68,15 +68,11 @@ _MAX_OWN_TILES = 3
 _TILE_HEIGHT = 40
 _CANDIDATE_TILE_HEIGHT = 22
 
-#: 進張最多畫幾張牌面,其餘用「+N」帶過。
+#: 「其他引擎怎麼說」最多列幾行。
 #:
-#: 進張種類多的時候(三向聽以上常有 8~13 種)全部畫出來會讓 HUD 橫跨半個
-#: 牌桌,而那種局面本來就不需要盯著看哪一張 —— 真正要精確知道等什麼的是
-#: 聽牌與一向聽,那時候種類通常在 5 種以內。超過就是「還早」,枚數比種類有用。
-_MAX_UKEIRE_TILES = 5
-
-#: 進張牌面的高度。比建議那張小 —— 它是參考資訊,不是要你現在做的動作。
-_UKEIRE_TILE_HEIGHT = 26
+#: Overlay 不是完整的比較表 —— 那在側邊視窗的 AI 建議頁。這裡只回答
+#: 「另一個風格會不會切不一樣的牌」,而那是一行就講得完的事。
+_MAX_OTHER_ENGINES = 2
 
 #: 放銃危險度最多列幾張 —— 一手牌就是這麼多,所以這不是「只列前幾名」,
 #: 而是一個防呆上限。使用者要的就是**每一張都列出來**:挑要切哪一張的時候,
@@ -244,6 +240,7 @@ class OverlayWindow(QWidget):
         layout.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)
 
         layout.addWidget(self._build_main())
+        layout.addWidget(self._build_others())
         self._candidates = QWidget(self)
         self._candidates_layout = QVBoxLayout(self._candidates)
         self._candidates_layout.setContentsMargins(0, 2, 0, 0)
@@ -282,15 +279,6 @@ class OverlayWindow(QWidget):
         self._shanten = QLabel("", row)
         self._shanten.setStyleSheet(f"color: {_TEXT}; font-size: 15px; font-weight: 600;")
 
-        # 進張畫成牌面而不是只寫枚數。Overlay 疊在遊戲上,**手牌本來就看得到**
-        # —— 再畫一次沒有加任何資訊。遊戲沒告訴你的是「哪幾張牌能讓你前進」,
-        # 那才是這塊面積該拿來換的東西。
-        self._ukeire = [
-            TileLabel(self._icons, _UKEIRE_TILE_HEIGHT, row) for _ in range(_MAX_UKEIRE_TILES)
-        ]
-        self._ukeire_more = QLabel("", row)
-        self._ukeire_more.setStyleSheet(f"color: {_MUTED}; font-size: 11px;")
-
         layout.addWidget(self._verb)
         layout.addWidget(self._subject)
         layout.addWidget(self._joiner)
@@ -300,10 +288,28 @@ class OverlayWindow(QWidget):
         layout.addStretch(1)
         layout.addWidget(self._separator)
         layout.addWidget(self._shanten)
-        for label in self._ukeire:
-            layout.addWidget(label)
-        layout.addWidget(self._ukeire_more)
         return row
+
+    def _build_others(self) -> QWidget:
+        """比較對象那幾行:引擎名 + 它會怎麼打。
+
+        **為什麼 Overlay 也要有這個。** 挑了比較對象卻只看得到主要引擎,那個
+        選單等於沒作用 —— 而兩份權重真正的差別只在**分歧的那幾手**顯現,
+        看不到另一邊就等於看不到差別。
+
+        寫成文字(``切 東``、``吃 3m ← 1m 2m``)而不是牌面圖:這一段是
+        「另一個人會怎麼做」,不是要你現在點下去的動作。畫成同樣大小的牌面,
+        畫面上就有兩個平起平坐的建議而沒有說明哪個是哪個 —— 與向聽那一句
+        不寫成「切 + 牌面」是同一個理由。
+        """
+        block = QWidget(self)
+        layout = QVBoxLayout(block)
+        layout.setContentsMargins(0, 2, 0, 0)
+        layout.setSpacing(2)
+        self._other_rows: list[tuple[QWidget, QLabel, QLabel]] = []
+        self._others_layout = layout
+        self._others = block
+        return block
 
     def _build_dangers(self) -> QWidget:
         """危險度那一段:一行標題 + 每張牌一列。
@@ -508,6 +514,7 @@ class OverlayWindow(QWidget):
 
         if not advice_on and not vision_on:
             self._show_shanten("")
+            self._show_others(None)
             self._show_candidates(None)
             if danger_on:
                 # 危險度自己就是內容了。這時候再喊一次「未開啟」會變成
@@ -538,8 +545,12 @@ class OverlayWindow(QWidget):
             # 只有畫面辨識在跑:整段建議收起來,把位置讓給向聽
             self._show_advice(None, verb="")
 
-        self._show_shanten(_shanten_line(state))
-        self._show_ukeire(_effective_ukeire(state))
+        # 向聽**只在畫面辨識開著時顯示**。`analysis` 是從手牌算的,而手牌是
+        # 封包優先 —— 所以只開 AI 建議時它照樣算得出來,於是 HUD 上會出現一個
+        # 使用者沒有打開任何東西去要的數字。那一頁的開關關著,它的輸出就不該
+        # 出現在另一個畫面上。
+        self._show_shanten(_shanten_line(state) if vision_on else "")
+        self._show_others(state if advice_on else None)
         self._show_candidates(engine if self.expanded else None)
 
     def _show_advice(
@@ -587,23 +598,6 @@ class OverlayWindow(QWidget):
         for label in self._own[len(own) :]:
             label.setVisible(False)
 
-    def _show_ukeire(self, tiles: tuple[Ukeire, ...]) -> None:
-        """畫進張的牌面。空的話整排藏起來 —— 留著上一巡的殘影會讓人照著一個
-        已經不成立的答案打,那比空白糟。"""
-        shown = tiles[:_MAX_UKEIRE_TILES]
-        for label, ukeire in zip(self._ukeire, shown, strict=False):
-            label.set_tile(ukeire.tile)
-            # 枚數放 tooltip:Overlay 鎖定之後滑鼠穿透,滑不到 —— 但沒鎖的時候
-            # 有用,而且完整的枚數表在側邊視窗上本來就有。
-            label.setToolTip(f"{tile_name(ukeire.tile)} 剩 {ukeire.count} 張")
-            label.setVisible(True)
-        for label in self._ukeire[len(shown) :]:
-            label.setVisible(False)
-
-        rest = len(tiles) - len(shown)
-        self._ukeire_more.setText(f"+{rest}" if rest > 0 else "")
-        self._ukeire_more.setVisible(rest > 0)
-
     def _show_dangers(self, report: DangerReport | None) -> None:
         """畫危險度清單。``None``(沒開、或還沒有資料)時整段收起來。
 
@@ -630,6 +624,47 @@ class OverlayWindow(QWidget):
 
         self._danger_head.setText(_danger_headline(report))
         self._dangers.setVisible(True)
+
+    def _show_others(self, state: ViewState | None) -> None:
+        """畫比較對象。``None``(AI 建議沒開)時整段收起來。
+
+        **分歧要標出來。** 兩份風格權重九成以上的手會給同一個答案,而那些手
+        看了也沒用;有價值的是剩下那幾手。不標的話使用者得自己逐行比對兩個
+        字串,那正是這塊面積該省掉的工。
+        """
+        engines = () if state is None else state.engines
+        primary = None if state is None else state.primary
+        others = [e for e in engines if e is not primary][:_MAX_OTHER_ENGINES]
+
+        while len(self._other_rows) < len(others):
+            name = QLabel("", self._others)
+            name.setStyleSheet(f"color: {_MUTED}; font-size: 11px;")
+            name.setMinimumWidth(96)
+            value = QLabel("", self._others)
+            row = QWidget(self._others)
+            inner = QHBoxLayout(row)
+            inner.setContentsMargins(0, 0, 0, 0)
+            inner.setSpacing(6)
+            inner.addWidget(name)
+            inner.addWidget(value, 1)
+            self._others_layout.addWidget(row)
+            self._other_rows.append((row, name, value))
+
+        for (row, name, value), engine in zip(self._other_rows, others, strict=False):
+            name.setText(engine.name)
+            # 跳過的引擎也要標。這一手的分歧可能正是「它鳴、我不鳴」,而不標的話
+            # 畫面上只有鳴的那一邊被標成分歧,看起來像它自己跟自己不一致。
+            answered = engine.action is not None or engine.declined
+            split = state is not None and not state.is_unanimous and answered
+            value.setText(engine.headline + ("　⚠ 分歧" if split else ""))
+            value.setStyleSheet(
+                f"color: {_ACCENT if split else _TEXT}; font-size: 12px;"
+                f" font-weight: {'600' if split else '400'};"
+            )
+            row.setVisible(True)
+        for row, _name, _value in self._other_rows[len(others) :]:
+            row.setVisible(False)
+        self._others.setVisible(bool(others))
 
     def _show_shanten(self, text: str) -> None:
         self._shanten.setText(text)
@@ -697,11 +732,12 @@ def _effective_ukeire(state: ViewState) -> tuple[Ukeire, ...]:
 
 
 def _shanten_line(state: ViewState) -> str:
-    """右半邊那一句:向聽 +(切哪張)+ 進張。算不出來就是空的。
+    """右半邊那一句:向聽 +(切哪張)。算不出來就是空的。
 
-    進張枚數是**估計值** —— 只扣掉自己手上看得到的,牌河與副露不在功能 1 的
-    辨識範圍內。Overlay 沒有空間寫這句話,所以只寫「進張」不寫「剩餘」,
-    完整的說明在側邊視窗的向聽分析頁。
+    **不寫進張。** 原本這裡會畫出進張的牌面與枚數,拿掉的理由是那塊面積在
+    HUD 上太貴:進張種類多的時候整排牌會橫跨半個牌桌,而真正在決定下一手的
+    是左半邊那個建議。要看進張就去側邊視窗的向聽分析頁,那裡有完整的枚數表
+    (而且會說清楚那個數字只扣掉自己手上看得到的)。
 
     要切哪張是寫成**括號裡的小字**而不是像左半邊那樣的「切 + 牌面」:左邊那個
     是 Mortal 的建議,這邊是純速度算出來的,兩者常常不一樣。做成同樣的份量會
@@ -711,13 +747,15 @@ def _shanten_line(state: ViewState) -> str:
     if analysis is None:
         return ""
     text = shanten_text(analysis.shanten)
-    ukeire = _effective_ukeire(state)
     best = state.best_discard
-    if ukeire and not analysis.ukeire and best is not None:
+    # 摸完牌那一刻 ukeire 依定義是空的(手上 14 張,要先決定切哪張)——
+    # 那時候向聽數講的是「切掉某張之後」,不寫是哪張的話那個數字沒有前提。
+    #
+    # 仍然要走 _effective_ukeire 而不是直接看 best:**和了的手牌 ukeire 也是
+    # 空的**,少了那道判斷會顯示「和了(切1m)」。進張的數字不畫了,這個判斷
+    # 還是得留著。
+    if _effective_ukeire(state) and not analysis.ukeire and best is not None:
         text += f"(切{tile_name(best.tile)})"
-    total = sum(u.count for u in ukeire)
-    if total:
-        text += f"　進張 {total}"
     if state.hand_conflict:
         # 兩個來源對不上本身就是使用者該知道的事,而 Overlay 沒有狀態列
         text += "　⚠"
