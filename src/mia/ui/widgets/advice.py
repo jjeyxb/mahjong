@@ -222,6 +222,11 @@ class AdviceTab(QWidget):
 
         self._others_rule = _rule(self)
         layout.addWidget(self._others_rule)
+        # 這一區原本直接列引擎名字,沒有任何標題 —— 於是畫面上憑空冒出
+        # 「baseline 切 3s」,而使用者不知道那是誰、為什麼要告訴他。
+        self._others_label = QLabel("同一個局面,別的引擎會怎麼打", self)
+        self._others_label.setStyleSheet(CAPTION)
+        layout.addWidget(self._others_label)
         self._others = QWidget(self)
         self._others_layout = QGridLayout(self._others)
         self._others_layout.setContentsMargins(0, 0, 0, 0)
@@ -262,6 +267,7 @@ class AdviceTab(QWidget):
         primary = state.primary
         others = [e for e in state.engines if e is not primary]
         self._others_rule.setVisible(bool(others))
+        self._others_label.setVisible(bool(others))
         while len(self._other_labels) < len(others):
             index = len(self._other_labels)
             name = QLabel("", self._others)
