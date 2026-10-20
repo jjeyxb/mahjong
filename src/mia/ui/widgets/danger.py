@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from mia.analysis import DangerLevel, DangerReport, SeatDanger, TileDanger
-from mia.ui.style import CAPTION, MUTED
+from mia.ui.style import ACCENT, CAPTION, MUTED
 from mia.ui.viewmodel import ViewState
 from mia.ui.widgets.tiles import TileIcons, TileLabel
 
@@ -50,7 +50,7 @@ MAX_ROWS = 14
 #: Overlay 也用這一份。兩邊各寫一組的話,遲早會有一邊改了另一邊沒改,而
 #: 「同一張牌在側邊視窗是橘的、在 HUD 上是紅的」會讓人不知道該信哪一個。
 LEVEL_COLORS = {
-    DangerLevel.SAFE: "#34C759",
+    DangerLevel.SAFE: ACCENT,
     DangerLevel.LIKELY_SAFE: "#8E8E93",
     DangerLevel.RISKY: "#FF9500",
     DangerLevel.VERY_RISKY: "#FF3B30",

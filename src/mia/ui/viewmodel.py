@@ -210,7 +210,6 @@ class ViewState:
             進對局時是 ``None``,那與「都很安全」是兩件不同的事。
         discards: 純以聽牌速度而言的打牌選項,最好的在前。
         engines: 各引擎的建議,加入順序 —— 那個順序就是 :attr:`primary` 的優先序。
-        preferred_engine: 使用者點名要當主角的引擎;``None`` 表示照順序取。
         notices: 要顯示給使用者的警示(校正未鎖定、引擎掉隊、CV 沒把握…)。
     """
 
@@ -225,7 +224,6 @@ class ViewState:
     discards: tuple[DiscardOption, ...] = ()
     dangers: DangerReport | None = None
     engines: tuple[EngineView, ...] = ()
-    preferred_engine: str | None = None
     notices: tuple[str, ...] = ()
 
     @property
@@ -247,18 +245,16 @@ class ViewState:
     def primary(self) -> EngineView | None:
         """要放在最上面的那個引擎。
 
-        指定了 :attr:`preferred_engine` 就用它,即使它這一手不動作 —— 使用者
-        點名要看某個引擎,那就該一直看它,不該因為它剛好沒事做就跳去別人。
-
-        沒指定的話取**第一個有動作的**,所以 :attr:`engines` 的順序就是優先序,
+        取**第一個有動作的**,所以 :attr:`engines` 的順序就是優先序,
         由建立引擎的那一端決定。規則式 baseline 要排在模型後面 —— 排前面的話
         headline 會顯示 baseline、而真正的模型被擠到下面那排,Q 值長條也會整段
-        消失(baseline 沒有 meta)。
+        消失(baseline 沒有 meta)。``tools/ui.py`` 的 ``build_engines`` 負責
+        這個順序,一律把 baseline 接在最後。
+
+        **曾經可以由使用者指定**(側邊視窗上一個叫「主要引擎」的下拉)。那是
+        為了繞過上面那個順序問題,而問題後來在源頭修掉了 —— 繞道就沒有理由
+        再留著,何況它在設定列上佔掉第四個位置,把其他三個擠到看不見。
         """
-        if self.preferred_engine:
-            for engine in self.engines:
-                if engine.name == self.preferred_engine:
-                    return engine
         # 「跳過」也算有答案 —— 不然遊戲在問要不要鳴牌時,主角會被讓給一個
         # 什麼都沒說的引擎
         for engine in self.engines:
@@ -408,10 +404,6 @@ class ViewModel:
         情況該說不一樣的話。
         """
         self._emit(replace(self._state, dangers=report))
-
-    def set_preferred_engine(self, name: str | None) -> None:
-        """點名哪個引擎當主角。``None`` 回到照 :attr:`ViewState.engines` 順序取。"""
-        self._emit(replace(self._state, preferred_engine=name))
 
     def set_notices(self, notices: Sequence[str]) -> None:
         """整批換掉警示。校正狀態、引擎存活這些由外部持續回報。"""

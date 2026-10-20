@@ -2,7 +2,7 @@
 
 ```
 ┌──────┬──────────────────────────┐
-│ AI   │ 主要引擎 [mortal ▾] 候選 8│  ← 該頁的設定
+│ AI   │ 風格 [標準 ▾] 比較 [不比較▾]│  ← 該頁的設定
 │ 建議 ├──────────────────────────┤
 │      │                          │
 │ 向聽 │  內容                     │
@@ -38,17 +38,25 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QPushButton,
-    QSpinBox,
     QStackedWidget,
     QStatusBar,
     QVBoxLayout,
     QWidget,
 )
 
-from mia import APP_TITLE, features
+from mia import APP_ABBR, APP_TITLE, features
 from mia.calibration.canvas import PRESETS as CANVAS_PRESETS
 from mia.calibration.canvas import Canvas
-from mia.ui.style import CAPTION, MUTED, MUTED_COLOR
+from mia.ui.icon import app_icon
+from mia.ui.style import (
+    ACCENT,
+    ACCENT_HOVER,
+    ACCENT_PRESSED,
+    CAPTION,
+    MUTED,
+    MUTED_COLOR,
+    Hairline,
+)
 from mia.ui.switchboard import CanvasPicker, GameLauncher, StylePicker, Switchboard, is_on
 from mia.ui.viewmodel import ViewModel, ViewState
 from mia.ui.widgets.advice import AdviceTab
@@ -96,7 +104,9 @@ class _Page(QWidget):
 
         self._settings = QWidget(self)
         self._settings_layout = QHBoxLayout(self._settings)
-        self._settings_layout.setContentsMargins(8, 6, 8, 6)
+        # 左緣要與底下內容的 12px 對齊 —— 差幾個像素不會有人說得出哪裡怪,
+        # 但整頁會看起來像沒對好。
+        self._settings_layout.setContentsMargins(12, 8, 12, 8)
         self._settings_layout.setSpacing(8)
         self._settings_layout.addStretch(1)
         self._settings.setVisible(False)
@@ -170,6 +180,8 @@ class PanelWindow(QMainWindow):
     ) -> None:
         super().__init__()
         self.setWindowTitle(APP_TITLE)
+        # Overlay 是獨立的 top-level 視窗,不會從這裡繼承圖示 —— 它自己也設。
+        self.setWindowIcon(app_icon())
         self.setMinimumSize(MIN_WIDTH, MIN_HEIGHT)
         # window flag 必須在 show() **之前**設定。show 之後再改,Qt 會把視窗
         # 隱藏並要求重新 show() —— 表現出來是「Dock 有圖示但畫面上沒有視窗」。
@@ -192,9 +204,18 @@ class PanelWindow(QMainWindow):
         self._nav.setFixedWidth(NAV_WIDTH)
         self._nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._nav.setFrameShape(QFrame.Shape.NoFrame)
+        # 選中的那一項是一顆**圓角藥丸**,不是整條貫穿的色塊。色塊的兩端
+        # 正好貼著視窗左緣與分隔線,看起來像那一列破了一個洞;留白 + 圓角
+        # 才看得出「這是一個被選起來的項目」。這個畫法與 Finder 側邊欄一致。
+        #
+        # 顏色取 ``palette(highlight)``(系統強調色)而不是 MIA 的綠:綠在這個
+        # 程式裡的意思是「這個東西正在運作」—— 開關、「開始遊戲」、建議的那
+        # 一張牌都是。拿去表示「現在看哪一頁」會讓那個意思被稀釋。
         self._nav.setStyleSheet(
-            "QListWidget { background: palette(window); }"
-            "QListWidget::item { padding: 10px 6px; }"
+            "QListWidget { background: palette(window); border: none;"
+            " padding: 6px 6px; outline: none; }"
+            "QListWidget::item { padding: 10px 6px; border-radius: 7px;"
+            " margin-bottom: 2px; }"
             "QListWidget::item:selected { background: palette(highlight);"
             " color: palette(highlighted-text); }"
         )
@@ -243,6 +264,7 @@ class PanelWindow(QMainWindow):
         layout = QVBoxLayout(column)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+        layout.addWidget(_wordmark(column))
         layout.addWidget(self._nav, 1)
         layout.addWidget(self._build_start_button(column))
         column.setFixedWidth(NAV_WIDTH)
@@ -257,9 +279,10 @@ class PanelWindow(QMainWindow):
         """
         button = QPushButton(START_GAME, parent)
         button.setStyleSheet(
-            "QPushButton { background: #34C759; color: white; border: none;"
-            " border-radius: 6px; padding: 9px 4px; font-weight: 600; margin: 6px; }"
-            "QPushButton:hover:enabled { background: #2FB350; }"
+            f"QPushButton {{ background: {ACCENT}; color: white; border: none;"
+            " border-radius: 8px; padding: 10px 4px; font-weight: 600; margin: 8px 8px 10px; }"
+            f"QPushButton:hover:enabled {{ background: {ACCENT_HOVER}; }}"
+            f"QPushButton:pressed:enabled {{ background: {ACCENT_PRESSED}; }}"
             "QPushButton:disabled { background: palette(midlight);"
             f" color: {MUTED_COLOR}; }}"
         )
@@ -304,15 +327,22 @@ class PanelWindow(QMainWindow):
         page.add_trailing(switch)
 
     def _build_advice_settings(self) -> None:
-        """AI 建議頁的設定列。
+        """AI 建議頁的設定列:挑風格、挑要跟誰比。
 
-        「主要引擎」不只是方便:預設取第一個有動作的引擎,而規則式 baseline
-        若排在模型前面,headline 就會顯示 baseline、Q 值長條整段消失。
-        下拉選單讓使用者直接指定,不必去改啟動參數。
+        **曾經還有第三個下拉「主要引擎」**,用來指定已經在跑的那幾個裡誰當
+        headline。拿掉了,兩個理由:
+
+        * 它存在的原因在別的地方修掉了。當初是因為規則式 baseline 若排在
+          模型前面,headline 就會顯示 baseline、Q 值長條整段消失 —— 而
+          ``tools/ui.py`` 的 ``build_engines`` 現在一律把 baseline 接在最後,
+          順序從源頭就是對的。留著一個下拉讓人去修一個不會發生的問題,
+          等於把實作細節搬到使用者面前。
+        * 四個控制項擠在一條設定列上,實測每個下拉都被壓到看不見完整的字。
+          擠到看不懂的設定列比少一個選項糟。
+
+        順序:風格在前。它們是兩個層級 —— 風格決定**載哪幾份權重**
+        (換了要重啟引擎),比較對象只是在那之上多載一份。
         """
-        # 「風格」排在「主要引擎」之前,因為它們是兩個層級:風格決定**載哪幾份
-        # 權重**(換了要重啟引擎),主要引擎只決定**已經在跑的這幾個裡誰當
-        # headline**。順序放反會讓人以為後者是前者的細項。
         self._style_picker = QComboBox(self._advice_page)
         self._style_picker.setMinimumWidth(140)
         self._advice_page.add_setting("風格", self._style_picker)
@@ -332,17 +362,9 @@ class PanelWindow(QMainWindow):
             self._sync_compare_picker()
             self._compare_picker.currentIndexChanged.connect(self._on_compare_picked)
 
-        self._engine_picker = QComboBox(self._advice_page)
-        self._engine_picker.setMinimumWidth(140)
-        self._engine_picker.addItem("(自動)", None)
-        self._engine_picker.currentIndexChanged.connect(self._on_engine_picked)
-        self._advice_page.add_setting("主要引擎", self._engine_picker)
-
-        self._candidate_count = QSpinBox(self._advice_page)
-        self._candidate_count.setRange(1, 20)
-        self._candidate_count.setValue(self._advice.max_candidates)
-        self._candidate_count.valueChanged.connect(self._on_candidate_count)
-        self._advice_page.add_setting("候選數", self._candidate_count)
+        # 「候選數」不在這條設定列上,而在它控制的那段清單旁邊
+        # (見 :class:`~mia.ui.widgets.advice.AdviceTab`)。
+        self._advice.candidate_count_changed.connect(self._on_candidate_count)
 
     def _build_canvas_settings(self, page: QWidget, layout: QVBoxLayout) -> None:
         """遊戲視窗尺寸。
@@ -429,11 +451,11 @@ class PanelWindow(QMainWindow):
         layout.addWidget(hint)
 
         layout.addWidget(_rule(page))
-        layout.addWidget(_caption("遊戲視窗尺寸", page))
+        layout.addWidget(_section("遊戲視窗尺寸", page))
         self._build_canvas_settings(page, layout)
 
         layout.addWidget(_rule(page))
-        layout.addWidget(_caption("Overlay", page))
+        layout.addWidget(_section("Overlay", page))
         self._build_overlay_settings(page, layout)
 
         layout.addStretch(1)
@@ -666,12 +688,10 @@ class PanelWindow(QMainWindow):
                     self._compare_picker.addItem(name, name)
             _select_data(self._compare_picker, current)
 
-    def _on_engine_picked(self, index: int) -> None:
-        self._viewmodel.set_preferred_engine(self._engine_picker.itemData(index))
-
     def _on_candidate_count(self, value: int) -> None:
+        """候選清單要列幾個。重畫一次,不必等下一個事件。"""
         self._advice.max_candidates = value
-        self._advice.update_from(self._viewmodel.state)
+        self._advice.update_from(self._viewmodel.state, enabled=self._is_on(features.ADVICE))
 
     def _on_always_on_top(self, enabled: bool) -> None:
         """切換置頂。
@@ -696,7 +716,6 @@ class PanelWindow(QMainWindow):
         每一頁都更新,不只是當前可見的那個 —— 切頁時才更新會讓使用者看到
         一瞬間的舊資料。更新一次的成本是十幾個 label,遠低於那個閃動的代價。
         """
-        self._sync_engine_picker(state)
         self._sync_start_button()
         self._advice.update_from(state, enabled=self._is_on(features.ADVICE))
         self._analysis.update_from(state, enabled=self._is_on(features.VISION))
@@ -726,25 +745,6 @@ class PanelWindow(QMainWindow):
             return "功能都關著 —— 用各頁右上角的開關打開"
         return _status_text(state)
 
-    def _sync_engine_picker(self, state: ViewState) -> None:
-        """引擎清單是跑起來才知道的,所以下拉選單要跟著狀態長出來。"""
-        names = [e.name for e in state.engines]
-        existing = [self._engine_picker.itemData(i) for i in range(1, self._engine_picker.count())]
-        if names == existing:
-            return
-
-        # 重建期間要擋掉 currentIndexChanged,否則清空的瞬間會把偏好設成 None
-        self._engine_picker.blockSignals(True)
-        while self._engine_picker.count() > 1:
-            self._engine_picker.removeItem(1)
-        for name in names:
-            self._engine_picker.addItem(name, name)
-        wanted = state.preferred_engine
-        self._engine_picker.setCurrentIndex(
-            names.index(wanted) + 1 if wanted in names else 0
-        )
-        self._engine_picker.blockSignals(False)
-
 
 def _status_text(state: ViewState) -> str:
     parts: list[str] = []
@@ -768,17 +768,54 @@ def _select_data(picker: QComboBox, data: object) -> None:
         picker.setCurrentIndex(index)
 
 
+def _wordmark(parent: QWidget) -> QWidget:
+    """功能列最上面的圖示 + 名字。
+
+    純粹是**讓它看起來像一個程式**。視窗標題列在 macOS 上很細、在全螢幕的
+    遊戲旁邊幾乎看不到,少了這一塊,側邊視窗就是一片沒有身分的灰。
+
+    只寫縮寫不寫全名:這一欄寬 96px,放得下四個全形字,全名會被截成
+    「Mahjong Intell…」。
+    """
+    row = QWidget(parent)
+    layout = QHBoxLayout(row)
+    layout.setContentsMargins(12, 12, 10, 8)
+    layout.setSpacing(7)
+
+    mark = QLabel(row)
+    mark.setPixmap(app_icon().pixmap(20, 20))
+    name = QLabel(APP_ABBR, row)
+    name.setStyleSheet("font-size: 15px; font-weight: 700;")
+    name.setToolTip(APP_TITLE)
+
+    layout.addWidget(mark)
+    layout.addWidget(name)
+    layout.addStretch(1)
+    return row
+
+
 def _caption(text: str, parent: QWidget) -> QLabel:
+    """欄位說明。小字、次要顏色。"""
     label = QLabel(text, parent)
     label.setStyleSheet(CAPTION)
     return label
 
 
-def _rule(parent: QWidget, *, vertical: bool = False) -> QFrame:
-    line = QFrame(parent)
-    line.setFrameShape(QFrame.Shape.VLine if vertical else QFrame.Shape.HLine)
-    line.setFrameShadow(QFrame.Shadow.Sunken)
-    return line
+def _section(text: str, parent: QWidget) -> QLabel:
+    """一段設定的標題。
+
+    與 :func:`_caption` 同樣大小、同樣顏色,只是**粗體**。設定頁上兩種東西
+    都在:「遊戲視窗尺寸」是一段的名字,而「風格」是一個欄位的說明。長得
+    一模一樣的話,整頁讀起來是一串沒有層次的灰字。
+    """
+    label = QLabel(text, parent)
+    label.setStyleSheet(CAPTION + "font-weight: 700;")
+    return label
+
+
+def _rule(parent: QWidget, *, vertical: bool = False) -> Hairline:
+    """一條分隔線。理由與顏色見 :class:`~mia.ui.style.Hairline`。"""
+    return Hairline(parent, vertical=vertical)
 
 
 def present(window: QMainWindow) -> None:
@@ -801,4 +838,3 @@ def present(window: QMainWindow) -> None:
     window.show()
     window.raise_()
     window.activateWindow()
-

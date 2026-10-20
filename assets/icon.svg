@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  MIA 的程式圖示。
+
+  為什麼是「中」而不是字母或眼睛之類的隱喻:紅中是麻將裡辨識度最高的單一字形,
+  而且它本身就是一張牌 —— 不需要任何說明就看得出這是麻將相關的東西。
+
+  為什麼用筆畫而不是文字:<text> 要靠系統裝了對的字型才畫得出來,而圖示最
+  需要的就是「在任何機器上長得一樣」。「中」剛好是一個長方框加一條直槓,
+  兩個基本形狀就夠,所以不必為了字型去妥協。
+
+  底色是 #34C759(Apple system green),與開關、Overlay 強調色同一個值 ——
+  那個值在 mia.ui.style.ACCENT。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4BD568"/>
+      <stop offset="1" stop-color="#2AA84B"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="512" height="512" rx="112" ry="112" fill="url(#g)"/>
+  <!-- 口 -->
+  <rect x="152" y="166" width="208" height="180" rx="10" ry="10"
+        fill="none" stroke="#FFFFFF" stroke-width="40"/>
+  <!-- 丨 -->
+  <rect x="236" y="82" width="40" height="348" rx="12" ry="12" fill="#FFFFFF"/>
+</svg>
