@@ -27,7 +27,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor, QPainter, QPalette, QPen
 from PySide6.QtWidgets import QAbstractButton, QWidget
 
-from mia.ui.style import off_track
+from mia.ui.style import ACCENT, off_track
 
 __all__ = ["ToggleSwitch"]
 
@@ -38,8 +38,9 @@ TRACK_HEIGHT = 26
 #: 滑塊與軌道邊緣的間距。
 KNOB_MARGIN = 2
 
-#: Apple 的 system green。
-ON_COLOR = QColor(52, 199, 89)
+#: 打開時的軌道顏色。與「開始遊戲」、Overlay 的強調、程式圖示同一個值 ——
+#: 見 :data:`~mia.ui.style.ACCENT`。
+ON_COLOR = QColor(ACCENT)
 
 #: 動畫長度(毫秒)。140 ms 是「看得出它在動」與「不覺得慢」之間;
 #: 測試會傳 0 讓狀態立刻到位,免得要等事件迴圈。

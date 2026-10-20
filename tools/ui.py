@@ -51,6 +51,7 @@ from mia.engine.styles import StyleChoice, StyleProfile
 from mia.live.runtime import LiveRuntime
 from mia.mjai import MjaiEvent
 from mia.mjai.handstate import HandTracker
+from mia.ui.icon import app_icon
 from mia.ui.overlay.window import OverlayWindow
 from mia.ui.panel.window import PanelWindow, present
 from mia.ui.state import UiState
@@ -557,6 +558,8 @@ def main(argv: list[str] | None = None) -> int:
 
     setup_logging(level=args.log_level)
     app = QApplication(sys.argv[:1])
+    # 設在 app 上,所有視窗預設就有 —— 少了它,Dock 與工作列上是一個空白方塊。
+    app.setWindowIcon(app_icon())
 
     model = ViewModel()
 

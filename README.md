@@ -140,7 +140,7 @@ src/mia/
 ├── engine/        base / subprocess_engine / mortal / dummy / multiplex / styles
 ├── live/          即時模式:bus / vision / packets / danger / runtime / source
 ├── ui/            viewmodel + state(記住的位置)+ switchboard + style(深色模式)
-│                  + panel/ overlay/ widgets/
+│                  + icon(程式圖示)+ panel/ overlay/ widgets/
 ├── groundtruth/   cdp / capture_addon / dump / liqi / schema / to_mjai
 ├── eval/          align / metrics / report
 ├── recorder/      錄製資料集、離線回放
@@ -151,6 +151,7 @@ tools/             開發用 CLI:ui / advise / capture_probe / occlusion_probe
                    roi_annotate / roi_union / record / gt / evaluate
                    style_profile(風格名單)/ fetch_tenhou / fetch_tiles / fetch_liqi
 assets/tiles/      牌面模板圖(37 張/皮膚),由 tools/fetch_tiles.py 產生
+assets/icon.svg    程式圖示(一張「中」)。向量,視窗/Dock/工作列各種尺寸共用一份
 config/            ROI 定義、skin profile YAML
 data/              錄製資料集、ui_state.json(記住的 Overlay 位置)(gitignore)
 models/            權重 .pth (gitignore,見下方「M8」的下載說明)

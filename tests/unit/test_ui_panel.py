@@ -133,7 +133,7 @@ class TestPanel:
             [Advice("mortal", Dahai(actor=0, pai="1m", tsumogiri=False), meta, 1.0)]
         )
         model.update_advices([Advice("baseline", Dahai(actor=0, pai="1m", tsumogiri=False))])
-        assert not shown(window._advice._candidates_label)  # noqa: SLF001
+        assert not shown(window._advice._candidates_header)  # noqa: SLF001
 
 
 class TestEmptySkeleton:
@@ -253,37 +253,10 @@ class TestNavigation:
             assert shown(page._settings), f"第 {index} 頁的設定列不見了"  # noqa: SLF001
 
 
-class TestEnginePicker:
-    """主要引擎下拉選單。引擎清單是跑起來才知道的,所以要跟著狀態長出來。"""
-
-    def _advice(self, name: str, tile: str) -> Advice:
-        return Advice(name, Dahai(actor=0, pai=tile, tsumogiri=False), None, 1.0)
-
-    def test_it_starts_with_only_the_auto_entry(self, panel) -> None:
-        _, window = panel
-        assert window._engine_picker.count() == 1  # noqa: SLF001
-
-    def test_engines_are_added_as_they_appear(self, panel) -> None:
-        model, window = panel
-        model.update_advices([self._advice("mortal", "1m"), self._advice("baseline", "9p")])
-        picker = window._engine_picker  # noqa: SLF001
-        assert [picker.itemData(i) for i in range(picker.count())] == [None, "mortal", "baseline"]
-
-    def test_picking_an_engine_makes_it_primary(self, panel) -> None:
-        model, window = panel
-        model.update_advices([self._advice("mortal", "1m"), self._advice("baseline", "9p")])
-        window._engine_picker.setCurrentIndex(2)  # noqa: SLF001
-        assert model.state.preferred_engine == "baseline"
-        assert model.state.primary is not None
-        assert model.state.primary.name == "baseline"
-
-    def test_rebuilding_the_list_does_not_clear_the_preference(self, panel) -> None:
-        """重建下拉選單時要擋掉訊號,否則清空的瞬間會把偏好設成 None。"""
-        model, window = panel
-        model.update_advices([self._advice("mortal", "1m")])
-        window._engine_picker.setCurrentIndex(1)  # noqa: SLF001
-        model.update_advices([self._advice("mortal", "1m"), self._advice("baseline", "9p")])
-        assert model.state.preferred_engine == "mortal"
+class TestCandidateCount:
+    """「列幾個」。它在候選清單的標題旁邊,不在頂端的設定列上 ——
+    設定列只放會**重啟引擎**的東西(風格、比較對象),而這個只是少畫幾列。
+    """
 
     def test_the_candidate_count_is_adjustable(self, panel) -> None:
         model, window = panel
@@ -291,8 +264,24 @@ class TestEnginePicker:
         model.update_advices(
             [Advice("mortal", Dahai(actor=0, pai="1m", tsumogiri=False), meta, 1.0)]
         )
-        window._candidate_count.setValue(2)  # noqa: SLF001
+        window._advice._candidate_count.setValue(2)  # noqa: SLF001
         assert sum(shown(row) for row in window._advice._rows) == 2  # noqa: SLF001
+
+    def test_it_redraws_with_the_current_state(self, panel) -> None:
+        """調了之後要**立刻**重畫,不是等下一個事件。
+
+        等下一個事件的話,使用者拉了數字畫面不動 —— 那看起來像控制項壞了,
+        而下一手打出來時它又突然對了,更難理解。
+        """
+        model, window = panel
+        meta = {"mask_bits": 0b1111, "q_values": [0.1, 0.2, 0.3, 0.4]}
+        model.update_advices(
+            [Advice("mortal", Dahai(actor=0, pai="1m", tsumogiri=False), meta, 1.0)]
+        )
+        window._advice._candidate_count.setValue(1)  # noqa: SLF001
+        assert sum(shown(row) for row in window._advice._rows) == 1  # noqa: SLF001
+        window._advice._candidate_count.setValue(4)  # noqa: SLF001
+        assert sum(shown(row) for row in window._advice._rows) == 4  # noqa: SLF001
 
 
 class FakeStylePicker:
@@ -332,8 +321,9 @@ class FakeStylePicker:
 class TestStylePicker:
     """風格下拉選單。
 
-    使用者的原話:「主要只有自動能選,沒有風格讓我調整」。「主要引擎」只決定
-    已經在跑的那幾個裡誰當 headline,**換不了權重** —— 那是兩個層級的事。
+    使用者的原話:「主要只有自動能選,沒有風格讓我調整」—— 當時設定列上只有
+    一個「主要引擎」下拉,而那個東西只決定已經在跑的那幾個裡誰當 headline,
+    **換不了權重**。這個選單才是換權重的那一個。(「主要引擎」後來拿掉了。)
     """
 
     def test_the_configured_styles_are_listed(self, qtbot) -> None:  # noqa: ARG002

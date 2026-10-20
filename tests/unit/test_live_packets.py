@@ -195,9 +195,9 @@ class TestPacketWorker:
     def test_the_engine_roster_is_posted_before_any_game_starts(self, tmp_path: Path) -> None:
         """**開局前就要知道有哪些引擎。**
 
-        側邊視窗的「主要引擎」下拉是照 ``ViewState.engines`` 長出來的。清單若
-        等到第一個決策點才有內容,使用者開了兩份風格權重、進對局之前卻只看到
-        「(自動)」—— 看起來像權重根本沒載到,而那正是實際回報的症狀。
+        狀態列的「引擎:…」是照 ``ViewState.engines`` 寫的。清單若等到第一個
+        決策點才有內容,使用者開了兩份風格權重、進對局之前卻什麼都看不到 ——
+        看起來像權重根本沒載到,而那正是實際回報的症狀。
 
         錄影檔不存在,所以這裡**只有**啟動那一則,不會混到任何真的建議。
         """

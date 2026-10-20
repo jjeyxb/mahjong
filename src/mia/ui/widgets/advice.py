@@ -13,20 +13,20 @@ Q 值怎麼畫成長條
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import (
-    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QProgressBar,
     QSizePolicy,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from mia.engine.actions import Candidate
-from mia.ui.style import CAPTION, MUTED
+from mia.ui.style import ACCENT, CAPTION, MUTED, SMALL, Hairline, mix
 from mia.ui.viewmodel import EngineView, ViewState, q_fraction
 from mia.ui.widgets.tiles import TileIcons, TileLabel
 
@@ -36,6 +36,16 @@ __all__ = ["AdviceTab"]
 MAX_CANDIDATES = 8
 
 _BAR_RANGE = 1000
+
+#: 長條的軌道要多淡。比 :data:`~mia.ui.style.TRACK_MIX` 淡 —— 這裡同時有八條,
+#: 軌道太明顯的話畫面上會出現八條灰柱子,把真正要看的填色壓過去。
+_GROOVE_MIX = 0.10
+
+#: 沒被選上的那幾條的填色。看得出長短就夠,它們的作用是當**對照**。
+_OTHER_MIX = 0.30
+
+#: 長條高度與圓角。圓角取高度的一半,兩端就是半圓。
+_BAR_HEIGHT = 10
 
 #: 大字那個動詞。牌交給圖去講,所以這一行只有動詞。
 _VERB = "font-size: 26px; font-weight: 600;"
@@ -72,16 +82,19 @@ class _Headline(QWidget):
         self._joiner.setStyleSheet(MUTED + "font-size: 15px;")
         #: 自己要拿出來的那幾張。
         self._own = [TileLabel(icons, 64, self) for _ in range(_MAX_OWN_TILES)]
+        #: 引擎名字、Q 值、延遲。**靠右**而不是接在牌後面:那是來源標註,
+        #: 不是建議的一部分,夾在中間會讓人把它讀成「切 東 mortal_298k」。
         self._detail = QLabel("", self)
-        self._detail.setStyleSheet(MUTED)
+        self._detail.setStyleSheet(MUTED + SMALL)
+        self._detail.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
 
         layout.addWidget(self._verb)
         layout.addWidget(self._subject)
         layout.addWidget(self._joiner)
         for label in self._own:
             layout.addWidget(label)
-        layout.addWidget(self._detail)
         layout.addStretch(1)
+        layout.addWidget(self._detail)
 
     def _show_tiles(
         self, subject: str | None = None, *, joiner: str = "", own: tuple[str, ...] = ()
@@ -134,14 +147,15 @@ class _Headline(QWidget):
         self._verb.setText(engine.verb)
         self._show_tiles(engine.subject, joiner=engine.joiner, own=engine.own_tiles)
 
-        detail = f"{engine.name}"
+        parts = [engine.name]
         if top is not None:
-            detail += f"   Q={top.q:+.2f}"
-        detail += f"   {engine.latency_ms:.0f} ms"
+            parts.append(f"Q {top.q:+.2f}")
+        parts.append(f"{engine.latency_ms:.0f} ms")
+        detail = " · ".join(parts)
         if stale:
             # 建議的牌已經不在手上。標出來而不是藏起來 —— 使用者看到「切 3s」
             # 而手上沒有 3s 時,要知道那是剛剛打掉了,不是程式算錯。
-            detail += "   ·已打出"
+            detail += " · 已打出"
         self._detail.setText(detail)
         self._verb.setStyleSheet(_VERB + (MUTED if stale else ""))
 
@@ -164,8 +178,9 @@ class _CandidateRow(QWidget):
         self._bar = QProgressBar(self)
         self._bar.setRange(0, _BAR_RANGE)
         self._bar.setTextVisible(False)
-        self._bar.setFixedHeight(10)
+        self._bar.setFixedHeight(_BAR_HEIGHT)
         self._bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._chosen = False
 
         layout.addWidget(self._tile)
         layout.addWidget(self._name)
@@ -183,12 +198,55 @@ class _CandidateRow(QWidget):
 
         self._value.setText(f"{candidate.q:+.2f}")
         self._bar.setValue(round(q_fraction(candidate.q, low=low, high=high) * _BAR_RANGE))
-        weight = "600" if candidate.chosen else "400"
-        self._value.setStyleSheet(f"font-weight: {weight};")
+        self._chosen = candidate.chosen
+        self._repaint_bar()
+
+    def _repaint_bar(self) -> None:
+        """套用長條與數字的顏色。
+
+        **被選上的那一條是綠的,其餘是灰的。** 原本八條都是系統藍,唯一的
+        區別是數字有沒有粗體 —— 而那要讀完才看得出來。長度本來就在講「差多少」,
+        顏色該拿去講「哪一個是答案」,那是掃一眼就要知道的事。
+
+        顏色要現算不能寫死:軌道與灰條都是從 palette 推出來的
+        (見 :func:`~mia.ui.style.mix`),而 palette 會跟著系統淺／深色變。
+        """
+        palette = self.palette()
+        groove = mix(palette, _GROOVE_MIX).name()
+        fill = ACCENT if self._chosen else mix(palette, _OTHER_MIX).name()
+        radius = _BAR_HEIGHT // 2
+        self._bar.setStyleSheet(
+            f"QProgressBar {{ background: {groove}; border: none;"
+            f" border-radius: {radius}px; }}"
+            f"QProgressBar::chunk {{ background: {fill}; border-radius: {radius}px; }}"
+        )
+        self._value.setStyleSheet(
+            f"font-weight: 600; color: {ACCENT};" if self._chosen else "font-weight: 400;"
+        )
+
+    def changeEvent(self, event: QEvent) -> None:
+        """系統切換淺／深色時重算顏色。
+
+        不做這件事的話,軌道與灰條會停在切換前算出來的值 —— 深色模式下變成
+        一片比背景還亮的灰,看起來像畫面沒載完。綠色不受影響(它是固定值),
+        所以症狀只出現在沒被選上的那幾條,更難發現。
+        """
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.PaletteChange:
+            self._repaint_bar()
 
 
 class AdviceTab(QWidget):
-    """AI 建議分頁。"""
+    """AI 建議分頁。
+
+    Signals:
+        candidate_count_changed: 使用者調了「列幾個」。自己不直接改
+            :attr:`max_candidates` 然後重畫 —— 重畫要有**最新的狀態**,
+            而狀態在側邊視窗手上。分頁只負責說「使用者要幾個」。
+    """
+
+    #: 見類別說明。
+    candidate_count_changed = Signal(int)
 
     def __init__(self, icons: TileIcons, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -199,7 +257,7 @@ class AdviceTab(QWidget):
         self.max_candidates = MAX_CANDIDATES
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(8)
 
         self._headline = _Headline(icons, self)
@@ -210,9 +268,30 @@ class AdviceTab(QWidget):
         self._candidates_rule = _rule(self)
         layout.addWidget(self._candidates_rule)
 
-        self._candidates_label = QLabel("其他候選", self)
+        # 「列幾個」放在它控制的那段**旁邊**,不放頂端的設定列。
+        #
+        # 原本在設定列上,與「風格」「比較對象」「主要引擎」擠成一排 ——
+        # 實測每個控制項都被壓到看不見完整的字。而且層級本來就不同:那條列上
+        # 另外兩個會**重啟引擎**,這個只是少畫幾列。放在標題旁邊的話,它跟
+        # 它影響的東西在同一個地方,不必先想「候選數是指哪個清單」。
+        self._candidates_header = QWidget(self)
+        header = QHBoxLayout(self._candidates_header)
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(6)
+        self._candidates_label = QLabel("其他候選", self._candidates_header)
         self._candidates_label.setStyleSheet(CAPTION)
-        layout.addWidget(self._candidates_label)
+        self._candidate_count = QSpinBox(self._candidates_header)
+        self._candidate_count.setRange(1, 20)
+        self._candidate_count.setValue(self.max_candidates)
+        self._candidate_count.setToolTip("這份清單最多列幾個")
+        self._candidate_count.setFixedWidth(58)
+        self._candidate_count.valueChanged.connect(self.candidate_count_changed)
+        header.addWidget(self._candidates_label)
+        header.addStretch(1)
+        header.addWidget(_caption("列", self._candidates_header))
+        header.addWidget(self._candidate_count)
+        header.addWidget(_caption("個", self._candidates_header))
+        layout.addWidget(self._candidates_header)
 
         self._candidates = QWidget(self)
         self._candidates_layout = QVBoxLayout(self._candidates)
@@ -245,7 +324,7 @@ class AdviceTab(QWidget):
     def _update_candidates(self, engine: EngineView | None) -> None:
         candidates = engine.candidates[: self.max_candidates] if engine else ()
         # 沒有 Q 值的引擎(規則式 baseline)不該留著上一手的長條
-        self._candidates_label.setVisible(bool(candidates))
+        self._candidates_header.setVisible(bool(candidates))
         self._candidates_rule.setVisible(bool(candidates))
 
         while len(self._rows) < len(candidates):
@@ -283,8 +362,12 @@ class AdviceTab(QWidget):
             # 跳過的引擎也要標。這一手的分歧可能正是「它鳴、我不鳴」,
             # 而不標的話畫面上只有鳴的那一邊被標成分歧,看起來像它自己跟
             # 自己不一致。
-            if not state.is_unanimous and (engine.action is not None or engine.declined):
+            split = not state.is_unanimous and (engine.action is not None or engine.declined)
+            if split:
                 text += "   ⚠ 分歧"
+            # 分歧那幾手才是「兩份權重差在哪」的實際內容,顏色讓它掃得出來
+            # —— 與 Overlay 的同一個標記用同一個色。
+            value.setStyleSheet(f"color: {ACCENT};" if split else "")
             value.setText(text)
             name.setVisible(True)
             value.setVisible(True)
@@ -293,8 +376,12 @@ class AdviceTab(QWidget):
             value.setVisible(False)
 
 
-def _rule(parent: QWidget) -> QFrame:
-    line = QFrame(parent)
-    line.setFrameShape(QFrame.Shape.HLine)
-    line.setFrameShadow(QFrame.Shadow.Sunken)
-    return line
+def _caption(text: str, parent: QWidget) -> QLabel:
+    label = QLabel(text, parent)
+    label.setStyleSheet(CAPTION)
+    return label
+
+
+def _rule(parent: QWidget) -> Hairline:
+    """一條分隔線。理由與顏色見 :class:`~mia.ui.style.Hairline`。"""
+    return Hairline(parent)

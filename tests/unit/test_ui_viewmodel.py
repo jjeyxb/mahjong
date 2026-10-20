@@ -284,35 +284,15 @@ class TestPrimaryEngine:
         assert m.state.primary is not None
         assert m.state.primary.name == "baseline", "順序就是優先序"
 
-    def test_a_preferred_engine_overrides_the_order(self) -> None:
-        m = model()
-        m.set_preferred_engine("mortal")
-        m.update_advices([self._advice("baseline", "1m"), self._advice("mortal", "9p")])
-        assert m.state.primary is not None
-        assert m.state.primary.name == "mortal"
+    def test_a_rule_based_engine_can_be_primary_when_it_is_the_only_one(self) -> None:
+        """只有 baseline 在跑(沒給權重)時,它就是主角 —— 不該整頁空白。
 
-    def test_a_preferred_engine_stays_primary_even_with_no_action(self) -> None:
-        """使用者點名要看某個引擎,就該一直看它 —— 不該因為它剛好沒事做就跳走。"""
+        曾經可以在側邊視窗上點名「主要引擎」來繞過順序問題。那個下拉拿掉了:
+        ``tools/ui.py`` 的 ``build_engines`` 一律把 baseline 接在最後,順序從
+        源頭就是對的,不需要使用者去修。
+        """
         m = model()
-        m.set_preferred_engine("mortal")
-        m.update_advices([self._advice("baseline", "1m"), Advice("mortal", None)])
-        assert m.state.primary is not None
-        assert m.state.primary.name == "mortal"
-        assert m.state.primary.action is None
-
-    def test_an_unknown_preference_falls_back_to_the_order(self) -> None:
-        """指定的引擎沒起來(啟動失敗)時,不該整頁空白。"""
-        m = model()
-        m.set_preferred_engine("不存在的引擎")
         m.update_advices([self._advice("baseline", "1m")])
-        assert m.state.primary is not None
-        assert m.state.primary.name == "baseline"
-
-    def test_clearing_the_preference_returns_to_the_order(self) -> None:
-        m = model()
-        m.set_preferred_engine("mortal")
-        m.set_preferred_engine(None)
-        m.update_advices([self._advice("baseline", "1m"), self._advice("mortal", "9p")])
         assert m.state.primary is not None
         assert m.state.primary.name == "baseline"
 

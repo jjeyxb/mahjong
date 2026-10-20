@@ -51,6 +51,7 @@ from mia.analysis import DangerReport, TileDanger, Ukeire
 from mia.engine.actions import Candidate
 from mia.mjai.tiles import tile_name
 from mia.ui.state import UiState
+from mia.ui.style import ACCENT
 from mia.ui.switchboard import Switchboard, is_on
 from mia.ui.viewmodel import EngineView, ViewModel, ViewState, q_fraction, shanten_text
 from mia.ui.widgets.danger import LEVEL_COLORS, danger_note, seat_name
@@ -96,8 +97,9 @@ _DANGER_TILE_HEIGHT = 22
 _BG = QColor(24, 26, 32, 214)
 _TEXT = "#F2F2F7"
 _MUTED = "#9CA0AA"
-#: Apple 的 system green,與 :class:`~mia.ui.widgets.toggle.ToggleSwitch` 同一個。
-_ACCENT = "#34C759"
+#: 強調色。整個程式只有 :data:`~mia.ui.style.ACCENT` 一個值 —— 這裡取別名是
+#: 因為本模組其餘顏色都是 ``_`` 開頭的區域常數,混用兩種寫法更難讀。
+_ACCENT = ACCENT
 _RADIUS = 12
 
 _BAR_RANGE = 1000
