@@ -22,7 +22,7 @@ from PySide6.QtCore import Qt
 
 from mia.calibration.canvas import PRESETS as CANVAS_PRESETS
 from mia.ui.panel.window import PanelWindow, present
-from mia.ui.widgets.tiles import TileIcons
+from mia.ui.widgets.tiles import TILE_ASPECT, TileIcons
 
 TENPAI = ["1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "1p", "2p", "3p"]
 
@@ -65,9 +65,36 @@ class TestTileIcons:
 
     def test_scaling_keeps_the_aspect_ratio(self) -> None:
         icons = TileIcons()
-        pixmap = icons.pixmap("1m", 109)
-        assert pixmap.height() == 109
-        assert pixmap.width() == 64
+        pixmap = icons.pixmap("1m", 105)
+        assert pixmap.height() == 105
+        assert pixmap.width() == round(105 * TILE_ASPECT)
+
+    def test_the_grey_edge_is_cropped_off(self) -> None:
+        """素材上面那條灰邊是遊戲裡牌的**上緣**,不是牌面。
+
+        比對時每張都一樣所以無所謂,畫在 UI 上就是每張牌頭上一條髒灰條。
+        切掉之後牌面變短,所以顯示用的寬高比比素材本身寬。
+        """
+        assert TILE_ASPECT > 64 / 109
+
+    def test_it_renders_at_device_pixels(self) -> None:
+        """2× 螢幕上要畫出兩倍的像素,不然是先縮小再被系統放大 —— 一排糊牌。
+
+        在 1× 螢幕上測完全看不出這個問題,所以要釘著。
+        """
+        icons = TileIcons()
+        one = icons.pixmap("1m", 40, 1.0)
+        two = icons.pixmap("1m", 40, 2.0)
+        assert two.height() == 2 * one.height()
+        assert two.devicePixelRatio() == 2.0
+        # 掛上 devicePixelRatio 之後版面上佔的高度仍然是 40
+        assert two.deviceIndependentSize().height() == 40
+
+    def test_the_corners_are_transparent(self) -> None:
+        """圓角要真的是透明的,不是畫上去的白角 —— 深色模式下白角會很明顯。"""
+        icons = TileIcons()
+        image = icons.pixmap("1m", 60).toImage()
+        assert image.pixelColor(0, 0).alpha() == 0
 
     def test_an_unknown_tile_gives_an_empty_pixmap(self) -> None:
         """認不得的牌回空的而不是拋例外 —— UI 在畫的時候不該因此崩掉。"""
