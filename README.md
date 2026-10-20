@@ -209,19 +209,29 @@ python3.14 -m venv .venv
 ### 5. 啟動
 
 ```bash
-.venv/bin/python tools/ui.py --live --mortal models/mortal_298k.pth
+.venv/bin/python tools/ui.py --live
 ```
+
+就這一行，**不用帶 `--mortal`**。要載哪份權重由 [`config/default.yaml`](config/default.yaml)
+的 `engines.profiles` 決定，UI 的「AI 建議」頁有兩個選單：「風格」挑主要那一份、
+「比較對象」挑要跟誰並排。檔案不在 `models/` 的風格不會出現在選單裡——
+可選而選了才報錯，比一開始就看不到糟。
 
 側邊視窗會開在螢幕右側。**什麼都還沒開始** —— 按左下角的「開始遊戲」開瀏覽器、
 登入、開一場，再撥開你要的那個開關（三個功能預設都關著）。操作細節與
 **狀態列訊息對照表**見 [docs/live.md](docs/live.md)。
 
-`--mortal` 是選用的 —— 不帶就只是沒有 AI 建議，另外兩個功能照常：
+`--mortal` 仍然在，但它是**一次性覆寫**，不是必要參數：指定的那份會自成一個
+「命令列指定」的選項並被選上，設定檔那幾項照樣留在選單裡，所以開起來之後還是
+換得過去。用途是試一份還沒寫進設定檔的權重。
 
 ```bash
-.venv/bin/python tools/ui.py --live      # 不載 130MB 權重
+.venv/bin/python tools/ui.py --live --mortal models/some_experiment.pth
 .venv/bin/python tools/ui.py --demo      # 只看版面，不開遊戲、不用權重
 ```
+
+沒有任何權重檔時（例如剛 clone 完）程式照常起得來——風格選單是停用的，
+AI 建議那一欄只剩規則式基準，另外兩個功能完全不受影響。
 
 > ⚠ **一定要用 `.venv/bin/python`,不是裸的 `python`。** 相依都裝在專案的
 > venv 裡，系統的 python 沒有 PySide6，會直接 `ModuleNotFoundError`。
@@ -604,13 +614,16 @@ JSONL。liqi 解析全在離線階段。這樣解析程式有 bug 或協定改�
 
 ```bash
 # 按左下角「開始遊戲」開瀏覽器，登入後撥開關就開始給建議
-.venv/bin/python tools/ui.py --live --mortal models/mortal_298k.pth
+.venv/bin/python tools/ui.py --live
 
 # 已經有另一個 gt.py 在錄了（或用 MITM 錄 Steam 版），只跟著那個檔案走
 .venv/bin/python tools/ui.py --live --tail data/recordings/now/ws.jsonl
 
 # 只要 AI 建議，不跑畫面辨識（不必授權螢幕錄製）
-.venv/bin/python tools/ui.py --live --no-packets   # ← 反過來：只要畫面辨識，不接封包
+.venv/bin/python tools/ui.py --live --no-vision
+
+# 反過來：只要畫面辨識，不接封包
+.venv/bin/python tools/ui.py --live --no-packets
 ```
 
 **瀏覽器不會自己開**，要按左下角的「開始遊戲」。每按一次是新的一場，寫到新的
