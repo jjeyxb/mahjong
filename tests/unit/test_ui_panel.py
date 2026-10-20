@@ -1,13 +1,19 @@
 """側邊視窗的 widget。
 
 只驗**接線**:狀態換了畫面有沒有跟著換、牌面圖找不找得到、widget 池會不會
-隨手牌變短而留下上一手的殘影。像素長什麼樣不在這裡驗 —— 那要人眼看,
+隨手牌變短而留下上一手的殘影。好不好看不在這裡驗 —— 那要人眼看,
 用 ``python tools/ui.py --demo``。
+
+牌面那幾個例外**驗的是像素**,但驗的不是好不好看而是「有沒有東西被切掉」:
+圓角削到圖案、外框線畫在圖案上,這些是看得出對錯的,而且只影響 37 張裡的
+十幾張 —— 剛好是人眼最容易看漏、又最容易被當成素材本來就長這樣的那種。
 
 在無頭環境跑,所以 conftest 會設 ``QT_QPA_PLATFORM=offscreen``。
 """
 
 from __future__ import annotations
+
+import math
 
 import pytest
 
@@ -19,10 +25,16 @@ from mia.ui.viewmodel import ViewModel
 pytest.importorskip("PySide6", reason="UI 測試需要 PySide6")
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QImage
 
 from mia.calibration.canvas import PRESETS as CANVAS_PRESETS
 from mia.ui.panel.window import PanelWindow, present
-from mia.ui.widgets.tiles import TILE_ASPECT, TileIcons
+from mia.ui.widgets.tiles import (
+    _PAD_FRACTION,
+    _RADIUS_FRACTION,
+    TILE_ASPECT,
+    TileIcons,
+)
 
 TENPAI = ["1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "1p", "2p", "3p"]
 
@@ -89,6 +101,64 @@ class TestTileIcons:
         assert two.devicePixelRatio() == 2.0
         # 掛上 devicePixelRatio 之後版面上佔的高度仍然是 40
         assert two.deviceIndependentSize().height() == 40
+
+    def test_the_padding_clears_the_rounded_corner(self) -> None:
+        """留白要大到讓圖案整塊落在圓弧**裡面**。
+
+        內矩形的角到圓心的距離是 √2·(r−pad),要 ≤ r —— 也就是
+        ``pad ≥ r·(1 − 1/√2)``。有人調大圓角卻忘了調留白的話,症狀只出現在
+        十幾張牌的角落(索子兩側的竹節被削掉一點),很容易被當成
+        「素材本來就長這樣」而不是程式的問題。
+        """
+        assert _RADIUS_FRACTION * (1 - 1 / math.sqrt(2)) <= _PAD_FRACTION
+
+    def test_no_tile_loses_ink_to_the_rounded_corner(self) -> None:
+        """37 張牌,圖案都要完整落在圓角**裡面**。
+
+        素材的 ROI 是貼著圖案切的 —— 量過,``3s`` ``6s`` ``7p`` ``1p`` 等十幾張
+        的墨色直接碰到左右或下緣。沒有留白的話圓角會削掉索子兩側的竹節、
+        外框線直接畫在圖案上。使用者的原話是「很多牌的顯示都被裁切到了」。
+
+        驗法:取素材裡墨色的外接矩形,換算到畫出來的座標,要求它的**四個角**
+        都落在圓角路徑內。外接矩形比墨色本身大,所以這是偏嚴的檢查 —— 它過了
+        就保證沒有一個墨色像素被切到。
+
+        這裡檢查素材而不只是檢查 ``_PAD_FRACTION``:留白夠不夠是幾何問題
+        (另一條測試釘著),而圖案有沒有貼著邊是**素材**的問題 —— 換一套皮膚
+        之後前者仍然成立,後者可能不成立。
+        """
+        icons = TileIcons()
+        tiles = [f"{n}{s}" for s in "mps" for n in range(1, 10)]
+        tiles += ["E", "S", "W", "N", "P", "F", "C", "5mr", "5pr", "5sr"]
+        height = 109
+        pad = height * _PAD_FRACTION
+        radius = height * _RADIUS_FRACTION
+        width = height * TILE_ASPECT
+
+        def inside(x: float, y: float) -> bool:
+            """(x, y) 在圓角矩形內嗎。角落以外都是直邊,只有角落要算距離。"""
+            cx = min(max(x, radius), width - radius)
+            cy = min(max(y, radius), height - radius)
+            return math.hypot(x - cx, y - cy) <= radius
+
+        clipped = []
+        for tile in tiles:
+            face = icons._face(tile).toImage()  # noqa: SLF001
+            box = _ink_box(face)
+            if box is None:  # 白板沒有墨色
+                continue
+            scale_x = (width - 2 * pad) / face.width()
+            scale_y = (height - 2 * pad) / face.height()
+            left, top, right, bottom = box
+            corners = [
+                (pad + left * scale_x, pad + top * scale_y),
+                (pad + right * scale_x, pad + top * scale_y),
+                (pad + left * scale_x, pad + bottom * scale_y),
+                (pad + right * scale_x, pad + bottom * scale_y),
+            ]
+            if not all(inside(x, y) for x, y in corners):
+                clipped.append(tile)
+        assert clipped == [], f"這些牌的圖案會被圓角切到:{clipped}"
 
     def test_the_corners_are_transparent(self) -> None:
         """圓角要真的是透明的,不是畫上去的白角 —— 深色模式下白角會很明顯。"""
@@ -1012,3 +1082,21 @@ class TestComparePicker:
         """重播 / --no-packets 時沒有引擎那條路,兩個選單都該停用。"""
         window = PanelWindow(ViewModel(), style=FakeStylePicker(names=()))
         assert not window._compare_picker.isEnabled()  # noqa: SLF001
+
+
+def _ink_box(image: QImage) -> tuple[int, int, int, int] | None:
+    """影像裡「明顯比牌面底色暗」的那些像素的外接矩形。
+
+    門檻 190 是量出來的:牌面底色約 218,最淡的墨色(赤 5 的紅)遠低於它。
+    """
+    xs: list[int] = []
+    ys: list[int] = []
+    for y in range(image.height()):
+        for x in range(image.width()):
+            colour = image.pixelColor(x, y)
+            if (colour.red() + colour.green() + colour.blue()) / 3 < 190:
+                xs.append(x)
+                ys.append(y)
+    if not xs:
+        return None
+    return min(xs), min(ys), max(xs), max(ys)
