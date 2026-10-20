@@ -402,7 +402,13 @@ class PanelWindow(QMainWindow):
             )
         else:
             self._show_canvas(self._canvas.canvas())
-            picker.setToolTip("可以直接輸入,格式是 1440x810")
+            picker.setToolTip(
+                "這是「遊戲畫布」的大小,瀏覽器視窗會再高一點(多出工具列那一截)。\n"
+                "選了之後瀏覽器立刻跟著調整,牌桌校正也直接用這個尺寸算,不再猜邊界\n"
+                "—— 猜錯過一次就是整手牌都認錯。\n"
+                "第一次啟動時程式會自己挑螢幕放得下的最大值,你動過之後就照你選的。\n"
+                "可以直接輸入,格式是 1440x810。"
+            )
             picker.currentIndexChanged.connect(self._on_canvas_picked)
             # 打字要等**輸入結束**才套用,不能用 currentTextChanged ——
             # 那個每按一個鍵就觸發一次,「1440x810」打到一半的「14」會先
@@ -413,17 +419,6 @@ class PanelWindow(QMainWindow):
         row_layout.addWidget(picker)
         row_layout.addStretch(1)
         layout.addWidget(row)
-
-        hint = QLabel(
-            "這是「遊戲畫布」的大小,瀏覽器視窗會再高一點(多出工具列那一截)。"
-            "選了之後瀏覽器會立刻跟著調整,向聽分析的牌桌校正也直接用這個尺寸算,"
-            "不再靠猜邊界 —— 猜錯過一次就是整手牌都認錯。"
-            "第一次啟動時程式會自己挑螢幕放得下的最大值,你動過之後就照你選的。",
-            page,
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet(CAPTION)
-        layout.addWidget(hint)
 
     def _build_settings(self) -> QWidget:
         """全域設定頁。
@@ -438,17 +433,12 @@ class PanelWindow(QMainWindow):
 
         self._on_top = QCheckBox("視窗置頂", page)
         self._on_top.setChecked(bool(self.windowFlags() & Qt.WindowType.WindowStaysOnTopHint))
+        self._on_top.setToolTip(
+            "關掉之後視窗會退到遊戲後面。macOS 上遊戲視窗被遮住仍然擷取得到,\n"
+            "所以擋住畫面不影響辨識。"
+        )
         self._on_top.toggled.connect(self._on_always_on_top)
         layout.addWidget(self._on_top)
-
-        hint = QLabel(
-            "置頂關掉之後視窗會退到遊戲後面。macOS 上遊戲視窗被遮住仍然擷取得到,"
-            "所以擋住畫面不影響辨識。",
-            page,
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet(CAPTION)
-        layout.addWidget(hint)
 
         layout.addWidget(_rule(page))
         layout.addWidget(_section("遊戲視窗尺寸", page))
@@ -474,12 +464,15 @@ class PanelWindow(QMainWindow):
         """
         overlay = self._overlay
         self._overlay_shown = QCheckBox("在遊戲上顯示 Overlay", page)
+        self._overlay_shown.setToolTip("位置會記住,下次啟動回到同一個地方")
         self._overlay_expanded = QCheckBox("Overlay 顯示候選 Q 值", page)
         # 放銃分析**要不要跟著上 HUD 是分開問的**:那是一手 14 列,會把
         # Overlay 往下拉長一大段。想一直看著的人與只想要一行建議的人是
         # 兩種用法,而後者不該被迫接受前者的高度。
         self._overlay_danger = QCheckBox("Overlay 顯示放銃危險度(會往下變長)", page)
+        self._overlay_danger.setToolTip("還要「放銃分析」那一頁的開關也打開才會有資料")
         self._overlay_locked = QCheckBox("鎖定位置(滑鼠可穿透)", page)
+        self._overlay_locked.setToolTip("沒鎖定時可以直接拖曳,鎖定之後點擊會穿過去給遊戲")
         boxes = (
             self._overlay_shown,
             self._overlay_expanded,
@@ -507,15 +500,6 @@ class PanelWindow(QMainWindow):
         for box in boxes:
             layout.addWidget(box)
 
-        hint = QLabel(
-            "沒鎖定時 Overlay 可以直接拖曳,鎖定之後點擊會穿過去給遊戲。"
-            "位置會記住,下次啟動回到同一個地方。"
-            "放銃危險度還要「放銃分析」那一頁的開關也打開才會有資料。",
-            page,
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet(CAPTION)
-        layout.addWidget(hint)
         self._sync_overlay_boxes(overlay.shown)
 
     def _on_overlay_shown(self, on: bool) -> None:
