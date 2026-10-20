@@ -35,7 +35,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QRectF, Qt
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
 
 from mia.mjai.tiles import UNKNOWN, mjai_to_ms
@@ -52,13 +52,32 @@ _SOURCE_ASPECT = 64 / 109
 #: 寫成比例而不是「4 像素」:別的皮膚若解析度不同,像素數會跟著變,比例不會。
 _EDGE_FRACTION = 4 / 109
 
-#: 顯示用的寬高比。切掉上緣之後牌面變短,所以比素材本身寬一點。
-#: 寬高比固定,縮放時只給高度就好。
-TILE_ASPECT = _SOURCE_ASPECT / (1 - _EDGE_FRACTION)
+#: 牌面(切掉上緣之後)本身的寬高比。
+_FACE_ASPECT = _SOURCE_ASPECT / (1 - _EDGE_FRACTION)
 
-#: 圓角半徑佔高度的比例。實測 0.06 看起來還是直角、0.11 已經像撲克牌,
+#: 圓角半徑佔整張牌高度的比例。實測 0.06 看起來還是直角、0.11 已經像撲克牌,
 #: 0.08 是「一眼認得出是麻將牌」的那個值。
 _RADIUS_FRACTION = 0.08
+
+#: 牌面四周要留多少白,佔整張牌高度的比例。
+#:
+#: **不是為了好看,是因為素材切得太緊。** 模板的 ROI 是貼著圖案切的 ——
+#: 量過 37 張,``3s`` ``6s`` ``7p`` ``1p`` 等十幾張的墨色直接碰到左右或下緣。
+#: 沒有留白的話圓角會削掉索子兩側的竹節,外框線則直接畫在圖案上,看起來
+#: 就是「牌被裁到了」。留白是把遊戲裡本來就有、被 ROI 切掉的那一圈補回來。
+#:
+#: 下限由圓角決定:內矩形的角要落在圓弧**裡面**,也就是
+#: ``pad >= radius * (1 - 1/√2) ≈ 0.293 * radius`` —— 以 0.08 的圓角算是
+#: 0.0234。取 0.04 留了餘裕,再大(實測 0.06)圖案就開始明顯變小。
+#: 兩條測試釘著:一條釘這個不等式,一條拿 37 張素材真的算一次。
+_PAD_FRACTION = 0.04
+
+#: 顯示用的寬高比:牌面按自己的比例縮,四周再加留白。
+#:
+#: 用這個式子而不是直接拿 :data:`_FACE_ASPECT`,是為了讓**圖案**保持原本的
+#: 比例。整張牌寬高比固定成牌面的話,留白會把圖案橫向擠掉約 5% ——
+#: 一眼看不出來,但萬子的字會變瘦。
+TILE_ASPECT = _FACE_ASPECT * (1 - 2 * _PAD_FRACTION) + 2 * _PAD_FRACTION
 
 #: 牌的外框。半透明的黑而不是 palette 的某個角色:它描的是**牌**的邊,
 #: 而牌面永遠是米白的,不隨視窗的淺／深色改變。
@@ -137,16 +156,21 @@ class TileIcons:
 
 
 def _rounded(face: QPixmap, height: int, ratio: float) -> QPixmap:
-    """把牌面縮到指定高度,切圓角,描一圈淡框。
+    """把牌面畫成一張牌:圓角、四周留白、描一圈淡框。
 
     在**裝置像素**上畫,最後才掛 ``devicePixelRatio`` —— 圓角與框線都是
     1 像素等級的東西,用邏輯像素畫再讓系統放大會糊成兩三像素寬的灰邊。
+
+    留白裡填的是**從素材取樣的底色**,不是寫死的米白:皮膚換了底色就跟著換,
+    而填錯色的症狀是圖案周圍一圈顏色不太一樣的邊,比沒有留白更難看。
+    取樣點是牌面左上角 —— 量過 37 張,每一張那裡都還是底色。
     """
     width = round(height * TILE_ASPECT * ratio)
     tall = round(height * ratio)
+    pad = height * _PAD_FRACTION * ratio
     scaled = face.scaled(
-        width,
-        tall,
+        round(width - 2 * pad),
+        round(tall - 2 * pad),
         Qt.AspectRatioMode.IgnoreAspectRatio,
         Qt.TransformationMode.SmoothTransformation,
     )
@@ -165,8 +189,9 @@ def _rounded(face: QPixmap, height: int, ratio: float) -> QPixmap:
         QRectF(inset, inset, width - 2 * inset, tall - 2 * inset), radius, radius
     )
 
+    painter.fillPath(path, QBrush(face.toImage().pixelColor(0, 0)))
     painter.setClipPath(path)
-    painter.drawPixmap(0, 0, scaled)
+    painter.drawPixmap(round(pad), round(pad), scaled)
     painter.setClipping(False)
     painter.setPen(QPen(_BORDER, ratio))
     painter.setBrush(Qt.BrushStyle.NoBrush)
