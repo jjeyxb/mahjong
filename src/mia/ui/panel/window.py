@@ -31,6 +31,7 @@ from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -60,6 +61,7 @@ from mia.ui.style import (
 from mia.ui.switchboard import (
     CanvasPicker,
     GameLauncher,
+    HandRoiPicker,
     PlatformPicker,
     StylePicker,
     Switchboard,
@@ -166,6 +168,7 @@ class PanelWindow(QMainWindow):
             選單畫成停用 —— 那些模式裡引擎是命令列決定的。
         platform: 遊戲版本選單要接到誰。``None``(重播、示範)時畫成停用
             —— 那些模式裡「現在玩的是哪一版」是錄的時候就定了的。
+        hand_roi: 「框選手牌範圍」要接到誰。``None`` 時按鈕畫成停用。
         overlay: 要控制的 Overlay。設定頁上的四個勾選都作用在它身上;
             ``None`` 時那四個畫成停用。
 
@@ -186,6 +189,7 @@ class PanelWindow(QMainWindow):
         canvas: CanvasPicker | None = None,
         style: StylePicker | None = None,
         platform: PlatformPicker | None = None,
+        hand_roi: HandRoiPicker | None = None,
         overlay: OverlayWindow | None = None,
     ) -> None:
         super().__init__()
@@ -204,8 +208,10 @@ class PanelWindow(QMainWindow):
         self._canvas = canvas
         self._style = style
         self._platform = platform
+        self._hand_roi = hand_roi
         self._overlay = overlay
         self._switches: dict[str, ToggleSwitch] = {}
+        self._skin = skin
         icons = TileIcons(skin)
         self._advice = AdviceTab(icons, self)
         self._analysis = AnalysisTab(icons, self)
@@ -237,6 +243,7 @@ class PanelWindow(QMainWindow):
         self._danger_page = self._add_page("放銃分析", self._danger)
         self._settings_page = self._add_page("設定", self._build_settings())
         self._build_advice_settings()
+        self._build_analysis_settings()
         # 開關最後加,才會排在設定列最右邊
         self._add_switch(self._advice_page, features.ADVICE)
         self._add_switch(self._analysis_page, features.VISION)
@@ -396,6 +403,76 @@ class PanelWindow(QMainWindow):
         # 「候選數」不在這條設定列上,而在它控制的那段清單旁邊
         # (見 :class:`~mia.ui.widgets.advice.AdviceTab`)。
         self._advice.candidate_count_changed.connect(self._on_candidate_count)
+
+    def _build_analysis_settings(self) -> None:
+        """向聽分析頁的設定列:手動框選手牌範圍。
+
+        **放在這一頁而不是設定頁。** 它只影響畫面辨識那條路,而且是對著
+        這一頁的內容在調 —— 框完之後這一頁當場就會變。全域設定頁放的是
+        「整個程式的前提」(玩哪一版、遊戲視窗多大),不是某一條路的校正。
+        """
+        self._hand_roi_button = QPushButton("框選手牌範圍", self._analysis_page)
+        self._hand_roi_button.clicked.connect(self._on_pick_hand_roi)
+        self._hand_roi_clear = QPushButton("改回自動", self._analysis_page)
+        self._hand_roi_clear.clicked.connect(self._on_clear_hand_roi)
+        if self._hand_roi is None or not self._hand_roi.can_pick_hand_roi():
+            for button in (self._hand_roi_button, self._hand_roi_clear):
+                button.setEnabled(False)
+                button.setToolTip("這個模式沒有畫面可以框(重播、示範、--no-vision)")
+        else:
+            self._hand_roi_button.setToolTip(
+                "在遊戲畫面上框出自己的手牌。Steam 版的畫布不是 16:9,\n"
+                "選單裡的尺寸沒有一個對得上,框一次最直接。"
+            )
+            self._hand_roi_clear.setToolTip("不用框的,回去用牌桌自動校正")
+        self._analysis_page.add_setting("手牌範圍", self._hand_roi_button)
+        self._analysis_page.add_setting("", self._hand_roi_clear)
+        self._sync_hand_roi_buttons()
+
+    def _sync_hand_roi_buttons(self) -> None:
+        """「改回自動」只有在真的框過的時候才有意義。"""
+        picker = self._hand_roi
+        if picker is None or not picker.can_pick_hand_roi():
+            return
+        framed = picker.hand_roi() is not None
+        self._hand_roi_clear.setEnabled(framed)
+        self._hand_roi_button.setText("重新框選" if framed else "框選手牌範圍")
+
+    def _on_pick_hand_roi(self) -> None:
+        """抓一張畫面,開框選對話框。
+
+        抓畫面會失敗,而兩種失敗都是使用者救得回來的 —— 遊戲沒開、或 macOS
+        沒給螢幕錄製權限。所以要接住並**說那一種**,不是讓例外竄上去把程式
+        帶走:這是一個 Qt 的 slot,漏出去就是當場關窗。
+        """
+        from mia.capture.base import CaptureError, WindowNotFoundError
+
+        from .handroi import HandRoiDialog
+
+        picker = self._hand_roi
+        if picker is None:
+            return
+        try:
+            frame = picker.grab_frame()
+        except WindowNotFoundError:
+            self._notice.setText("找不到遊戲視窗 —— 雀魂開著嗎?版本選對了嗎?")
+            return
+        except CaptureError as exc:
+            self._notice.setText(f"抓不到畫面:{exc}")
+            return
+
+        dialog = HandRoiDialog(frame, skin=self._skin, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.result_rect is not None:
+            picker.set_hand_roi(dialog.result_rect)
+            self._sync_hand_roi_buttons()
+            self._notice.setText("手牌範圍已更新 —— 下一幀就會用新的框")
+
+    def _on_clear_hand_roi(self) -> None:
+        if self._hand_roi is None:
+            return
+        self._hand_roi.set_hand_roi(None)
+        self._sync_hand_roi_buttons()
+        self._notice.setText("手牌範圍改回自動校正")
 
     def _build_canvas_settings(self, page: QWidget, layout: QVBoxLayout) -> None:
         """遊戲視窗尺寸。
