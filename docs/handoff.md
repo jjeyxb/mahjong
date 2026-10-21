@@ -1,9 +1,10 @@
 # 交接文件 — MIA
 
-給接手這個專案的下一個對話 / 下一個人。**最後更新 2026-10-01(權重上架
-HuggingFace:[jjeyxb/mia-mortal-style](https://huggingface.co/jjeyxb/mia-mortal-style))。**
-在那之前:windows 分支併回 main、Windows 擷取層驗證、M8 風格微調四份權重各
-15,000 場複驗。
+給接手這個專案的下一個對話 / 下一個人。**最後更新 2026-10-21(Steam 版的
+向聽分析可用了,見 [兩個版本](#兩個版本網頁版與-steam-版))。**
+在那之前:權重上架 HuggingFace
+([jjeyxb/mia-mortal-style](https://huggingface.co/jjeyxb/mia-mortal-style))、
+windows 分支併回 main、Windows 擷取層驗證、M8 四份權重各 15,000 場複驗。
 
 > 🪟 **要在 Windows 上接手的話,先看 [在 Windows 上重建](#在-windows-上重建)。**
 > 那一節列出 git 拉不到、必須手動補的四樣東西,以及第一件該做的事。
@@ -39,6 +40,26 @@ macOS 與 **Windows 都已實機驗證**。兩邊的工作已於 2026-09-30 併�
 | 2 | AI 建議(Mortal) | WebSocket 封包 → MJAI | ✅ 完成,已實機打過四場 |
 | 3 | **放銃分析**(每張牌切出去的危險度) | WebSocket 封包 → 桌面狀態 | ✅ 完成,已實機驗過一場 |
 
+### 兩個版本:網頁版與 Steam 版
+
+2026-10-21 加的一個維度。設定頁最上面可以選,記在 `ui_state.json`。
+
+| | 畫面(開關 1) | 封包(開關 2、3) |
+|---|---|---|
+| **網頁版** | 擷取瀏覽器視窗 | CDP 攔 WebSocket |
+| **Steam 版** | 擷取 Unity 客戶端視窗 | **沒有** —— 不經過瀏覽器 |
+
+Steam 版上開關 2、3 會**停用並寫明原因**,不是撥了沒反應。組員的圖像辨識
+產出 MJAI 事件流之後,改 `src/mia/platforms.py` 的 `SUPPORTED` 一行就能打開。
+
+Steam 版的向聽分析用**手動框選**取代牌桌校正(它的畫布不是 16:9,
+固定畫布那條路整個不成立)。跑法見 [live.md](live.md) 的「Steam 版怎麼用」,
+設計理由見 [decisions.md](decisions.md) 第二十一節。
+
+⚠ **Windows 上完全沒驗過。** 視窗比對、標題列高度、`PrintWindow` 回傳的是不是
+客戶區 —— 三件事都要到 Windows 上才知道。手動框選那條路理論上不受影響
+(它不依賴標題列高度),但那是推論不是量測。
+
 解耦是刻意的:1 只吃畫面,2 與 3 吃封包但**只有 2 會載 130MB 權重** ——
 所以想看放銃分析的人不必付那個代價。任何一個做不完不會擋住其他。
 
@@ -59,7 +80,7 @@ macOS 與 **Windows 都已實機驗證**。兩邊的工作已於 2026-09-30 併�
 **兩種呈現方式:** 側邊視窗(M6)與 Overlay(M7,疊在遊戲上的精簡 HUD)。
 兩者訂閱同一個 `ViewModel`,顯示邏輯不重複實作。
 
-**現在可以真的拿來用**(`--live`)。**1297 個測試**(含 9 個只在 Windows 上
+**現在可以真的拿來用**(`--live`)。**1401 個測試**(含 9 個只在 Windows 上
 跑的)、ruff + mypy 乾淨。
 
 **權重不在 repo 裡,在 HuggingFace 上**:
