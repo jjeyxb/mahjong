@@ -12,7 +12,14 @@ from __future__ import annotations
 
 from typing import Protocol
 
-__all__ = ["CanvasPicker", "GameLauncher", "StylePicker", "Switchboard", "is_on"]
+__all__ = [
+    "CanvasPicker",
+    "GameLauncher",
+    "PlatformPicker",
+    "StylePicker",
+    "Switchboard",
+    "is_on",
+]
 
 
 class Switchboard(Protocol):
@@ -38,6 +45,22 @@ class GameLauncher(Protocol):
     def can_start_game(self) -> bool: ...
     def game_running(self) -> bool: ...
     def start_game(self) -> None: ...
+
+
+class PlatformPicker(Protocol):
+    """能決定玩的是哪一版的東西(網頁版 / Steam 版)。
+
+    又是一個獨立的 Protocol,理由與 :class:`CanvasPicker` 相同:錄影重播與
+    示範資料裡沒有「現在玩的是哪一版」這回事 —— 錄的時候就定了。
+
+    ⚠ **換版本會關掉新版本撐不起的功能,並重啟畫面辨識。** Steam 版沒有封包
+    來源,所以 AI 建議與放銃分析整個沒有東西可吃(見 :mod:`mia.platforms`)。
+    所以 :meth:`set_platform` 在「選的跟現在一樣」時什麼都不該做。
+    """
+
+    def can_pick_platform(self) -> bool: ...
+    def platform(self) -> str: ...
+    def set_platform(self, value: str) -> None: ...
 
 
 class CanvasPicker(Protocol):

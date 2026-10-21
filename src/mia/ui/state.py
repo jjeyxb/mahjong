@@ -26,6 +26,7 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
+from mia.platforms import WEB
 from mia.utils.logging import logger
 from mia.utils.paths import DATA_DIR
 
@@ -48,6 +49,9 @@ class UiState:
             都想一直看著。
         overlay_locked: Overlay 是否鎖定位置(鎖定 = 滑鼠穿透)。
         overlay_pos: Overlay 左上角的螢幕座標。``None`` 表示還沒拖過。
+        platform: 玩的是哪一版(``web`` / ``steam``)。認不得的名字會被
+            :class:`~mia.platforms.PlatformChoice` 退回網頁版 —— 這個檔案是
+            操作留下的痕跡,舊版本留下的值不該讓程式開不起來。
         canvas: 選定的遊戲畫布尺寸(例如 ``1920x1080``)。``None`` 為自動偵測。
         canvas_chosen: 使用者**自己動過**那個選單沒有。
             用來分開「還沒選過」與「選過了,而且選的就是自動偵測」——
@@ -62,6 +66,7 @@ class UiState:
             開著比較要多載一份 130MB 的權重,**所以對不上的時候寧可不開**。
     """
 
+    platform: str = WEB
     canvas: str | None = None
     canvas_chosen: bool = False
     style: str | None = None

@@ -17,7 +17,7 @@ import math
 
 import pytest
 
-from mia import features
+from mia import features, platforms
 from mia.engine.base import Advice
 from mia.mjai import Dahai, Reach
 from mia.ui.viewmodel import ViewModel
@@ -1100,3 +1100,88 @@ def _ink_box(image: QImage) -> tuple[int, int, int, int] | None:
     if not xs:
         return None
     return min(xs), min(ys), max(xs), max(ys)
+
+
+class FakePlatformPicker:
+    """滿足 :class:`~mia.ui.switchboard.PlatformPicker` 的最小實作。
+
+    與真的那一條線(``LiveRuntime.set_platform``)一樣:換到 Steam 版會把
+    沒有來源的功能**關掉**,所以這裡也要動 switchboard —— 不然測的就不是
+    使用者會看到的那個狀態。
+    """
+
+    def __init__(self, switchboard: FakeSwitchboard, value: str = platforms.WEB) -> None:
+        self._switchboard = switchboard
+        self._value = value
+        self.asked: list[str] = []
+
+    def can_pick_platform(self) -> bool:
+        return True
+
+    def platform(self) -> str:
+        return self._value
+
+    def set_platform(self, value: str) -> None:
+        self.asked.append(value)
+        self._value = value
+        for key in tuple(features.NAMES):
+            if not platforms.supports(value, key):
+                self._switchboard.missing.add(key)
+                self._switchboard.state[key] = False
+            else:
+                self._switchboard.missing.discard(key)
+
+    def unavailable_reason(self, key: str) -> str | None:
+        return platforms.why_unsupported(self._value, key)
+
+
+class TestPlatformPicker:
+    """遊戲版本的選單。選了 Steam 版之後,沒有來源的功能要停用並說明原因。"""
+
+    def _window(self, qtbot, value: str = platforms.WEB):
+        board = FakeSwitchboard()
+        picker = FakePlatformPicker(board, value)
+        window = PanelWindow(ViewModel(), switchboard=board, platform=picker)
+        qtbot.addWidget(window)
+        return window, picker, board
+
+    def test_both_versions_are_listed(self, qtbot) -> None:
+        window, _, _ = self._window(qtbot)
+        combo = window._platform_picker  # noqa: SLF001
+        assert [combo.itemData(i) for i in range(combo.count())] == list(platforms.PLATFORMS)
+
+    def test_it_starts_on_the_remembered_version(self, qtbot) -> None:
+        """記住的是「我現在都玩 Steam 版」,不是臨時的調整。"""
+        window, _, _ = self._window(qtbot, platforms.STEAM)
+        combo = window._platform_picker  # noqa: SLF001
+        assert combo.currentData() == platforms.STEAM
+
+    def test_picking_steam_reaches_the_runtime(self, qtbot) -> None:
+        window, picker, _ = self._window(qtbot)
+        combo = window._platform_picker  # noqa: SLF001
+        combo.setCurrentIndex(list(platforms.PLATFORMS).index(platforms.STEAM))
+        assert picker.asked == [platforms.STEAM]
+
+    def test_steam_disables_the_switches_it_cannot_feed(self, qtbot) -> None:
+        """使用者要看到的是「停用」,不是一個撥了會自己彈回去的開關。"""
+        window, _, _ = self._window(qtbot)
+        combo = window._platform_picker  # noqa: SLF001
+        combo.setCurrentIndex(list(platforms.PLATFORMS).index(platforms.STEAM))
+        switches = window._switches  # noqa: SLF001
+        assert switches[features.VISION].isEnabled()
+        assert not switches[features.ADVICE].isEnabled()
+        assert not switches[features.DANGER].isEnabled()
+
+    def test_the_disabled_switch_says_why(self, qtbot) -> None:
+        """「不支援」會讓人去找一個不存在的開關,所以要講為什麼。"""
+        window, _, _ = self._window(qtbot)
+        combo = window._platform_picker  # noqa: SLF001
+        combo.setCurrentIndex(list(platforms.PLATFORMS).index(platforms.STEAM))
+        tip = window._switches[features.ADVICE].toolTip()  # noqa: SLF001
+        assert "封包" in tip
+
+    def test_no_picker_means_the_menu_is_disabled(self, qtbot) -> None:
+        """重播與示範模式裡「現在玩哪一版」是錄的時候就定了的。"""
+        window = PanelWindow(ViewModel())
+        qtbot.addWidget(window)
+        assert not window._platform_picker.isEnabled()  # noqa: SLF001

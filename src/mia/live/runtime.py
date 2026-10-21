@@ -41,6 +41,7 @@ from mia.engine.styles import StyleChoice
 from mia.features import NAMES
 from mia.live.bus import Advices, CvHand, Dangers, PacketHand, UpdateBus, WorkerStatus
 from mia.live.source import CaptureLauncher
+from mia.platforms import WEB, PlatformChoice
 from mia.ui.viewmodel import ViewModel
 from mia.utils.logging import logger
 
@@ -119,6 +120,9 @@ class LiveRuntime:
         style: 打法風格的共用格子;沒有 AI 建議那條路時為 ``None``。
             引擎工廠讀它決定載哪幾份權重,所以改了要重啟才生效 ——
             見 :meth:`set_style`。
+        platform: 玩的是哪一版(網頁版 / Steam 版)。省略視為網頁版。
+            它決定 :meth:`available` 會放行哪些功能,以及 MIA 負不負責開遊戲
+            —— 見 :mod:`mia.platforms`。
 
     功能預設**全部關閉**,使用者用側邊視窗上的開關打開。
 
@@ -151,6 +155,7 @@ class LiveRuntime:
         capture: CaptureLauncher | None = None,
         canvas: CanvasChoice | None = None,
         style: StyleChoice | None = None,
+        platform: PlatformChoice | None = None,
     ) -> None:
         self._viewmodel = viewmodel
         self._bus = bus
@@ -158,6 +163,7 @@ class LiveRuntime:
         self._capture = capture
         self._canvas = canvas
         self._style = style
+        self._platform = platform if platform is not None else PlatformChoice()
         self._running = False
         #: 最近一次「功能起不來」的理由。見 :meth:`_enable`。
         self._failure: str | None = None
@@ -188,8 +194,56 @@ class LiveRuntime:
 
         ``--tail`` 是跟著別人正在錄的檔案走、``--no-packets`` 根本不接封包
         —— 兩種情況下遊戲都不是 MIA 開的。
+
+        **Steam 版也不是。** 那顆按鈕做的事是「開一個受控的瀏覽器並開始錄
+        封包」,對 Unity 客戶端沒有一樣能做 —— 遊戲由使用者自己從 Steam 開,
+        MIA 只負責找到那個視窗。
         """
-        return self._capture is not None
+        return self._capture is not None and self._platform.value == WEB
+
+    def why_cannot_start_game(self) -> str | None:
+        """那顆按鈕為什麼不能按。能按的話回 ``None``。"""
+        if self.can_start_game():
+            return None
+        if self._platform.value != WEB:
+            return f"{self._platform.name}請自己從 Steam 開,MIA 會自動找到那個視窗"
+        return "這個模式下遊戲不是 MIA 開的(重播、--tail、--no-packets)"
+
+    # ------------------------------------------------------------------ 版本
+
+    def platform(self) -> str:
+        """現在選的是哪一版。"""
+        return self._platform.value
+
+    def can_pick_platform(self) -> bool:
+        """這個模式下選版本有沒有意義。
+
+        畫面辨識不存在時就沒有 —— 那是兩版唯一共通的那條路,少了它換版本
+        不會改變任何事。
+        """
+        return features.VISION in self._features
+
+    def set_platform(self, value: str) -> None:
+        """換成另一版。
+
+        三件事:**關掉新版本撐不起的功能**、重啟畫面辨識、重畫一次。
+
+        關掉而不是留著,是因為那些功能的資料來源整個消失了 —— 留著開關撥在
+        「開」而畫面永遠不更新,比明講「這一版沒有」糟得多。回頭換回來時使用者
+        要自己再撥開,那是刻意的:開 AI 建議會載 130MB 權重,不該是換個選單
+        的副作用。
+
+        畫面辨識要重啟是因為**要找的視窗換人了** —— 網頁版找瀏覽器、Steam 版
+        找 Unity 客戶端,而工作執行緒是建構時吃設定的。
+        """
+        if not self._platform.set(value):
+            return
+        logger.info("遊戲版本改為 {}", self._platform)
+        for key in tuple(self._features):
+            if not self._platform.supports(key):
+                self.set_enabled(key, False)
+        self._restart(features.VISION)
+        self.pump()
 
     def game_running(self) -> bool:
         """瀏覽器 / 擷取子程序現在是不是活著。給按鈕決定要不要可按。"""
@@ -366,12 +420,31 @@ class LiveRuntime:
     # ------------------------------------------------------------------ 開關
 
     def available(self, key: str) -> bool:
-        """這個功能有沒有被建起來。
+        """這個功能現在**能不能用**。
 
-        ``--no-vision`` / ``--no-packets`` 會讓對應的功能整個不存在 —— 那與
-        「存在但關著」是兩件事,UI 要分得出來才能把開關畫成停用而不是可按。
+        兩個理由會讓它不能用,而使用者看到的結果一樣(開關畫成停用):
+
+        * **根本沒建起來。** ``--no-vision`` / ``--no-packets`` 的情況。
+        * **這一版沒有資料來源。** Steam 版沒有封包,所以 AI 建議與放銃分析
+          沒有東西可吃(見 :mod:`mia.platforms`)。
+
+        合併成一個方法是因為 UI 要的就是「畫成停用還是可按」。**理由另外問**
+        —— :meth:`unavailable_reason`,因為那兩種情況該說的話不一樣。
         """
-        return key in self._features
+        return key in self._features and self._platform.supports(key)
+
+    def unavailable_reason(self, key: str) -> str | None:
+        """這個功能為什麼不能用。能用的話回 ``None``。
+
+        分得出兩種原因:版本沒有來源(使用者換個版本就有),與啟動參數停用了
+        (要重開程式)。兩句話該說得不一樣 —— 前者在 UI 上是可以當場解決的。
+        """
+        if self.available(key):
+            return None
+        why = self._platform.why_unsupported(key)
+        if why is not None:
+            return why
+        return f"{NAMES.get(key, key)} 已在啟動參數中停用" if key not in self._features else None
 
     def is_enabled(self, key: str) -> bool:
         feature = self._features.get(key)

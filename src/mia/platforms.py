@@ -1,0 +1,139 @@
+"""遊戲是哪一版:網頁版還是 Steam 版。
+
+與 :mod:`mia.features` 同樣是**沒有任何相依**的識別字模組,理由也一樣:
+:mod:`mia.ui`(呈現)與 :mod:`mia.live`(執行)都要用同一組名字,而那兩邊
+誰都不該 import 對方。
+
+為什麼這是一個「版本」而不是一個設定項
+--------------------------------------
+兩版的差別不是偏好,是**資料來源少了一條**:
+
+======== ================== ==========================================
+版本     畫面               封包
+======== ================== ==========================================
+網頁版   擷取瀏覽器視窗     CDP 攔 WebSocket,三個功能都有料
+Steam    擷取遊戲視窗       **沒有** —— Unity 客戶端不經過瀏覽器
+======== ================== ==========================================
+
+所以選了 Steam 版之後,AI 建議與放銃分析不是「關著」而是**沒有來源**。
+:data:`SUPPORTED` 就是在講這件事,而 UI 照它把開關畫成停用並說明原因 ——
+可按而按了沒反應,看起來就是壞掉。
+
+Steam 版的事件流**之後會有**:專題組員的圖像辨識會產生 MJAI 事件流,
+接上之後這張表就會改。在那之前寧可明講「還沒有」,也不要讓使用者撥一個
+永遠不會有資料的開關。
+
+為什麼不用 enum
+---------------
+與 :mod:`mia.features` 一致:這些字串會寫進 ``data/ui_state.json``,
+而那個檔案要跨版本讀得回來。字串本身因此**不要改**。
+"""
+
+from __future__ import annotations
+
+from mia.features import ADVICE, DANGER, VISION
+
+__all__ = [
+    "NAMES",
+    "PLATFORMS",
+    "STEAM",
+    "SUPPORTED",
+    "WEB",
+    "PlatformChoice",
+    "supports",
+    "why_unsupported",
+]
+
+#: 網頁版雀魂,跑在 MIA 自己開的 Chromium 裡。
+WEB = "web"
+
+#: Steam 上的 Unity 客戶端。
+STEAM = "steam"
+
+#: 選單的順序。網頁版排前面 —— 它是功能完整的那一個。
+PLATFORMS = (WEB, STEAM)
+
+#: 給人看的名字。
+NAMES = {WEB: "網頁版", STEAM: "Steam 版"}
+
+#: 每一版撐得起哪些功能。見模組說明。
+SUPPORTED = {
+    WEB: (VISION, ADVICE, DANGER),
+    STEAM: (VISION,),
+}
+
+#: 功能在某一版上不能用的理由。**要寫給使用者看**,所以講的是「為什麼」
+#: 而不是「不支援」—— 後者會讓人以為是 MIA 還沒做,而去找設定裡的開關。
+_REASONS = {
+    STEAM: "Steam 版沒有封包來源(Unity 客戶端不經過瀏覽器)—— 要等圖像辨識的事件流接上",
+}
+
+
+def supports(platform: str, feature: str) -> bool:
+    """這一版有沒有這個功能的資料來源。
+
+    認不得的版本一律回 ``True``:這個函式的作用是**擋掉確定沒有來源的組合**,
+    而不是當白名單。設定檔或 ``ui_state.json`` 裡出現了沒見過的名字時,
+    放行比整個功能消失好 —— 後者沒有任何錯誤訊息。
+    """
+    allowed = SUPPORTED.get(platform)
+    return True if allowed is None else feature in allowed
+
+
+def why_unsupported(platform: str, feature: str) -> str | None:
+    """為什麼這一版沒有這個功能。支援的話回 ``None``。"""
+    if supports(platform, feature):
+        return None
+    return _REASONS.get(platform, f"{NAMES.get(platform, platform)}沒有這個功能的資料來源")
+
+
+class PlatformChoice:
+    """使用者現在選的版本,**一個可變的共用格子**。
+
+    與 :class:`~mia.calibration.canvas.CanvasChoice`、
+    :class:`~mia.engine.styles.StyleChoice` 同一個模式,理由也一樣:讀它的是
+    **延遲建構**的工作執行緒(功能打開才建)。傳值的話使用者改了版本之後,
+    還沒建起來的那一邊會拿到舊值,而那不會有任何症狀 —— 畫面照常更新,
+    只是對著另一個視窗在認牌。
+
+    Args:
+        value: 初始版本。認不得的名字(``ui_state.json`` 裡是舊版本留下的)
+            退回 :data:`WEB`,不報錯 —— 為了一個記住的選擇讓程式開不起來
+            是不划算的交易。
+    """
+
+    def __init__(self, value: str = WEB) -> None:
+        self._value = value if value in PLATFORMS else WEB
+
+    @property
+    def value(self) -> str:
+        return self._value
+
+    @property
+    def name(self) -> str:
+        """給人看的名字。"""
+        return NAMES.get(self._value, self._value)
+
+    def set(self, value: str) -> bool:
+        """換版本。回傳**有沒有真的變**,讓呼叫端決定要不要重啟工作執行緒。
+
+        換版本要重找視窗、重新校正,成本不低,而使用者在選單上重選同一項
+        是很常見的動作。
+        """
+        if value not in PLATFORMS or value == self._value:
+            return False
+        self._value = value
+        return True
+
+    def supports(self, feature: str) -> bool:
+        """這一版有沒有這個功能的資料來源。"""
+        return supports(self._value, feature)
+
+    def why_unsupported(self, feature: str) -> str | None:
+        return why_unsupported(self._value, feature)
+
+    def __str__(self) -> str:
+        return self.name
+
+    def __repr__(self) -> str:
+        return f"<PlatformChoice {self._value}>"
