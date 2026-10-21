@@ -13,8 +13,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+
 import numpy as np
 import pytest
+from loguru import logger
 
 from mia.calibration.canvas import (
     PRESETS,
@@ -281,3 +285,69 @@ class TestBestFit:
         """全都放不下就回 None,呼叫端退回自動偵測。硬塞一個裝不下的尺寸
         會讓 table_rect 一直說對不上,那比自動偵測還糟。"""
         assert best_fit(1024, 640) is None
+
+
+@contextmanager
+def _captured_warnings() -> Iterator[list[str]]:
+    """收集 loguru 的 WARNING。
+
+    pytest 的 ``caplog`` 抓不到 —— loguru 不走 stdlib 的 logging,
+    它有自己的 sink。接一個 list 上去是官方建議的做法。
+    """
+    collected: list[str] = []
+    sink_id = logger.add(lambda message: collected.append(str(message)), level="WARNING")
+    try:
+        yield collected
+    finally:
+        logger.remove(sink_id)
+
+
+class TestTheLogDoesNotRepeatItself:
+    """校正是每一幀跑的,而它失敗的原因通常會持續。
+
+    原本每一幀寫一行警告,15 fps 下終端機就是每秒十五行黃字,而那十五行
+    講的是同一件事 —— 真正的問題被自己的重複洗掉。使用者的原話:
+    「一堆黃字 warning 是怎麼了嗎」。
+    """
+
+    def _calibrator(self) -> TableCalibrator:
+        return TableCalibrator(canvas=CanvasChoice(Canvas(1280, 720)))
+
+    def test_the_same_failure_is_logged_once(self, window: WindowInfo) -> None:
+        calibrator = self._calibrator()
+        bad = _frame(1000, 600, window)  # 寬度與畫布對不上
+        with _captured_warnings() as lines:
+            for _ in range(10):
+                calibrator.calibrate(bad)
+        assert len(lines) == 1, f"同一件事寫了 {len(lines)} 次"
+
+    def test_the_status_line_still_says_it_every_frame(self, window: WindowInfo) -> None:
+        """少寫日誌**不等於**少告訴使用者。
+
+        「現在怎麼了」該在狀態列,而那條路一幀都沒少:每一幀回傳的
+        Calibration 都帶著 warnings,上層照樣讀得到。
+        """
+        calibrator = self._calibrator()
+        bad = _frame(1000, 600, window)
+        for _ in range(5):
+            result = calibrator.calibrate(bad)
+            assert result.warnings, "狀態列那條路也被一起關掉了"
+
+    def test_a_different_failure_gets_its_own_line(self, window: WindowInfo) -> None:
+        """換了一種失敗就要再講一次 —— 去重是為了少吵,不是為了閉嘴。"""
+        calibrator = self._calibrator()
+        with _captured_warnings() as lines:
+            calibrator.calibrate(_frame(1000, 600, window))
+            calibrator.calibrate(_frame(1280, 2000, window))
+        assert len(lines) == 2
+
+    def test_it_speaks_again_after_recovering(self, window: WindowInfo) -> None:
+        """好了之後又壞掉要再講一次,不然第二次故障是靜音的。"""
+        calibrator = self._calibrator()
+        bad = _frame(1000, 600, window)
+        good = _frame(1280, 807, window)
+        with _captured_warnings() as lines:
+            calibrator.calibrate(bad)
+            calibrator.calibrate(good)
+            calibrator.calibrate(bad)
+        assert len(lines) == 2

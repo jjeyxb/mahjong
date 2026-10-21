@@ -110,6 +110,32 @@ class TableCalibrator:
     ) -> None:
         self.config = config or CalibrationConfig()
         self.canvas = canvas or CanvasChoice(Canvas.parse(self.config.canvas))
+        #: 上一次寫進日誌的警告。見 :meth:`_warn_once`。
+        self._last_warning: str | None = None
+
+    def _warn_once(self, message: str) -> None:
+        """同一句話只寫一次日誌,直到情況變了為止。
+
+        校正是**每一幀**跑的(實測 15 fps),而它失敗的原因通常會持續 ——
+        畫布選錯了就一直錯。原本每一幀寫一行,終端機上就是每秒十五行黃字,
+        而那十五行講的是同一件事。真正的問題被自己的重複洗掉了。
+
+        使用者看得到的管道沒有變少:失敗的理由仍然每一幀送進狀態列
+        (見 :class:`~mia.calibration.stable.StableCalibrator` 的 ``failure``),
+        那裡本來就是「現在怎麼了」該出現的地方。日誌要的是「發生過什麼」,
+        同一句話重複一萬次不會讓它更真。
+
+        情況變了就會再寫一次 —— 換成另一句話,或是好了之後又壞掉
+        (:meth:`_clear_warning` 在成功時把記憶清掉)。
+        """
+        if message == self._last_warning:
+            return
+        self._last_warning = message
+        logger.warning(message)
+
+    def _clear_warning(self) -> None:
+        """這一幀是好的 —— 下次再壞要重新講一次。"""
+        self._last_warning = None
 
     def calibrate(self, frame: Frame) -> Calibration:
         image = frame.image
@@ -120,6 +146,7 @@ class TableCalibrator:
             x, y, w, h = cfg.manual_table_rect
             table_rect = NormRect(x, y, w, h).to_pixels(image_size)
             logger.debug("使用設定檔指定的牌桌矩形: {}", table_rect)
+            self._clear_warning()
             return Calibration(
                 table_rect=table_rect,
                 image_size=image_size,
@@ -138,7 +165,7 @@ class TableCalibrator:
             min_content_ratio=cfg.min_content_ratio,
         )
         if content is None:
-            logger.warning("偵測不到內容區,退回使用整張擷取影像作為牌桌矩形")
+            self._warn_once("偵測不到內容區,退回使用整張擷取影像作為牌桌矩形")
             return Calibration(
                 table_rect=Rect.from_size(image_size),
                 image_size=image_size,
@@ -176,8 +203,11 @@ class TableCalibrator:
             warnings=tuple(warnings),
         )
         logger.debug("校正結果: {}", calibration)
-        for message in warnings:
-            logger.warning(message)
+        if warnings:
+            for message in warnings:
+                self._warn_once(message)
+        else:
+            self._clear_warning()
         return calibration
 
     def _from_canvas(self, canvas: Canvas, frame: Frame) -> Calibration:
@@ -191,7 +221,7 @@ class TableCalibrator:
         try:
             rect = canvas.table_rect(frame.size, frame.scale)
         except CanvasMismatchError as exc:
-            logger.warning("畫布 {} 與這一幀對不上:{}", canvas.label, exc)
+            self._warn_once(f"畫布 {canvas.label} 與這一幀對不上:{exc}")
             return Calibration(
                 table_rect=Rect.from_size(frame.size),
                 image_size=frame.size,
@@ -199,6 +229,7 @@ class TableCalibrator:
                 source="fallback",
                 warnings=(f"畫布尺寸 {canvas.label} 對不上目前的視窗:{exc}",),
             )
+        self._clear_warning()
         return Calibration(
             table_rect=rect,
             image_size=frame.size,

@@ -116,6 +116,15 @@ class VisionWorker(threading.Thread):
         #: —— 見 :data:`~mia.capture.base.HOST_REQUIRE`。
         self._host = HOST_REQUIRE if platform == WEB else HOST_EXCLUDE
         self._platform_name = NAMES.get(platform, platform)
+        #: 校正失敗時要不要順便叫使用者去框。
+        #:
+        #: 只有非網頁版才加:Steam 的客戶區不是 16:9(實機量到 1512x844),
+        #: 畫布那條路**不可能**對得上,所以「校正失敗」在那裡不是故障而是
+        #: 走錯路了。網頁版的校正失敗則通常是視窗被手動拖過,那要調畫布尺寸,
+        #: 叫他去框反而是錯的建議。
+        self._framing_hint = (
+            "" if platform == WEB else " —— Steam 版請用這一頁的「框選手牌範圍」"
+        )
         self._bus = bus
         self._config = config
         self._backend = backend
@@ -213,7 +222,7 @@ class VisionWorker(threading.Thread):
             # 「校正中 3/15」不會動,看起來像卡住,而使用者其實有辦法解決。
             failure = self._calibrator.failure
             if failure is not None:
-                self.status.say(f"牌桌校正失敗:{failure}")
+                self.status.say(f"牌桌校正失敗:{failure}{self._framing_hint}")
             else:
                 done, need = self._calibrator.progress
                 self.status.say(f"牌桌校正中 {done}/{need}")
