@@ -52,6 +52,10 @@ class UiState:
         platform: 玩的是哪一版(``web`` / ``steam``)。認不得的名字會被
             :class:`~mia.platforms.PlatformChoice` 退回網頁版 —— 這個檔案是
             操作留下的痕跡,舊版本留下的值不該讓程式開不起來。
+        hand_roi: 使用者自己框的手牌範圍,``(x, y, 寬, 高)`` 四個 0~1 的
+            比例,相對**擷取影像**。``None`` 代表沒框過,走牌桌校正那條路。
+            正規化到影像而不是牌桌矩形,是因為走這條路時根本沒有牌桌矩形
+            —— 見 :mod:`mia.calibration.manual`。
         canvas: 選定的遊戲畫布尺寸(例如 ``1920x1080``)。``None`` 為自動偵測。
         canvas_chosen: 使用者**自己動過**那個選單沒有。
             用來分開「還沒選過」與「選過了,而且選的就是自動偵測」——
@@ -67,6 +71,7 @@ class UiState:
     """
 
     platform: str = WEB
+    hand_roi: tuple[float, float, float, float] | None = None
     canvas: str | None = None
     canvas_chosen: bool = False
     style: str | None = None

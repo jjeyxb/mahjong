@@ -15,6 +15,7 @@ import cv2
 import numpy as np
 import pytest
 
+from mia.calibration.manual import HandRoiChoice
 from mia.capture.base import CaptureBackend, CaptureFailedError, Frame, WindowInfo
 from mia.config.models import AppConfig, CalibrationConfig, CaptureConfig, RoiConfig
 from mia.live.bus import CvHand, UpdateBus
@@ -384,3 +385,64 @@ def test_threading_module_is_used_for_the_stop_event() -> None:
     """釘住「用 Event 而不是 sleep」這個決定 —— 它是停止延遲的來源。"""
     worker = VisionWorker(UpdateBus(), config=_config(RoiConfig()))
     assert isinstance(worker._stop, threading.Event)  # noqa: SLF001
+
+
+class TestTheManuallyFramedHand:
+    """使用者自己框的手牌範圍 —— 框過就整個跳過校正。"""
+
+    def _worker(self, window: WindowInfo, frame: Frame, roi: RoiConfig, box) -> tuple:
+        bus = UpdateBus()
+        worker = VisionWorker(
+            bus,
+            # 校正刻意給一個**錯的**手動矩形:框過的話根本不會走到那裡,
+            # 走到了就會認出不一樣的牌,測試就會失敗。
+            config=AppConfig(
+                capture=CaptureConfig(target_fps=120.0),
+                calibration=CalibrationConfig(manual_table_rect=(0.0, 0.0, 0.5, 0.5)),
+                roi=roi,
+            ),
+            backend=FakeBackend(window, [frame]),
+            window=window,
+            hand_roi=HandRoiChoice(box),
+        )
+        return bus, worker
+
+    def test_it_reads_the_hand_from_the_box(self, window: WindowInfo) -> None:
+        frame, roi = _frame_with_hand(window, _hand_image())
+        width, height = FRAME_SIZE
+        hand_h, hand_w = _hand_image().shape[:2]
+        box = (PASTE.x / width, PASTE.y / height, hand_w / width, hand_h / height)
+        bus, worker = self._worker(window, frame, roi, box)
+        _run_until(worker, lambda: len(bus) > 0)
+
+        posted = bus.drain()
+        assert posted, "框過了卻什麼都沒投出來"
+        assert len(posted[0].tiles) == 13
+
+    def test_the_box_bypasses_calibration(self, window: WindowInfo) -> None:
+        """校正設成一個錯的矩形,框過的話不該有人去讀它。
+
+        這一條才是重點:手動框**不是**另一種校正來源,它是整段跳過。
+        Steam 版上校正那條路走不通,所以不能只是「優先用框」。
+        """
+        frame, roi = _frame_with_hand(window, _hand_image())
+        width, height = FRAME_SIZE
+        hand_h, hand_w = _hand_image().shape[:2]
+        box = (PASTE.x / width, PASTE.y / height, hand_w / width, hand_h / height)
+        bus, worker = self._worker(window, frame, roi, box)
+        _run_until(worker, lambda: len(bus) > 0)
+        assert "校正" not in worker.status.read()
+
+    def test_without_a_box_it_still_calibrates(self, window: WindowInfo) -> None:
+        """沒框過就走原本那條路 —— 網頁版的行為一個字都不該變。"""
+        frame, roi = _frame_with_hand(window, _hand_image())
+        bus = UpdateBus()
+        worker = VisionWorker(
+            bus,
+            config=_config(roi),
+            backend=FakeBackend(window, [frame]),
+            window=window,
+            hand_roi=HandRoiChoice(),
+        )
+        _run_until(worker, lambda: len(bus) > 0)
+        assert bus.drain(), "沒框過時原本那條路壞了"

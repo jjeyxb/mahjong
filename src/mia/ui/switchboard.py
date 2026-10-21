@@ -10,11 +10,16 @@ UI 也要服務錄影重播與示範資料,那些模式裡根本沒有工作執�
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from mia.capture.base import Frame
+    from mia.utils.geometry import NormRect
 
 __all__ = [
     "CanvasPicker",
     "GameLauncher",
+    "HandRoiPicker",
     "PlatformPicker",
     "StylePicker",
     "Switchboard",
@@ -61,6 +66,28 @@ class PlatformPicker(Protocol):
     def can_pick_platform(self) -> bool: ...
     def platform(self) -> str: ...
     def set_platform(self, value: str) -> None: ...
+
+
+class HandRoiPicker(Protocol):
+    """能讓使用者自己框手牌範圍的東西。
+
+    為什麼需要手動框,見 :mod:`mia.ui.panel.handroi`:Steam 版的畫布不是
+    16:9,選單裡的 preset 沒有一個對得上,而自動剝除會**安靜地**鎖錯。
+
+    介面切在這裡的理由:**對話框是 Qt 的,抓畫面不是。** 側邊視窗負責開對話框
+    (它本來就在 UI 執行緒上),而「去哪抓一張畫面」「框完存到哪」是接線層的事
+    —— 與 :class:`CanvasPicker` 把持久化留在 ``tools/ui.py`` 是同一個分法。
+
+    :meth:`grab_frame` 是**同步**的,實測 10~30 ms,直接在 UI 執行緒上做。
+    它會丟 :class:`~mia.capture.base.WindowNotFoundError` 或
+    :class:`~mia.capture.base.CaptureError` —— 兩個都是使用者救得回來的狀況
+    (遊戲沒開、沒給螢幕錄製權限),呼叫端要接住並說人話。
+    """
+
+    def can_pick_hand_roi(self) -> bool: ...
+    def grab_frame(self) -> Frame: ...
+    def hand_roi(self) -> NormRect | None: ...
+    def set_hand_roi(self, rect: NormRect | None) -> None: ...
 
 
 class CanvasPicker(Protocol):

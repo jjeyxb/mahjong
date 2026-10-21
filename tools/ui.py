@@ -46,6 +46,9 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from mia.calibration.canvas import Canvas, CanvasChoice, best_fit
+from mia.calibration.manual import HandRoiChoice
+from mia.capture.base import Frame
+from mia.config.models import AppConfig
 from mia.engine import AIEngine, DummyEngine, EngineGroup
 from mia.engine.styles import StyleChoice, StyleProfile
 from mia.live.runtime import LiveRuntime
@@ -57,6 +60,7 @@ from mia.ui.overlay.window import OverlayWindow
 from mia.ui.panel.window import PanelWindow, present
 from mia.ui.state import UiState
 from mia.ui.viewmodel import ViewModel
+from mia.utils.geometry import NormRect
 from mia.utils.logging import logger, setup_logging
 from mia.utils.paths import DATA_DIR, PROJECT_ROOT
 
@@ -234,6 +238,50 @@ class _RememberedCanvas:
         self._state.save()
 
 
+class _RememberedHandRoi:
+    """把框選的結果轉給擷取執行緒,順手記到磁碟,並負責「去哪抓一張畫面」。
+
+    與 :class:`_RememberedCanvas` 同一個模式,多一件事:**抓畫面**。
+    那是接線層的事 —— 側邊視窗只知道「要一張 Frame」,不知道後端怎麼建、
+    該找哪個視窗;而找哪個視窗取決於現在選的版本,那個格子在這裡。
+
+    不經過 :class:`LiveRuntime`:框選不需要重啟任何東西。
+    :class:`~mia.calibration.manual.HandRoiChoice` 每一幀都被讀一次,
+    所以框完下一幀就生效。
+    """
+
+    def __init__(
+        self,
+        choice: HandRoiChoice,
+        state: UiState,
+        platform: PlatformChoice,
+        config: AppConfig,
+    ) -> None:
+        self._choice = choice
+        self._state = state
+        self._platform = platform
+        self._config = config
+
+    def can_pick_hand_roi(self) -> bool:
+        return True
+
+    def grab_frame(self) -> Frame:
+        from mia.live.snapshot import grab_game_frame
+
+        return grab_game_frame(self._config, self._platform.value)
+
+    def hand_roi(self) -> NormRect | None:
+        return self._choice.value
+
+    def set_hand_roi(self, rect: NormRect | None) -> None:
+        if rect is None:
+            self._choice.clear()
+        else:
+            self._choice.set(rect)
+        self._state.hand_roi = self._choice.as_tuple()
+        self._state.save()
+
+
 class _RememberedPlatform:
     """把版本的選擇轉給 runtime,順手記到磁碟。
 
@@ -309,6 +357,7 @@ def build_live_runtime(
     canvas: CanvasChoice | None = None,
     style: StyleChoice | None = None,
     platform: PlatformChoice | None = None,
+    hand_roi: HandRoiChoice | None = None,
 ) -> LiveRuntime:
     """組出 runtime。**什麼都還沒開始** —— 瀏覽器等使用者按「開始遊戲」,
     三個功能等使用者撥開關。
@@ -396,6 +445,7 @@ def build_live_runtime(
                 skin=skin,
                 canvas=canvas,
                 platform=platform.value if platform else WEB,
+                hand_roi=hand_roi,
             )
 
         feature_list.append(Feature(features.VISION, make_vision))
@@ -620,11 +670,21 @@ def main(argv: list[str] | None = None) -> int:
     # 都會先看到一個以網頁版為前提的畫面(「開始遊戲」可按、三個開關都亮著),
     # 要自己再去設定頁改一次。
     platform = PlatformChoice(ui_state.platform)
+    # 同理:上次框的手牌範圍也要先備好。沒備的話第一次打開畫面辨識會先跑
+    # 一次牌桌校正(Steam 版上那條路本來就走不通),使用者得再框一次。
+    hand_roi = HandRoiChoice(ui_state.hand_roi)
+    # 視窗比對條件要與擷取執行緒讀的是同一份 —— 兩邊找的必須是同一個視窗,
+    # 否則使用者框的是 A、辨識跑的是 B。
+    from mia.config.loader import load_config
+
+    app_config = load_config()
 
     # runtime 必須在視窗**之前**建好:視窗上的開關要接到它。反過來的話開關
     # 只能先畫成停用,之後再想辦法補接 —— 而那正是最容易忘記做的一步。
     runtime: LiveRuntime | None = (
-        build_live_runtime(args, model, canvas=canvas, style=style, platform=platform)
+        build_live_runtime(
+            args, model, canvas=canvas, style=style, platform=platform, hand_roi=hand_roi
+        )
         if args.live
         else None
     )
@@ -650,6 +710,11 @@ def main(argv: list[str] | None = None) -> int:
         canvas=_RememberedCanvas(runtime, ui_state) if runtime is not None else None,
         style=_RememberedStyle(runtime, ui_state) if runtime is not None else None,
         platform=_RememberedPlatform(runtime, ui_state) if runtime is not None else None,
+        hand_roi=(
+            _RememberedHandRoi(hand_roi, ui_state, platform, app_config)
+            if runtime is not None and not args.no_vision
+            else None
+        ),
         **options,  # type: ignore[arg-type]
     )
     model.subscribe(window.apply)
