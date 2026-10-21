@@ -35,6 +35,7 @@ import time
 import numpy as np
 
 from mia.calibration.canvas import CanvasChoice
+from mia.calibration.manual import HandRoiChoice
 from mia.calibration.stable import StableCalibrator
 from mia.calibration.table import Calibration
 from mia.capture.base import (
@@ -49,6 +50,7 @@ from mia.capture.base import (
 from mia.config.models import AppConfig
 from mia.live.bus import CvHand, UpdateBus, WorkerStatus
 from mia.platforms import NAMES, WEB
+from mia.utils.geometry import Size
 from mia.utils.logging import logger
 from mia.vision.roi import MissingRoiError, RoiSet
 from mia.vision.tiles.classify import (
@@ -93,6 +95,8 @@ class VisionWorker(threading.Thread):
         canvas: 使用者選的畫布尺寸,蓋過 ``config.calibration.canvas``。
         platform: 玩的是哪一版。只影響**找哪個視窗** —— 認牌那一段兩版完全
             一樣,擷取到的就是一張圖。見 :mod:`mia.platforms`。
+        hand_roi: 使用者自己框的手牌範圍。框過的話**整個校正都跳過**,
+            見 :mod:`mia.calibration.manual`。
     """
 
     def __init__(
@@ -105,6 +109,7 @@ class VisionWorker(threading.Thread):
         skin: str = DEFAULT_SKIN,
         canvas: CanvasChoice | None = None,
         platform: str = WEB,
+        hand_roi: HandRoiChoice | None = None,
     ) -> None:
         super().__init__(name="vision", daemon=True)
         #: 要找瀏覽器視窗還是原生客戶端。兩版同時開著時這是唯一分得開的判據
@@ -120,6 +125,7 @@ class VisionWorker(threading.Thread):
         self.status = WorkerStatus("畫面")
 
         self._calibrator = StableCalibrator(config.calibration, canvas=canvas)
+        self._hand_roi = hand_roi if hand_roi is not None else HandRoiChoice()
         self._rois: RoiSet | None = None
         self._templates: TemplateSet | None = None
         self._previous: np.ndarray | None = None
@@ -194,6 +200,13 @@ class VisionWorker(threading.Thread):
             return
         self._failures = 0
 
+        # 使用者自己框過的話,校正整段跳過 —— 那正是這條路的意義。
+        # 每一幀都重讀這個格子,所以重框是立刻生效的,不必重啟執行緒。
+        manual = self._crop_manual(frame.image)
+        if manual is not None:
+            self._settle_and_read(*manual)
+            return
+
         calibration = self._calibrator.feed(frame)
         if calibration is None:
             # 「鎖不上」與「還在蒐集」是兩件事,不能都顯示成進度 —— 前者停在
@@ -209,9 +222,35 @@ class VisionWorker(threading.Thread):
         cropped = self._crop(calibration, frame.image)
         if cropped is None:
             return
-        tall, headroom = cropped
+        self._settle_and_read(*cropped)
 
-        # 停下來才認,理由見模組說明。
+    def _crop_manual(self, image: np.ndarray) -> tuple[np.ndarray, int] | None:
+        """使用者框的那一塊。沒框過回 ``None``,呼叫端就走校正那條路。
+
+        與 :meth:`_crop` 一樣往上多帶 headroom:牌被滑鼠抬起來時會高出原本的
+        範圍,不多帶的話那張牌會被切掉半截,然後認成別的牌。
+        """
+        rect = self._hand_roi.pixels(Size(image.shape[1], image.shape[0]))
+        if rect is None:
+            return None
+        headroom = round(rect.height * HOVER_HEADROOM)
+        top = max(0, rect.y - headroom)
+        tall = image[top : rect.y + rect.height, rect.x : rect.x + rect.width]
+        if tall.size == 0:
+            # 視窗縮到比框還小。框是比例,所以理論上不會發生 —— 但影像尺寸
+            # 為 0 的那一幀(視窗剛最小化)會走到這裡,而 read_hand 收到空影像
+            # 會拋例外,然後整條執行緒就沒了。
+            self.status.say("框選的範圍切不出東西 —— 視窗是不是縮到太小了?")
+            return None
+        return tall, rect.y - top
+
+    def _settle_and_read(self, tall: np.ndarray, headroom: int) -> None:
+        """畫面停下來了才認。理由見模組說明。
+
+        校正那條路與手動框那條路共用這一段 —— 「動的時候不辨識」與框是怎麼
+        來的無關。
+        """
+        # **比的是含 headroom 的整條**:牌被滑鼠抬起來的時候手牌區的下緣其實
         # **比的是含 headroom 的整條**:牌被滑鼠抬起來的時候手牌區的下緣其實
         # 沒什麼變化,只比 ROI 的話那一幀會被當成沒動,抬起來的過程就看不見。
         if self._previous is None or not np.array_equal(tall, self._previous):
