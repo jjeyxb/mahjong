@@ -44,7 +44,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mia import APP_ABBR, APP_TITLE, features
+from mia import APP_ABBR, APP_TITLE, features, platforms
 from mia.calibration.canvas import PRESETS as CANVAS_PRESETS
 from mia.calibration.canvas import Canvas
 from mia.ui.icon import app_icon
@@ -57,7 +57,14 @@ from mia.ui.style import (
     MUTED_COLOR,
     Hairline,
 )
-from mia.ui.switchboard import CanvasPicker, GameLauncher, StylePicker, Switchboard, is_on
+from mia.ui.switchboard import (
+    CanvasPicker,
+    GameLauncher,
+    PlatformPicker,
+    StylePicker,
+    Switchboard,
+    is_on,
+)
 from mia.ui.viewmodel import ViewModel, ViewState
 from mia.ui.widgets.advice import AdviceTab
 from mia.ui.widgets.analysis import AnalysisTab
@@ -157,6 +164,8 @@ class PanelWindow(QMainWindow):
         canvas: 畫布尺寸選單要接到誰。``None`` 時選單畫成停用。
         style: 打法風格選單要接到誰。``None``(重播、``--no-packets``)時
             選單畫成停用 —— 那些模式裡引擎是命令列決定的。
+        platform: 遊戲版本選單要接到誰。``None``(重播、示範)時畫成停用
+            —— 那些模式裡「現在玩的是哪一版」是錄的時候就定了的。
         overlay: 要控制的 Overlay。設定頁上的四個勾選都作用在它身上;
             ``None`` 時那四個畫成停用。
 
@@ -176,6 +185,7 @@ class PanelWindow(QMainWindow):
         launcher: GameLauncher | None = None,
         canvas: CanvasPicker | None = None,
         style: StylePicker | None = None,
+        platform: PlatformPicker | None = None,
         overlay: OverlayWindow | None = None,
     ) -> None:
         super().__init__()
@@ -193,6 +203,7 @@ class PanelWindow(QMainWindow):
         self._launcher = launcher
         self._canvas = canvas
         self._style = style
+        self._platform = platform
         self._overlay = overlay
         self._switches: dict[str, ToggleSwitch] = {}
         icons = TileIcons(skin)
@@ -315,16 +326,36 @@ class PanelWindow(QMainWindow):
             switch.setEnabled(False)
             switch.setToolTip("重播與示範模式由命令列決定,開關不適用")
         elif not self._switchboard.available(key):
-            # --no-vision / --no-packets:這條路根本沒有建起來。做成可按的話
-            # 使用者撥了它會自己彈回去,那看起來像壞掉,而實際上是他自己關的。
+            # 兩種原因:這條路沒有建起來(--no-vision / --no-packets),或者
+            # 這一版沒有資料來源(Steam 版沒有封包)。做成可按的話使用者撥了
+            # 會自己彈回去,那看起來像壞掉,而實際上是有理由的 —— 所以理由
+            # 一定要寫出來,而且兩種要說得不一樣:後者換個版本就有了。
             switch.setEnabled(False)
-            switch.setToolTip(f"{features.NAMES[key]} 已在啟動參數中停用")
+            switch.setToolTip(self._unavailable_reason(key))
         else:
             switch.set_initial(self._switchboard.is_enabled(key))
             switch.toggled.connect(lambda on, k=key: self._on_switch(k, on))
 
         self._switches[key] = switch
         page.add_trailing(switch)
+
+    def _unavailable_reason(self, key: str) -> str:
+        """開關為什麼撥不動。
+
+        先問 switchboard —— :class:`~mia.live.runtime.LiveRuntime` 分得出
+        「沒建起來」與「這一版沒有來源」。問不到(重播用的假物件)才退回
+        自己從版本推一句,再不然就講啟動參數。
+        """
+        ask = getattr(self._switchboard, "unavailable_reason", None)
+        if ask is not None:
+            reason = ask(key)
+            if reason:
+                return str(reason)
+        if self._platform is not None:
+            why = platforms.why_unsupported(self._platform.platform(), key)
+            if why:
+                return why
+        return f"{features.NAMES[key]} 已在啟動參數中停用"
 
     def _build_advice_settings(self) -> None:
         """AI 建議頁的設定列:挑風格、挑要跟誰比。
@@ -431,6 +462,10 @@ class PanelWindow(QMainWindow):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
 
+        layout.addWidget(_section("遊戲版本", page))
+        self._build_platform_settings(page, layout)
+        layout.addWidget(_rule(page))
+
         self._on_top = QCheckBox("視窗置頂", page)
         self._on_top.setChecked(bool(self.windowFlags() & Qt.WindowType.WindowStaysOnTopHint))
         self._on_top.setToolTip(
@@ -450,6 +485,80 @@ class PanelWindow(QMainWindow):
 
         layout.addStretch(1)
         return page
+
+    def _build_platform_settings(self, page: QWidget, layout: QVBoxLayout) -> None:
+        """玩的是網頁版還是 Steam 版。
+
+        **放在設定頁的最上面,而且是全域設定而不是某一頁的。** 它決定的是
+        「資料從哪裡來」—— 網頁版三個功能都有料,Steam 版只有畫面那條路
+        (見 :mod:`mia.platforms`)。那不是某一頁的顯示選項,是整個程式的前提,
+        所以排在所有東西之前。
+
+        換了之後會關掉新版本撐不起的功能,所以三個開關與「開始遊戲」都要
+        重新同步一次 —— 不然畫面上會留著一個已經被關掉、卻還撥在「開」的開關。
+        """
+        row = QWidget(page)
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(8)
+
+        picker = QComboBox(row)
+        picker.setMinimumWidth(150)
+        for key in platforms.PLATFORMS:
+            picker.addItem(platforms.NAMES[key], key)
+        self._platform_picker = picker
+
+        if self._platform is None or not self._platform.can_pick_platform():
+            picker.setEnabled(False)
+            picker.setToolTip("這個模式下版本不是現在決定的(重播、示範、--no-vision)")
+        else:
+            _select_data(picker, self._platform.platform())
+            picker.setToolTip(
+                "網頁版:MIA 自己開瀏覽器,三個功能都有料。\n"
+                "Steam 版:遊戲自己開,MIA 找到視窗跑畫面辨識;\n"
+                "沒有封包來源,所以 AI 建議與放銃分析要等圖像辨識接上。"
+            )
+            picker.currentIndexChanged.connect(self._on_platform_picked)
+
+        row_layout.addWidget(picker)
+        row_layout.addStretch(1)
+        layout.addWidget(row)
+
+    def _on_platform_picked(self, index: int) -> None:
+        """換版本 —— **會關掉新版本撐不起的功能,並重啟畫面辨識**。
+
+        不在這裡擋重複選擇::meth:`~mia.platforms.PlatformChoice.set` 自己
+        會比對。但換完之後要把整個畫面重新同步一次:開關的可按狀態、它們的
+        tooltip、「開始遊戲」能不能按,三件事都跟著版本變。
+        """
+        if self._platform is None:
+            return
+        value = self._platform_picker.itemData(index)
+        if value is not None:
+            self._platform.set_platform(str(value))
+        self._sync_switches()
+        self.apply(self._viewmodel.state)
+
+    def _sync_switches(self) -> None:
+        """把三個開關的可按狀態與理由重新算一次。
+
+        換版本之後必須做:Steam 版沒有封包,AI 建議與放銃分析整個沒有來源,
+        而 runtime 已經把它們關掉了 —— 開關若還撥在「開」,畫面就在說謊。
+        """
+        if self._switchboard is None:
+            return
+        for key, switch in self._switches.items():
+            usable = self._switchboard.available(key)
+            switch.setEnabled(usable)
+            switch.setToolTip(
+                f"{features.NAMES[key]} —— 開啟後才會開始運作"
+                if usable
+                else self._unavailable_reason(key)
+            )
+            if not usable:
+                switch.set_initial(False)
+            else:
+                switch.set_initial(self._switchboard.is_enabled(key))
 
     def _build_overlay_settings(self, page: QWidget, layout: QVBoxLayout) -> None:
         """Overlay 的四個勾選。
@@ -552,22 +661,39 @@ class PanelWindow(QMainWindow):
         self._launcher.start_game()
         self.apply(self._viewmodel.state)
 
+    def _cannot_start_reason(self, launcher: GameLauncher | None) -> str:
+        """「開始遊戲」為什麼是灰的。
+
+        先問 launcher —— :class:`~mia.live.runtime.LiveRuntime` 分得出是
+        「這一版不由我開」還是「啟動參數沒要我開」。問不到(重播用的假物件)
+        才退回自己講。
+        """
+        if launcher is None:
+            return "重播與示範模式不需要開遊戲"
+        ask = getattr(launcher, "why_cannot_start_game", None)
+        if ask is not None:
+            reason = ask()
+            if reason:
+                return str(reason)
+        return "啟動參數裡沒有要 MIA 開遊戲(--tail / --no-packets)"
+
     def _sync_start_button(self) -> None:
         """按鈕要說現在的實情。
 
-        三種狀態:沒有可開的遊戲(重播 / ``--tail`` / ``--no-packets``)、
-        可以開、已經在跑。**已經在跑時停用而不是換成「結束遊戲」** —— 關掉
-        瀏覽器等於把那一場丟掉,不該是一個手滑就會按到的按鈕。
+        三種狀態:沒有可開的遊戲(重播 / ``--tail`` / ``--no-packets`` /
+        **Steam 版**)、可以開、已經在跑。**已經在跑時停用而不是換成
+        「結束遊戲」** —— 關掉瀏覽器等於把那一場丟掉,不該是一個手滑就會
+        按到的按鈕。
+
+        停用時的那句話要說得出**為什麼**。Steam 版尤其重要:使用者看到按鈕
+        是灰的,要知道「因為這一版的遊戲由你自己從 Steam 開」,而不是以為
+        程式壞了或還沒載完。
         """
         launcher = self._launcher
         if launcher is None or not launcher.can_start_game():
             self._start_button.setText(START_GAME)
             self._start_button.setEnabled(False)
-            self._start_button.setToolTip(
-                "重播與示範模式不需要開遊戲"
-                if launcher is None
-                else "啟動參數裡沒有要 MIA 開遊戲(--tail / --no-packets)"
-            )
+            self._start_button.setToolTip(self._cannot_start_reason(launcher))
             return
         running = launcher.game_running()
         self._start_button.setText("遊戲進行中" if running else START_GAME)

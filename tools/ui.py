@@ -51,6 +51,7 @@ from mia.engine.styles import StyleChoice, StyleProfile
 from mia.live.runtime import LiveRuntime
 from mia.mjai import MjaiEvent
 from mia.mjai.handstate import HandTracker
+from mia.platforms import PlatformChoice
 from mia.ui.icon import app_icon
 from mia.ui.overlay.window import OverlayWindow
 from mia.ui.panel.window import PanelWindow, present
@@ -233,6 +234,32 @@ class _RememberedCanvas:
         self._state.save()
 
 
+class _RememberedPlatform:
+    """把版本的選擇轉給 runtime,順手記到磁碟。
+
+    與 :class:`_RememberedCanvas` 同一個模式,理由也一樣:「記住」是接線層的
+    事,:class:`LiveRuntime` 不該知道 ``data/ui_state.json`` 存不存在。
+
+    這一項特別值得記住:換版本不是臨時的調整,是「我現在都玩 Steam 版」。
+    每次啟動都要重選一次的話,那個選單等於沒做。
+    """
+
+    def __init__(self, runtime: LiveRuntime, state: UiState) -> None:
+        self._runtime = runtime
+        self._state = state
+
+    def can_pick_platform(self) -> bool:
+        return self._runtime.can_pick_platform()
+
+    def platform(self) -> str:
+        return self._runtime.platform()
+
+    def set_platform(self, value: str) -> None:
+        self._runtime.set_platform(value)
+        self._state.platform = self._runtime.platform()
+        self._state.save()
+
+
 class _RememberedStyle:
     """把風格的選擇轉給 runtime,順手記到磁碟。
 
@@ -281,6 +308,7 @@ def build_live_runtime(
     *,
     canvas: CanvasChoice | None = None,
     style: StyleChoice | None = None,
+    platform: PlatformChoice | None = None,
 ) -> LiveRuntime:
     """組出 runtime。**什麼都還沒開始** —— 瀏覽器等使用者按「開始遊戲」,
     三個功能等使用者撥開關。
@@ -367,7 +395,13 @@ def build_live_runtime(
         raise SystemExit("--no-vision 與 --no-packets 同時給了,那就沒有東西可以顯示")
 
     return LiveRuntime(
-        model, bus, features=feature_list, capture=capture, canvas=canvas, style=style
+        model,
+        bus,
+        features=feature_list,
+        capture=capture,
+        canvas=canvas,
+        style=style,
+        platform=platform,
     )
 
 
@@ -573,11 +607,17 @@ def main(argv: list[str] | None = None) -> int:
     # 同理:上次選的風格也要在建 runtime 之前就備好,否則第一次打開
     # 「AI 建議」會載預設那份,使用者得再動一次選單。
     style = build_styles(args, ui_state)
+    # 同理:上次選的版本也要先備好。少了這一步,記住 Steam 版的人每次啟動
+    # 都會先看到一個以網頁版為前提的畫面(「開始遊戲」可按、三個開關都亮著),
+    # 要自己再去設定頁改一次。
+    platform = PlatformChoice(ui_state.platform)
 
     # runtime 必須在視窗**之前**建好:視窗上的開關要接到它。反過來的話開關
     # 只能先畫成停用,之後再想辦法補接 —— 而那正是最容易忘記做的一步。
     runtime: LiveRuntime | None = (
-        build_live_runtime(args, model, canvas=canvas, style=style) if args.live else None
+        build_live_runtime(args, model, canvas=canvas, style=style, platform=platform)
+        if args.live
+        else None
     )
 
     # options 是**兩個視窗共用**的,所以只放兩邊都收的參數。側邊視窗獨有的
@@ -600,6 +640,7 @@ def main(argv: list[str] | None = None) -> int:
         launcher=runtime,
         canvas=_RememberedCanvas(runtime, ui_state) if runtime is not None else None,
         style=_RememberedStyle(runtime, ui_state) if runtime is not None else None,
+        platform=_RememberedPlatform(runtime, ui_state) if runtime is not None else None,
         **options,  # type: ignore[arg-type]
     )
     model.subscribe(window.apply)

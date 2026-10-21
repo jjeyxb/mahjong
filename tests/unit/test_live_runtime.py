@@ -25,6 +25,7 @@ from mia.live.source import (
     capture_command,
 )
 from mia.mjai import Dahai
+from mia.platforms import STEAM, WEB, PlatformChoice
 from mia.ui.viewmodel import ViewModel
 
 
@@ -926,3 +927,81 @@ class TestClearIf:
         status.clear_if("哈囉")
         assert not status.clear_if("哈囉")
         assert status.read() == ""
+
+
+class TestGamePlatform:
+    """網頁版 / Steam 版。差別是**資料來源少了一條**,不是偏好。"""
+
+    def test_steam_closes_the_features_it_cannot_feed(self, model, bus) -> None:
+        """換到 Steam 版要把沒有來源的功能關掉,不是留著開關撥在「開」。
+
+        留著的話畫面在說謊:開關亮著、內容永遠不更新,而使用者會等下去。
+        """
+        vision, _ = _feature(features.VISION)
+        advice, advice_spy = _feature(features.ADVICE, Spy("建議"))
+        runtime = LiveRuntime(
+            model, bus, features=[vision, advice], platform=PlatformChoice(WEB)
+        )
+        runtime.start()
+        runtime.set_enabled(features.ADVICE, True)
+        assert runtime.is_enabled(features.ADVICE)
+
+        runtime.set_platform(STEAM)
+        assert not runtime.is_enabled(features.ADVICE)
+        assert advice_spy.latest.stopped
+
+    def test_steam_keeps_the_screen_path(self, model, bus) -> None:
+        """畫面那條路兩版共通 —— 擷取的是「一個視窗」,不在乎誰畫的。"""
+        vision, _ = _feature(features.VISION)
+        runtime = LiveRuntime(model, bus, features=[vision], platform=PlatformChoice(WEB))
+        runtime.start()
+        runtime.set_platform(STEAM)
+        assert runtime.available(features.VISION)
+
+    def test_an_unsupported_feature_reads_as_unavailable(self, model, bus) -> None:
+        """UI 只問一件事:開關要畫成可按還是停用。
+
+        「沒建起來」與「這一版沒有來源」對使用者是同一種結果,所以
+        ``available`` 把兩者合在一起 —— 但**理由要分得出來**。
+        """
+        advice, _ = _feature(features.ADVICE)
+        runtime = LiveRuntime(model, bus, features=[advice], platform=PlatformChoice(STEAM))
+        assert not runtime.available(features.ADVICE)
+        reason = runtime.unavailable_reason(features.ADVICE)
+        assert reason is not None
+        assert "封包" in reason
+
+    def test_a_usable_feature_has_no_reason(self, model, bus) -> None:
+        vision, _ = _feature(features.VISION)
+        runtime = LiveRuntime(model, bus, features=[vision], platform=PlatformChoice(STEAM))
+        assert runtime.unavailable_reason(features.VISION) is None
+
+    def test_mia_does_not_open_the_steam_client(self, model, bus) -> None:
+        """那顆按鈕做的事是「開一個受控的瀏覽器並開始錄封包」。
+
+        對 Unity 客戶端沒有一樣能做 —— 遊戲由使用者自己從 Steam 開。
+        按鈕要畫成停用並說明原因,不是可按而按了沒反應。
+        """
+        capture = _launcher()
+        runtime = LiveRuntime(model, bus, capture=capture, platform=PlatformChoice(STEAM))
+        assert not runtime.can_start_game()
+        reason = runtime.why_cannot_start_game()
+        assert reason is not None
+        assert "Steam" in reason
+
+    def test_the_web_version_still_opens_the_browser(self, model, bus) -> None:
+        capture = _launcher()
+        runtime = LiveRuntime(model, bus, capture=capture, platform=PlatformChoice(WEB))
+        assert runtime.can_start_game()
+        assert runtime.why_cannot_start_game() is None
+
+    def test_picking_a_platform_needs_the_screen_path(self, model, bus) -> None:
+        """畫面辨識是兩版唯一共通的那條路。少了它,換版本不會改變任何事。"""
+        advice, _ = _feature(features.ADVICE)
+        assert not LiveRuntime(model, bus, features=[advice]).can_pick_platform()
+        vision, _ = _feature(features.VISION)
+        assert LiveRuntime(model, bus, features=[vision]).can_pick_platform()
+
+    def test_the_default_is_the_web_version(self, model, bus) -> None:
+        """省略時當網頁版 —— 那是功能完整的那一個,也是既有行為。"""
+        assert LiveRuntime(model, bus).platform() == WEB
