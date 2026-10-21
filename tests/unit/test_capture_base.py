@@ -8,6 +8,8 @@ import numpy as np
 import pytest
 
 from mia.capture.base import (
+    HOST_EXCLUDE,
+    HOST_REQUIRE,
     CaptureBackend,
     Frame,
     WindowInfo,
@@ -274,3 +276,67 @@ class TestContextManager:
         with Tracking([]):
             pass
         assert closed
+
+
+class TestTellingTheTwoVersionsApart:
+    """兩版同時開著時,靠「是不是瀏覽器」分 —— 那是事實,不是啟發式。
+
+    2026-10-21 實機量到的分數(兩版都開著):
+
+    ====================================  ====  ============================
+    視窗                                  分數  來源
+    ====================================  ====  ============================
+    ``雀魂麻將 — 雀魂麻將``(Steam)        12  owner 8 + 標題覆蓋率 4
+    ``雀魂麻將``(Chrome for Testing)       6  標題覆蓋率 4 + 瀏覽器 2
+    ====================================  ====  ============================
+
+    **遊戲視窗永遠輸給另一版的視窗**,而症狀只是「畫面辨識沒反應」。
+    加權拆不開:要讓瀏覽器贏就得給它超過 owner 命中的分數,那等於說
+    「是瀏覽器比是遊戲本身更有說服力」—— 在 Steam 模式下就反過來錯。
+    """
+
+    TITLES: ClassVar = ("雀魂", "majsoul")
+    OWNERS: ClassVar = ("雀魂", "majsoul", "jantama")
+    HOSTS: ClassVar = ("chrome", "chromium", "edge", "firefox", "safari")
+
+    def _both(self) -> FakeBackend:
+        return FakeBackend(
+            [
+                _win(1, "雀魂麻將", "雀魂麻將", 1512, 872),
+                _win(2, "雀魂麻將", "Google Chrome for Testing", 1512, 872),
+            ]
+        )
+
+    def test_without_the_filter_the_steam_client_always_wins(self) -> None:
+        """釘住問題本身 —— 這一條若開始失敗,代表評分改了,過濾也該重想。"""
+        backend = self._both()
+        assert backend.find_window(self.TITLES, self.OWNERS, self.HOSTS).handle == 1
+
+    def test_the_web_version_picks_the_browser(self) -> None:
+        backend = self._both()
+        chosen = backend.find_window(
+            self.TITLES, self.OWNERS, self.HOSTS, host=HOST_REQUIRE
+        )
+        assert chosen.handle == 2
+
+    def test_the_steam_version_picks_the_native_client(self) -> None:
+        backend = self._both()
+        chosen = backend.find_window(
+            self.TITLES, self.OWNERS, self.HOSTS, host=HOST_EXCLUDE
+        )
+        assert chosen.handle == 1
+
+    def test_requiring_a_browser_rejects_the_native_client_outright(self) -> None:
+        """排除而不是扣分:不是瀏覽器就是 0 分,不管它多像遊戲。"""
+        native = _win(1, "雀魂麻將", "雀魂麻將", 1512, 872)
+        backend = FakeBackend([native])
+        assert backend.score_window(native, self.TITLES, self.OWNERS, self.HOSTS) > 0
+        assert (
+            backend.score_window(native, self.TITLES, self.OWNERS, self.HOSTS, HOST_REQUIRE) == 0
+        )
+
+    def test_not_finding_anything_says_which_version_it_wanted(self) -> None:
+        """「找不到視窗」最常見的原因是選錯版本,不是 pattern 寫錯。"""
+        backend = FakeBackend([_win(1, "雀魂麻將", "雀魂麻將", 1512, 872)])
+        with pytest.raises(WindowNotFoundError, match="網頁版"):
+            backend.find_window(self.TITLES, self.OWNERS, self.HOSTS, host=HOST_REQUIRE)

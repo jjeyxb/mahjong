@@ -19,6 +19,7 @@ from mia.capture.base import CaptureBackend, CaptureFailedError, Frame, WindowIn
 from mia.config.models import AppConfig, CalibrationConfig, CaptureConfig, RoiConfig
 from mia.live.bus import CvHand, UpdateBus
 from mia.live.vision import VisionWorker
+from mia.platforms import STEAM
 from mia.utils.geometry import Rect
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
@@ -265,8 +266,24 @@ class TestDegradedConditions:
         worker = VisionWorker(
             bus, config=_config(RoiConfig(own_hand=(0.1, 0.7, 0.6, 0.1))), backend=EmptyBackend()
         )
-        _run_until(worker, lambda: "找不到遊戲視窗" in worker.status.read(), timeout=3)
-        assert "找不到遊戲視窗" in worker.status.read()
+        _run_until(worker, lambda: "找不到" in worker.status.read(), timeout=3)
+        assert "找不到" in worker.status.read()
+
+    def test_it_says_which_version_it_was_looking_for(self) -> None:
+        """「找不到視窗」最常見的原因是**選錯版本**。
+
+        不講版本的話使用者會去找遊戲為什麼沒被認到,而真正的問題是他開著
+        Steam 版、MIA 在找瀏覽器(或反過來)。
+        """
+        bus = UpdateBus()
+        worker = VisionWorker(
+            bus,
+            config=_config(RoiConfig(own_hand=(0.1, 0.7, 0.6, 0.1))),
+            backend=EmptyBackend(),
+            platform=STEAM,
+        )
+        _run_until(worker, lambda: "找不到" in worker.status.read(), timeout=3)
+        assert "Steam 版" in worker.status.read()
 
     def test_capture_failures_are_reported_but_not_fatal(self, window: WindowInfo) -> None:
         frame, roi = _frame_with_hand(window, _hand_image())
