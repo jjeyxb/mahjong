@@ -51,7 +51,7 @@ from mia.engine.styles import StyleChoice, StyleProfile
 from mia.live.runtime import LiveRuntime
 from mia.mjai import MjaiEvent
 from mia.mjai.handstate import HandTracker
-from mia.platforms import PlatformChoice
+from mia.platforms import WEB, PlatformChoice
 from mia.ui.icon import app_icon
 from mia.ui.overlay.window import OverlayWindow
 from mia.ui.panel.window import PanelWindow, present
@@ -387,7 +387,16 @@ def build_live_runtime(
         skin = args.skin or DEFAULT_SKIN
 
         def make_vision() -> Worker:
-            return VisionWorker(bus, config=config, skin=skin, canvas=canvas)
+            # platform 在**這裡**才從格子讀,不是在外面先取出來 —— 換版本靠的
+            # 正是「關掉再開」(LiveRuntime.set_platform 會重啟畫面辨識),
+            # 先取出來的話第二次開起來還是對著上一版的視窗找。
+            return VisionWorker(
+                bus,
+                config=config,
+                skin=skin,
+                canvas=canvas,
+                platform=platform.value if platform else WEB,
+            )
 
         feature_list.append(Feature(features.VISION, make_vision))
 

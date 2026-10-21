@@ -38,6 +38,8 @@ from mia.calibration.canvas import CanvasChoice
 from mia.calibration.stable import StableCalibrator
 from mia.calibration.table import Calibration
 from mia.capture.base import (
+    HOST_EXCLUDE,
+    HOST_REQUIRE,
     CaptureBackend,
     CaptureError,
     CaptureFailedError,
@@ -46,6 +48,7 @@ from mia.capture.base import (
 )
 from mia.config.models import AppConfig
 from mia.live.bus import CvHand, UpdateBus, WorkerStatus
+from mia.platforms import NAMES, WEB
 from mia.utils.logging import logger
 from mia.vision.roi import MissingRoiError, RoiSet
 from mia.vision.tiles.classify import (
@@ -88,6 +91,8 @@ class VisionWorker(threading.Thread):
         window: 直接指定要擷取的視窗;省略則依 ``config.capture.window`` 搜尋。
         skin: 牌面模板的皮膚。
         canvas: 使用者選的畫布尺寸,蓋過 ``config.calibration.canvas``。
+        platform: 玩的是哪一版。只影響**找哪個視窗** —— 認牌那一段兩版完全
+            一樣,擷取到的就是一張圖。見 :mod:`mia.platforms`。
     """
 
     def __init__(
@@ -99,8 +104,13 @@ class VisionWorker(threading.Thread):
         window: WindowInfo | None = None,
         skin: str = DEFAULT_SKIN,
         canvas: CanvasChoice | None = None,
+        platform: str = WEB,
     ) -> None:
         super().__init__(name="vision", daemon=True)
+        #: 要找瀏覽器視窗還是原生客戶端。兩版同時開著時這是唯一分得開的判據
+        #: —— 見 :data:`~mia.capture.base.HOST_REQUIRE`。
+        self._host = HOST_REQUIRE if platform == WEB else HOST_EXCLUDE
+        self._platform_name = NAMES.get(platform, platform)
         self._bus = bus
         self._config = config
         self._backend = backend
@@ -231,11 +241,12 @@ class VisionWorker(threading.Thread):
                 match.title_patterns,
                 match.owner_patterns,
                 match.host_patterns,
+                host=self._host,
                 min_width=match.min_width,
                 min_height=match.min_height,
             )
         except WindowNotFoundError:
-            self.status.say("找不到遊戲視窗 —— 雀魂開著嗎?")
+            self.status.say(f"找不到{self._platform_name}的遊戲視窗 —— 雀魂開著嗎?")
             self._stop.wait(_WINDOW_RETRY)
             return None
         except CaptureError as exc:

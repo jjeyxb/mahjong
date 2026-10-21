@@ -26,6 +26,9 @@ from mia.utils.geometry import Rect, Size
 from mia.utils.logging import logger
 
 __all__ = [
+    "HOST_ANY",
+    "HOST_EXCLUDE",
+    "HOST_REQUIRE",
     "BackendUnavailableError",
     "CaptureBackend",
     "CaptureError",
@@ -35,6 +38,32 @@ __all__ = [
     "WindowInfo",
     "WindowNotFoundError",
 ]
+
+#: 不管目標在不在瀏覽器裡。預設值,也是重播與單純列視窗時的行為。
+HOST_ANY = "any"
+
+#: 目標**一定**在瀏覽器裡(網頁版)。不是瀏覽器的視窗一律 0 分。
+#:
+#: 這是排除而不是加權,因為它是事實而不是啟發式:網頁版就是跑在瀏覽器裡的。
+#: 實測(2026-10-21,Steam 客戶端與網頁版同時開著):Steam 的視窗 owner 是
+#: 「雀魂麻將」,命中 owner pattern 拿 8 分、標題覆蓋率再拿 4 分,共 12;
+#: 真正在跑網頁版的 Chromium owner 不命中,只有標題 4 分加瀏覽器 2 分,共 6。
+#: **遊戲視窗永遠輸給另一版的視窗**,而症狀只是「畫面辨識沒反應」。
+#: 加權拆不開 —— 要拆開就得讓瀏覽器加分超過 owner 命中,那等於說
+#: 「是瀏覽器比是遊戲本身更有說服力」,在 Steam 模式下就反過來錯。
+HOST_REQUIRE = "require"
+
+#: 目標**一定不**在瀏覽器裡(Steam 的 Unity 客戶端)。理由同上,方向相反。
+HOST_EXCLUDE = "exclude"
+
+#: 找不到視窗時,依照篩選條件多說一句。
+#:
+#: 「找不到視窗」最常見的原因是選錯版本 —— 開著網頁版卻選了 Steam 版,
+#: 或反過來。不講的話使用者會去改 pattern,而那不是問題所在。
+_HOST_HINTS = {
+    HOST_REQUIRE: "(限瀏覽器視窗 —— 現在選的是網頁版;玩 Steam 版的話要去設定頁改)",
+    HOST_EXCLUDE: "(排除瀏覽器視窗 —— 現在選的是 Steam 版;玩網頁版的話要去設定頁改)",
+}
 
 
 # --------------------------------------------------------------------------- 例外
@@ -203,12 +232,15 @@ class CaptureBackend(ABC):
         title_patterns: Sequence[str],
         owner_patterns: Sequence[str],
         host_patterns: Sequence[str] = (),
+        host: str = HOST_ANY,
     ) -> int:
         """替候選視窗評分,分數越高越可能是目標。0 表示完全不符。
 
         Args:
             host_patterns: 可能承載網頁版雀魂的瀏覽器程式名。**只有在標題也命中時
                 才加分**;否則任何瀏覽器視窗都會拿到分數而被誤選。
+            host: 目標在不在瀏覽器裡。見 :data:`HOST_ANY` / :data:`HOST_REQUIRE`
+                / :data:`HOST_EXCLUDE` —— 這不是加權,是**排除**。
 
         單靠標題比對不夠力:實測時 VS Code 開著檔名含「雀魂」的檔案,與真正跑著
         網頁版雀魂的 Chromium **拿到完全相同的分數**(兩者 owner 都不符,都只命中
@@ -224,12 +256,21 @@ class CaptureBackend(ABC):
         「這個標題就是遊戲名」而不是「這個標題順帶提到遊戲名」。這個判據不必
         列舉任何特定程式,對編輯器、瀏覽器、聊天軟體一視同仁。
         """
+        in_browser = window.matches(host_patterns, fields="owner")
+        # 先排除,再評分。「網頁版跑在瀏覽器裡」不是啟發式,是事實 ——
+        # 加權拆不開這種平手(實測:Steam 客戶端 owner 命中拿 12 分,
+        # 真正在跑網頁版的 Chromium 只有 6 分,兩個都開著時遊戲永遠選錯邊)。
+        if host == HOST_REQUIRE and not in_browser:
+            return 0
+        if host == HOST_EXCLUDE and in_browser:
+            return 0
+
         score = 0
         if window.matches(owner_patterns, fields="owner"):
             score += cls._SCORE_OWNER_MATCH
 
         score += cls._title_score(window.title, title_patterns)
-        if score and window.matches(host_patterns, fields="owner"):
+        if score and in_browser:
             score += cls._SCORE_HOST_MATCH
         return score
 
@@ -259,6 +300,7 @@ class CaptureBackend(ABC):
         owner_patterns: Sequence[str] = (),
         host_patterns: Sequence[str] = (),
         *,
+        host: str = HOST_ANY,
         min_width: int = 1,
         min_height: int = 1,
     ) -> WindowInfo:
@@ -267,13 +309,17 @@ class CaptureBackend(ABC):
         依 :meth:`score_window` 評分排序,同分時取面積最大的
         —— 遊戲視窗通常是同類候選中最大的那個。
 
+        Args:
+            host: 目標在不在瀏覽器裡(:data:`HOST_REQUIRE` / :data:`HOST_EXCLUDE`)。
+                兩版同時開著時這是唯一分得開的判據。
+
         Raises:
             WindowNotFoundError: 沒有候選。錯誤訊息會附上實際看到的視窗清單,
                 方便直接判斷是 pattern 寫錯還是遊戲根本沒開。
         """
         windows = self.list_windows()
         scored = [
-            (self.score_window(w, title_patterns, owner_patterns, host_patterns), w)
+            (self.score_window(w, title_patterns, owner_patterns, host_patterns, host), w)
             for w in windows
             if w.bounds.width >= min_width and w.bounds.height >= min_height
         ]
@@ -281,7 +327,7 @@ class CaptureBackend(ABC):
         if not candidates:
             seen = "\n".join(f"    {w}" for w in windows) or "    (沒有任何可擷取的視窗)"
             raise WindowNotFoundError(
-                f"找不到符合條件的視窗。\n"
+                f"找不到符合條件的視窗。{_HOST_HINTS.get(host, '')}\n"
                 f"  標題 patterns: {list(title_patterns)}\n"
                 f"  程式 patterns: {list(owner_patterns)}\n"
                 f"  最小尺寸: {min_width}x{min_height}\n"
