@@ -38,6 +38,7 @@ import cv2
 import numpy as np
 
 from mia.utils.geometry import Rect
+from mia.vision.tiles.classify import Match, TemplateSet, classify
 
 __all__ = [
     "CELL",
@@ -49,6 +50,7 @@ __all__ = [
     "SEATS",
     "River",
     "RiverView",
+    "classify_river_tile",
     "face_size",
     "read_river",
 ]
@@ -85,14 +87,17 @@ FACE = (0.72, 0.70)
 #: ====================  ============  ==========
 #: 分數 / 差距           靜默錯誤      棄權成本
 #: ====================  ============  ==========
-#: 0.55 / 0.04(手牌)     3.01%         7.40%
-#: 0.55 / 0.08           2.50%         10.25%
-#: **0.60 / 0.10**       **0.81%**     **27.07%**
-#: 0.65 / 0.12           0.72%         39.02%
-#: 0.70 / 0.15           0.19%         52.70%
+#: 0.55 / 0.04(手牌)     0.74%         9.74%
+#: 0.55 / 0.08           0.71%         12.97%
+#: **0.60 / 0.10**       **0.18%**     **25.38%**
+#: 0.65 / 0.12           0.14%         36.49%
+#: 0.70 / 0.15           0.14%         50.96%
 #: ====================  ============  ==========
 #:
-#: 取 0.60 / 0.10:靜默錯誤降到約四分之一,代價是四分之一的牌變成「不確定」。
+#: (這張表是加上 :data:`CHECK_FACE_HEIGHT` 的覆核之後重掃的。覆核之前手牌那組
+#: 門檻的靜默錯誤是 3.01%,現行這組是 0.81%。)
+#:
+#: 取 0.60 / 0.10:靜默錯誤降到四分之一以下,代價是四分之一的牌變成「不確定」。
 #: 這個交換划得來,因為**棄權是可以往安全方向處理的** —— 讀不到的牌當成
 #: 危險就好,而誤判成安全會放銃。成本不對稱,門檻就該不對稱。
 #:
@@ -202,6 +207,78 @@ DEFAULT_CORNERS: dict[str, RiverView] = {
 def face_size(cell: tuple[int, int] = CELL) -> tuple[int, int]:
     """模板該縮到多大。傳給 :func:`~mia.vision.tiles.classify.classify` 的 ``size``。"""
     return round(FACE[0] * cell[0]), round(FACE[1] * cell[1])
+
+
+#: 覆核用的第二個模板高度,以一格的高度為單位。
+#:
+#: 為什麼要第二個尺度
+#: ------------------
+#: :data:`FACE` 是掃出來的最佳值,但它是**整體**最佳,不是每一張都最佳。
+#: 實測 ``2m`` 在 0.70 時有三分之二被讀成 ``1m``,而且錯的那個分數還更高
+#: (0.692 vs 0.670)—— 門檻調不動它,因為它不是「分數不夠」,是「分數給錯人」。
+#:
+#: 原因是牌面在格子裡的位置比假設的更低,模板的最佳落點常常頂在格子下緣
+#: (實測四家有 12~57% 的最佳位置剛好貼在搜尋範圍的底邊)。模板拉高到 0.73
+#: 時 ``2m`` 的正確率跳到 55~65%,但**其他牌開始變差**(整體 94.7% → 92.7%),
+#: 所以沒有一個高度兩邊都好。
+#:
+#: 那就不要選邊 —— **兩個高度都算一次,答案不一樣就棄權**。尺度是這裡的
+#: 干擾參數,而「換個尺度答案就變了」本身就是不可信的證據。
+#:
+#: 481 幀的量測(第二個高度掃 0.72 / 0.73 / 0.75):
+#:
+#: ====================  ==========  ==========  ==========
+#: 策略                  每張牌      靜默錯誤    棄權
+#: ====================  ==========  ==========  ==========
+#: 單一尺度 0.70          94.7%       0.65%       24.47%
+#: **一致 0.70 + 0.73**  **94.7%**   **0.19%**   **25.40%**
+#: 一致 0.70 + 0.75      94.7%       0.19%       27.18%
+#: 取高分 0.70 / 0.75    95.5%       0.50%       18.62%
+#: ====================  ==========  ==========  ==========
+#:
+#: 取「一致 0.73」:靜默錯誤降到不到三分之一,只多花 0.93 個百分點的棄權。
+#: 「取高分」那一列每張牌最漂亮、棄權也最低,但**靜默錯誤只降一半** ——
+#: 牌河沒人會去核對,那一欄才是該看的。見 :data:`CONFIDENT` 的同一個理由。
+CHECK_FACE_HEIGHT = 0.73
+
+
+def classify_river_tile(
+    cell: np.ndarray, templates: TemplateSet, *, size: tuple[int, int] | None = None
+) -> Match:
+    """認一格牌河的牌,並用第二個模板尺度覆核。
+
+    Args:
+        cell: 攤平後**一整格**的影像(不要自己先裁成牌面 ——
+            對齊是 :func:`cv2.matchTemplate` 的工作)。
+        templates: 牌面模板集。
+        size: 主要的模板尺寸,預設 :func:`face_size`。
+
+    Returns:
+        與 :func:`~mia.vision.tiles.classify.classify` 同樣的 ``Match``。
+        兩個尺度答案不一致時,回傳的 ``Match`` 把另一個答案當成**同分的次高**
+        —— 差距因此是 0,過不了任何信心門檻。
+
+        這樣寫而不是多回一個布林值,是為了讓診斷輸出直接說得出原因:
+        ``1m 0.70(次 2m 0.70)⚠`` 一眼就看得出是兩個候選打平,
+        不是分數不夠。
+    """
+    width, height = size if size is not None else face_size()
+    best = classify(cell, templates, size=(width, height))
+    # 用比例換算而不是直接乘 CELL —— 呼叫端給的 size 可能來自別的格子大小,
+    # 那時候硬套 CELL 會讓兩個尺度的相對關係跑掉。
+    check_height = round(height * CHECK_FACE_HEIGHT / FACE[1])
+    if check_height == height:
+        return best
+    other = classify(cell, templates, size=(width, check_height))
+    if other.label == best.label:
+        return best
+    return Match(
+        label=best.label,
+        score=best.score,
+        runner_up=other.label,
+        runner_up_score=best.score,
+        brightness=best.brightness,
+    )
 
 
 @dataclass(frozen=True, slots=True)
