@@ -20,20 +20,24 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mia.calibration.table import Calibration
 from mia.config.loader import load_config
-from mia.eval import align, build_timeline, evaluate_frame, summarize
+from mia.eval import align, build_timeline, summarize
 from mia.eval.align import SETTLE
+from mia.eval.batch import Crop, run
 from mia.recorder import SessionReader
 from mia.utils.geometry import Rect, Size
 from mia.utils.logging import setup_logging
 from mia.vision.roi import RoiSet
-from mia.vision.tiles.classify import HOVER_HEADROOM, TemplateSet
+from mia.vision.tiles.classify import HOVER_HEADROOM
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -51,6 +55,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--dry-run", action="store_true", help="只檢查對得上對不上,不跑 CV")
     parser.add_argument("--limit", type=int, default=0, help="最多評幾幀,0 表示全部")
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=None,
+        help="幾個工人行程。預設依核心數;1 走單行程(profiling 與除錯用)",
+    )
     parser.add_argument("--log-level", default="WARNING")
     args = parser.parse_args(argv)
 
@@ -88,27 +98,43 @@ def main(argv: list[str] | None = None) -> int:
         print("\n配不到任何幀。用 --dry-run 看看是不是穩定秒數設得太嚴。")
         return 1
 
-    print(f"\n穩定秒數 {settle:.1f}s,配到 {len(paired)} 幀,開始辨識…")
-    templates = TemplateSet.load(args.skin) if args.skin else TemplateSet.load()
     roi = _own_hand_roi(session)
-
     # 與即時管線同一個 headroom,否則這份報告量的不是真的會跑的那條路
-    headroom = round(roi.height * HOVER_HEADROOM)
-    top = max(0, roi.y - headroom)
-    headroom = roi.y - top
-    print(f"牌框上方多留 {headroom}px 給滑鼠抬起來的那張牌")
+    crop = Crop.around(roi, round(roi.height * HOVER_HEADROOM))
+    jobs = args.jobs if args.jobs is not None else (os.process_cpu_count() or 1)
+    print(f"\n穩定秒數 {settle:.1f}s,配到 {len(paired)} 幀,{jobs} 個工人,開始辨識…")
+    print(f"牌框上方多留 {crop.headroom}px 給滑鼠抬起來的那張牌")
 
-    by_index = {r.index: r for r in session.manifest.frames}
-    results = []
-    for frame in paired:
-        image = session.load_image(by_index[frame.index])
-        tall = image[top : roi.y + roi.height, roi.x : roi.x + roi.width]
-        results.append(evaluate_frame(tall, frame, templates, headroom=headroom))
+    started = time.monotonic()
+    results = run(
+        args.session, paired, crop, skin=args.skin, jobs=jobs, progress=_progress(started)
+    )
+    print()
 
     report = summarize(results)
     print()
     print(report.summary())
     return 0
+
+
+def _progress(started: float) -> Callable[[int, int], None]:
+    """一行就地更新的進度。
+
+    ``flush=True`` 不是裝飾:stdout 導到檔案時 Python 會改成區塊緩衝,
+    不沖的話整個四十分鐘一個字都看不到,只能用 ``ps`` 猜跑到哪了。
+    """
+
+    def report(done: int, total: int) -> None:
+        elapsed = time.monotonic() - started
+        rate = done / elapsed if elapsed else 0.0
+        left = (total - done) / rate if rate else 0.0
+        print(
+            f"\r  {done}/{total} 幀  {rate:.1f} 幀/秒  剩約 {left / 60:.1f} 分 ",
+            end="",
+            flush=True,
+        )
+
+    return report
 
 
 def _overlaps(session: SessionReader, timeline) -> bool:  # type: ignore[no-untyped-def]
