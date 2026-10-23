@@ -53,6 +53,7 @@ from mia.vision.tiles.hand import Hand
 __all__ = [
     "FACE_RATIO",
     "HOVER_HEADROOM",
+    "MIN_BRIGHTNESS",
     "Match",
     "TemplateSet",
     "classify",
@@ -79,6 +80,21 @@ MIN_SCORE = 0.55
 #: 差距太小代表「像兩張牌」,那種時候寧可回報不確定,交給上層丟掉這一幀。
 MIN_MARGIN = 0.04
 
+#: 比對區與模板的亮度比下限。
+#:
+#: ``TM_CCOEFF_NORMED`` 對亮度與對比是**不變**的 —— 它先減掉各自的平均再做
+#: 正規化,所以它問的是「形狀像不像」,不是「看起來像不像」。那個不變性正是
+#: 它在這裡的盲點:一塊深藍色桌布與象牙色的白板,相關係數可以到 0.69,
+#: 因為兩者都是「平的」。白板的像素標準差只有 8.3,其餘 36 個模板最低 44 ——
+#: 它幾乎沒有結構可比,於是什麼平滑的東西都能跟它對上。
+#:
+#: 實測(4327 幀的評測素材):桌布 0.25~0.26,最暗的真牌 0.79,一般真牌 1.00。
+#: 取 0.5 落在中間,離兩邊都很遠。
+#:
+#: 這條檢查擋的不是「認錯牌」,是「**那一格根本不是牌**」—— 牌框落在桌布上
+#: (摸牌那格的位置算歪、動畫中間整排牌在滑)的時候,它是唯一攔得住的東西。
+MIN_BRIGHTNESS = 0.5
+
 DEFAULT_SKIN = "mjpface_default"
 
 #: 模板縮放後每邊至少要這麼多像素。再小的話相關係數只是在比雜訊 ——
@@ -95,12 +111,16 @@ class Match:
         score: 該牌的相關係數,1.0 為完全相同。
         runner_up: 次像的牌 —— 診斷用。判錯時看這個通常就知道為什麼。
         runner_up_score: 次高分。
+        brightness: 比對區與模板的亮度比。見 :data:`MIN_BRIGHTNESS`。
+            預設 1.0 代表「沒量過,當作沒問題」—— 手工建構的 ``Match``
+            (測試、診斷)不該因為少填一個欄位就被判成不可信。
     """
 
     label: str
     score: float
     runner_up: str
     runner_up_score: float
+    brightness: float = 1.0
 
     @property
     def margin(self) -> float:
@@ -109,14 +129,24 @@ class Match:
 
     @property
     def is_confident(self) -> bool:
-        """分數與差距都過關才算數。"""
-        return self.score >= MIN_SCORE and self.margin >= MIN_MARGIN
+        """分數、差距、亮度三個都過關才算數。
+
+        三個問的是不同的事:分數是「像不像」,差距是「有沒有別的也一樣像」,
+        亮度是「**這裡到底是不是一張牌**」。少了第三個,落在桌布上的牌框會
+        以 0.69 的分數與 0.35 的差距自信地回報白板。
+        """
+        return (
+            self.score >= MIN_SCORE
+            and self.margin >= MIN_MARGIN
+            and self.brightness >= MIN_BRIGHTNESS
+        )
 
     def __str__(self) -> str:
         flag = "" if self.is_confident else " ⚠"
+        dim = "" if self.brightness >= MIN_BRIGHTNESS else f" 暗 {self.brightness:.2f}"
         return (
             f"{self.label} {self.score:.3f}"
-            f"(次 {self.runner_up} {self.runner_up_score:.3f}){flag}"
+            f"(次 {self.runner_up} {self.runner_up_score:.3f}){dim}{flag}"
         )
 
 
@@ -132,6 +162,7 @@ class TemplateSet:
             raise ValueError("模板集是空的")
         self._faces = dict(faces)
         self._cache: dict[tuple[int, int], list[tuple[str, np.ndarray]]] = {}
+        self._brightness: dict[str, float] = {}
 
     @classmethod
     def load(cls, skin: str = DEFAULT_SKIN, *, root: Path | None = None) -> TemplateSet:
@@ -176,13 +207,28 @@ class TemplateSet:
             self._cache[size] = cached
         return cached
 
+    def brightness(self, label: str) -> float:
+        """模板的中位灰階值。見 :data:`MIN_BRIGHTNESS`。
+
+        用中位數而不是平均:牌面上的圖案(八筒那一堆黑圈)會把平均拉低,
+        而我們要的是「牌底色有多亮」。實測 37 個模板的中位值落在 178~223,
+        最低的是八筒 —— 圖案佔的面積最大的那張。
+
+        在**未縮放**的原圖上算。中位數對縮放不敏感,所以不必為每個牌框尺寸
+        各算一次。
+        """
+        cached = self._brightness.get(label)
+        if cached is None:
+            grey = cv2.cvtColor(self._faces[label], cv2.COLOR_BGR2GRAY)
+            cached = float(np.median(grey))
+            self._brightness[label] = cached
+        return cached
+
     def __str__(self) -> str:
         return f"TemplateSet({len(self._faces)} 類)"
 
 
-def classify(
-    tile: np.ndarray, templates: TemplateSet, *, tile_height: int | None = None
-) -> Match:
+def classify(tile: np.ndarray, templates: TemplateSet, *, tile_height: int | None = None) -> Match:
     """判斷一張牌是什麼。
 
     Args:
@@ -213,13 +259,24 @@ def classify(
 
     best = ("", -2.0)
     second = ("", -2.0)
+    best_at = (0, 0)
     for label, face in templates.scaled(size):
-        score = float(cv2.matchTemplate(tile, face, cv2.TM_CCOEFF_NORMED).max())
+        # minMaxLoc 要的是位置,不只是分數 —— 亮度檢查得知道贏家對在哪裡,
+        # 才切得出真正拿去比的那一塊。成本相對 matchTemplate 可以忽略。
+        _, score, _, at = cv2.minMaxLoc(cv2.matchTemplate(tile, face, cv2.TM_CCOEFF_NORMED))
         if score > best[1]:
-            best, second = (label, score), best
+            best, second, best_at = (label, score), best, (int(at[0]), int(at[1]))
         elif score > second[1]:
             second = (label, score)
-    return Match(best[0], best[1], second[0], second[1])
+
+    window = tile[best_at[1] : best_at[1] + size[1], best_at[0] : best_at[0] + size[0]]
+    reference = templates.brightness(best[0])
+    brightness = _median_grey(window) / reference if reference else 1.0
+    return Match(best[0], best[1], second[0], second[1], brightness)
+
+
+def _median_grey(image: np.ndarray) -> float:
+    return float(np.median(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)))
 
 
 def classify_hand(

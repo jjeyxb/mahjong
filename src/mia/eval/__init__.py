@@ -14,12 +14,14 @@ CLI 在 ``tools/evaluate.py``。
 """
 
 from mia.eval.align import AlignedFrame, HandTimeline, align, build_timeline
-from mia.eval.report import FrameResult, TileReport, evaluate_frame, summarize
+from mia.eval.report import SWEEP, FrameResult, TileOutcome, TileReport, evaluate_frame, summarize
 
 __all__ = [
+    "SWEEP",
     "AlignedFrame",
     "FrameResult",
     "HandTimeline",
+    "TileOutcome",
     "TileReport",
     "align",
     "build_timeline",
