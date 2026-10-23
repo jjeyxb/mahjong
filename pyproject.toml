@@ -55,6 +55,7 @@ disallow_untyped_defs = true
 # 這些第三方套件沒有型別存根
 module = [
     "cv2.*",
+    "Foundation.*",
     "mss.*",
     "Quartz.*",
     "win32api",

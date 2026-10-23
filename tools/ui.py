@@ -56,6 +56,7 @@ from mia.mjai import MjaiEvent
 from mia.mjai.handstate import HandTracker
 from mia.platforms import WEB, PlatformChoice
 from mia.ui.icon import app_icon
+from mia.ui.identity import apply_identity
 from mia.ui.overlay.window import OverlayWindow
 from mia.ui.panel.window import PanelWindow, present
 from mia.ui.state import UiState
@@ -650,7 +651,11 @@ def main(argv: list[str] | None = None) -> int:
     args.seat = 0
 
     setup_logging(level=args.log_level)
+    # 要在 QApplication **之前** —— Qt 初始化 Cocoa 時就把名字讀走了,
+    # 之後再改,Dock 上已經是「Python」了。見 mia.ui.identity。
+    apply_identity()
     app = QApplication(sys.argv[:1])
+    apply_identity(app)
     # 設在 app 上,所有視窗預設就有 —— 少了它,Dock 與工作列上是一個空白方塊。
     app.setWindowIcon(app_icon())
 
