@@ -33,7 +33,7 @@ from mia.config.loader import load_config
 from mia.eval import align, build_timeline, summarize
 from mia.eval.align import SETTLE
 from mia.eval.batch import Crop, run
-from mia.eval.material import require_one_calibration
+from mia.eval.material import parse_table_rect, require_one_calibration
 from mia.recorder import SessionReader
 from mia.utils.geometry import Rect, Size
 from mia.utils.logging import setup_logging
@@ -65,6 +65,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--anyway", action="store_true", help="校正中途換過也照跑(數字量的會是校正)"
     )
+    parser.add_argument(
+        "--table-rect",
+        default=None,
+        metavar="X,Y,寬,高",
+        help="手動指定牌桌矩形(0~1 的比例),蓋過錄製時存的。見 tools/frame_table.py",
+    )
     parser.add_argument("--log-level", default="WARNING")
     args = parser.parse_args(argv)
 
@@ -74,7 +80,6 @@ def main(argv: list[str] | None = None) -> int:
         session = SessionReader(args.session)
     except FileNotFoundError as exc:
         raise SystemExit(str(exc)) from exc
-    require_one_calibration(session, anyway=args.anyway)
 
     print(f"畫面 {args.session}:{len(session.manifest.frames)} 幀")
     timeline = build_timeline(args.dump)
@@ -103,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
         print("\n配不到任何幀。用 --dry-run 看看是不是穩定秒數設得太嚴。")
         return 1
 
-    roi = _own_hand_roi(session)
+    roi = _own_hand_roi(session, args)
     # 與即時管線同一個 headroom,否則這份報告量的不是真的會跑的那條路
     crop = Crop.around(roi, round(roi.height * HOVER_HEADROOM))
     jobs = args.jobs if args.jobs is not None else (os.process_cpu_count() or 1)
@@ -165,23 +170,38 @@ def _overlaps(session: SessionReader, timeline) -> bool:  # type: ignore[no-unty
     return True
 
 
-def _own_hand_roi(session: SessionReader) -> Rect:
+def _table_rect(session: SessionReader, args: argparse.Namespace) -> Rect:
+    """這份素材要用哪個牌桌矩形。
+
+    ROI 全部相對它正規化,所以這一個值決定了整份報告有沒有意義 —— 而它錯掉
+    的時候報告看起來完全正常。相關的三道檢查都收在這裡。
+
+    預設用 session 存下來的那個 —— 那是錄製當下 StableCalibrator 蒐集多幀
+    之後鎖定的結果。在這裡重跑一次校正不但慢,還可能因為挑到不同的幀而得到
+    不同的答案,那樣準確率報告就不再對應當初錄下的東西了。
+    """
+    if args.table_rect is not None:
+        rect = parse_table_rect(args.table_rect, session.image_size)
+        print(f"手動指定牌桌矩形:{rect}(蓋過錄製時存的 {session.table_rect})")
+        return rect
+    if session.table_rect is None:
+        raise SystemExit(
+            "session 沒有 table_rect —— 錄製時校正沒鎖定。"
+            "通常是錄太短(StableCalibrator 要蒐集數幀)或畫面一直停在載入中。"
+            "可以用 tools/frame_table.py 框一個,再用 --table-rect 傳進來。"
+        )
+    require_one_calibration(session, anyway=args.anyway)
+    return session.table_rect
+
+
+def _own_hand_roi(session: SessionReader, args: argparse.Namespace) -> Rect:
     """算出 own_hand 在畫面上的像素框。
 
     回傳型別要寫出來:原本這裡掛著 ``type: ignore[no-untyped-def]``,於是回傳
     值是 ``Any``,``.pixels``(根本不存在的屬性)就一路過了 mypy,直到真的錄到
     素材、跑到這一步才在使用者面前炸開。沒有型別的地方就是沒有人在看的地方。
-
-    直接用 session 存下來的 ``table_rect`` —— 那是錄製當下 StableCalibrator
-    蒐集多幀之後鎖定的結果。在這裡重跑一次校正不但慢,還可能因為挑到不同的
-    幀而得到不同的答案,那樣準確率報告就不再對應當初錄下的東西了。
     """
-    table_rect = session.table_rect
-    if table_rect is None:
-        raise SystemExit(
-            "session 沒有 table_rect —— 錄製時校正沒鎖定。"
-            "通常是錄太短(StableCalibrator 要蒐集數幀)或畫面一直停在載入中。"
-        )
+    table_rect = _table_rect(session, args)
 
     frames = session.manifest.frames
     if not frames:

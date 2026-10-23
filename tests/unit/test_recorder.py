@@ -14,7 +14,8 @@ import pytest
 from mia.capture.base import Frame, WindowInfo
 from mia.groundtruth.dump import DumpStats, iter_frames, parse_dump
 from mia.recorder import SessionReader, SessionWriter
-from mia.utils.geometry import Rect
+from mia.utils.geometry import Rect, Size
+from tests.conftest import make_letterboxed
 
 
 def _frame(window: WindowInfo, value: int, t: float, *, size: tuple[int, int] = (120, 80)) -> Frame:
@@ -120,6 +121,13 @@ class TestManifest:
             writer.add_frame(_frame(window, 120, 0.2), table_rect=Rect(9, 9, 9, 9))
 
         assert writer.manifest.table_rect_from == 2
+
+    def test_image_size_comes_back_as_a_size(self, window: WindowInfo, tmp_path: Path) -> None:
+        """正規化座標(手動框的牌桌矩形、ROI)要靠它才換算得回像素。"""
+        image = make_letterboxed((320, 240), Rect(0, 30, 320, 180))
+        with SessionWriter(tmp_path, session_id="s") as writer:
+            writer.add_frame(Frame(image=image, window=window, captured_at=0.0))
+        assert SessionReader(tmp_path / "s").image_size == Size(320, 240)
 
     def test_a_steady_calibration_leaves_the_marker_at_zero(
         self, window: WindowInfo, tmp_path: Path
