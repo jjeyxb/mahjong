@@ -33,6 +33,7 @@ from mia.config.loader import load_config
 from mia.eval import align, build_timeline, summarize
 from mia.eval.align import SETTLE
 from mia.eval.batch import Crop, run
+from mia.eval.material import require_one_calibration
 from mia.recorder import SessionReader
 from mia.utils.geometry import Rect, Size
 from mia.utils.logging import setup_logging
@@ -61,6 +62,9 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="幾個工人行程。預設依核心數;1 走單行程(profiling 與除錯用)",
     )
+    parser.add_argument(
+        "--anyway", action="store_true", help="校正中途換過也照跑(數字量的會是校正)"
+    )
     parser.add_argument("--log-level", default="WARNING")
     args = parser.parse_args(argv)
 
@@ -70,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
         session = SessionReader(args.session)
     except FileNotFoundError as exc:
         raise SystemExit(str(exc)) from exc
+    require_one_calibration(session, anyway=args.anyway)
 
     print(f"畫面 {args.session}:{len(session.manifest.frames)} 幀")
     timeline = build_timeline(args.dump)

@@ -84,21 +84,52 @@ class TestManifest:
         結果 —— 而且不會有任何錯誤,只是後續所有 ROI 都失去座標基準。
         """
         with SessionWriter(tmp_path, session_id="s", change_threshold=0.0) as writer:
-            writer.add_frame(_frame(window, 100, 0.0))          # 還在蒐集
-            writer.add_frame(_frame(window, 110, 0.1))          # 還在蒐集
+            writer.add_frame(_frame(window, 100, 0.0))  # 還在蒐集
+            writer.add_frame(_frame(window, 110, 0.1))  # 還在蒐集
             writer.add_frame(_frame(window, 120, 0.2), table_rect=Rect(0, 56, 120, 24))
 
         assert writer.manifest.table_rect == [0, 56, 120, 24]
 
-    def test_table_rect_is_not_overwritten_once_set(
+    def test_a_changed_calibration_replaces_the_old_one(
         self, window: WindowInfo, tmp_path: Path
     ) -> None:
-        """校正一旦鎖定就不會變,後來的值不該覆寫掉已經定案的那個。"""
+        """校正**會**中途改變,而改了就要跟著改。
+
+        StableCalibrator 鎖定之後會繼續複查,鎖錯了會解鎖重來 —— 而鎖錯最
+        常見的原因正是錄製開頭遊戲還在載入。沿用第一個值等於把那次錯誤焊進
+        整份素材:實測 ``20260801-112437`` 鎖到的是載入畫面的邊界,整場的
+        ROI 與牌河角點全部偏掉,唯一的症狀是準確率難看。
+        """
         with SessionWriter(tmp_path, session_id="s", change_threshold=0.0) as writer:
             writer.add_frame(_frame(window, 100, 0.0), table_rect=Rect(0, 56, 120, 24))
             writer.add_frame(_frame(window, 110, 0.1), table_rect=Rect(9, 9, 9, 9))
 
-        assert writer.manifest.table_rect == [0, 56, 120, 24]
+        assert writer.manifest.table_rect == [9, 9, 9, 9]
+
+    def test_the_frame_the_calibration_changed_at_is_recorded(
+        self, window: WindowInfo, tmp_path: Path
+    ) -> None:
+        """換過之後,**之前的幀是用別的矩形錄的** —— 評測要分得出來。
+
+        少了這個欄位,換校正等於把前半段偷偷變成沒有標註的資料,而它看起來
+        跟正常的素材一模一樣。
+        """
+        with SessionWriter(tmp_path, session_id="s", change_threshold=0.0) as writer:
+            writer.add_frame(_frame(window, 100, 0.0), table_rect=Rect(0, 56, 120, 24))
+            writer.add_frame(_frame(window, 110, 0.1), table_rect=Rect(0, 56, 120, 24))
+            writer.add_frame(_frame(window, 120, 0.2), table_rect=Rect(9, 9, 9, 9))
+
+        assert writer.manifest.table_rect_from == 2
+
+    def test_a_steady_calibration_leaves_the_marker_at_zero(
+        self, window: WindowInfo, tmp_path: Path
+    ) -> None:
+        """從頭到尾只鎖過一次的素材(絕大多數)不該被標成「中途換過」。"""
+        with SessionWriter(tmp_path, session_id="s", change_threshold=0.0) as writer:
+            for i in range(3):
+                writer.add_frame(_frame(window, 100, i * 0.1), table_rect=Rect(0, 56, 120, 24))
+
+        assert writer.manifest.table_rect_from == 0
 
     def test_timestamps_are_relative_to_session_start(
         self, window: WindowInfo, tmp_path: Path

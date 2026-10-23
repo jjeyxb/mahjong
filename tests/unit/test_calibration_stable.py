@@ -13,7 +13,9 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
+from mia.calibration import stable as stable_module
 from mia.calibration.stable import StableCalibrator
 from mia.capture.base import Frame, WindowInfo
 from mia.config.models import CalibrationConfig
@@ -35,8 +37,9 @@ def good(window: WindowInfo, jitter: int = 0) -> Frame:
     抖動加在**上緣**、下緣固定貼齊影像底部 —— 真實的干擾也是這樣:工具列
     下方的邊界會因為畫面內容而多剝或少剝幾列,畫布底部則沒得跑。
     """
-    rect = Rect(TRUE_CANVAS.x, TRUE_CANVAS.y + jitter,
-                TRUE_CANVAS.width, TRUE_CANVAS.height - jitter)
+    rect = Rect(
+        TRUE_CANVAS.x, TRUE_CANVAS.y + jitter, TRUE_CANVAS.width, TRUE_CANVAS.height - jitter
+    )
     return _frame(make_letterboxed(IMAGE, rect), window)
 
 
@@ -50,6 +53,24 @@ def not_peeled(window: WindowInfo) -> Frame:
     """整張影像都是內容 —— 暗轉或載入畫面,四邊都不是純色。"""
     rng = np.random.default_rng(7)
     return _frame(rng.integers(80, 256, (IMAGE[1], IMAGE[0], 3), dtype=np.uint8), window)
+
+
+#: 一個長寬比完全正常、位置卻完全不同的畫布。
+#:
+#: 這是「鎖在載入畫面上」那種失敗的樣子:候選本身挑不出毛病(1.7778 正好是
+#: 16:9),兩道既有的防線一道都不會響,而它就是不對。實測
+#: ``20260801-112437`` 鎖到的是 ``1708x968@(69,218)``,長寬比 1.7645。
+OTHER_CANVAS = Rect(60, 200, 1120, 630)
+
+
+def wrong_place(window: WindowInfo) -> Frame:
+    """畫布在別的地方 —— 鎖定當下畫面還不是牌桌。"""
+    return _frame(make_letterboxed(IMAGE, OTHER_CANVAS), window)
+
+
+def featureless(window: WindowInfo) -> Frame:
+    """整張同一個顏色 —— 剝除找不到任何內容區,只能回 fallback。"""
+    return _frame(np.zeros((IMAGE[1], IMAGE[0], 3), dtype=np.uint8), window)
 
 
 class TestLocking:
@@ -74,9 +95,7 @@ class TestLocking:
         assert stable.progress == (0, 5)
         assert not stable.locked
 
-    def test_locked_result_is_returned_without_recomputing(
-        self, window: WindowInfo
-    ) -> None:
+    def test_locked_result_is_returned_without_recomputing(self, window: WindowInfo) -> None:
         """鎖定後再餵爛畫面也不該動搖結果 —— 這是「鎖住」的意義。"""
         stable = StableCalibrator(CalibrationConfig(stabilize_frames=3))
         for _ in range(3):
@@ -88,9 +107,7 @@ class TestLocking:
 
 
 class TestOutlierRejection:
-    def test_a_minority_of_bad_frames_cannot_move_the_answer(
-        self, window: WindowInfo
-    ) -> None:
+    def test_a_minority_of_bad_frames_cannot_move_the_answer(self, window: WindowInfo) -> None:
         """實測的核心情境:16% 的幀明顯錯誤,結果必須仍然正確。"""
         stable = StableCalibrator(CalibrationConfig(stabilize_frames=15))
         frames = [good(window, jitter=i % 2) for i in range(17)]
@@ -107,14 +124,11 @@ class TestOutlierRejection:
         assert abs(result.table_rect.y - TRUE_CANVAS.y) <= 1
         assert abs(result.table_rect.height - TRUE_CANVAS.height) <= 1
 
-    def test_first_frame_being_wrong_does_not_poison_the_session(
-        self, window: WindowInfo
-    ) -> None:
+    def test_first_frame_being_wrong_does_not_poison_the_session(self, window: WindowInfo) -> None:
         """原本的 bug 就是這個 —— 遊戲剛啟動常停在載入畫面,而那正是剝除最容易失敗的時候。"""
         stable = StableCalibrator(CalibrationConfig(stabilize_frames=5))
         result = None
-        for frame in [not_peeled(window), under_peeled(window),
-                      *[good(window) for _ in range(5)]]:
+        for frame in [not_peeled(window), under_peeled(window), *[good(window) for _ in range(5)]]:
             result = stable.feed(frame) or result
         assert result is not None
         assert result.table_rect == TRUE_CANVAS
@@ -183,9 +197,113 @@ class TestResize:
 class TestManual:
     def test_manual_rect_locks_immediately(self, window: WindowInfo) -> None:
         """手動指定就沒有「不穩定」可言,不該還要等 15 幀。"""
-        config = CalibrationConfig(manual_table_rect=(0.0, 0.1, 1.0, 0.8),
-                                   stabilize_frames=15)
+        config = CalibrationConfig(manual_table_rect=(0.0, 0.1, 1.0, 0.8), stabilize_frames=15)
         stable = StableCalibrator(config)
         result = stable.feed(good(window))
         assert result is not None
         assert result.source == "manual"
+
+
+class TestTheLockIsRechecked:
+    """鎖定之後還要繼續複查。
+
+    既有的兩道防線問的都是「候選看起來對不對」。有一種失敗躲得過它們:
+    鎖定當下畫面根本還不是牌桌,而那一幀剝出來的矩形看起來完全正常。
+    實測 ``20260801-112437`` 錄製開頭遊戲正在重連,前十幾幀是黑色載入畫面,
+    剝出 ``1708x968@(69,218)``(長寬比 1.7645,離 16:9 只差 0.7%)——
+    **採用 15 個候選、丟棄 0 個**,沒有任何警告,然後整場都用那個值。
+
+    唯一分得出來的證據是:牌桌出現之後,畫面說的跟當初鎖的不一樣。
+    """
+
+    def _tight(self, monkeypatch: pytest.MonkeyPatch, window_len: int = 6) -> None:
+        """把複查的節奏調快,否則一個測試要餵一千多幀。
+
+        調的是節奏不是邏輯 —— 真正的值由
+        :meth:`TestTheRecheckWindow.test_the_window_outlasts_an_animation` 釘住。
+        """
+        monkeypatch.setattr(stable_module, "_VERIFY_EVERY", 1)
+        monkeypatch.setattr(stable_module, "_VERIFY_WINDOW", window_len)
+
+    def test_a_lock_made_before_the_table_appeared_is_dropped(
+        self, window: WindowInfo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._tight(monkeypatch)
+        stable = StableCalibrator(CalibrationConfig(stabilize_frames=3))
+        for _ in range(3):
+            stable.feed(wrong_place(window))
+        assert stable.result is not None
+        assert stable.result.table_rect == OTHER_CANVAS, "前提:先鎖到錯的地方"
+
+        result = None
+        for _ in range(20):
+            result = stable.feed(good(window)) or result
+        assert result is not None
+        assert result.table_rect == TRUE_CANVAS, "牌桌出現之後該改過來"
+
+    def test_a_burst_of_bad_frames_does_not_drop_a_good_lock(
+        self, window: WindowInfo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """和了動畫、結算、配牌那段剝除會一直失敗 —— 那是**沒看到**,不是鎖錯了。
+
+        解錯的代價是整個辨識停擺,所以寧可晚一點發現,也不能被一次和了解掉。
+        """
+        self._tight(monkeypatch, window_len=10)
+        stable = StableCalibrator(CalibrationConfig(stabilize_frames=3))
+        for _ in range(3):
+            stable.feed(good(window))
+        locked = stable.result
+        assert locked is not None
+
+        for _ in range(5):  # 短於視窗的一陣壞幀
+            stable.feed(not_peeled(window))
+        assert stable.locked, "一陣雜訊就解鎖,等於把 16% 的單幀誤差放大成停擺"
+        assert stable.result is locked
+
+    def test_undetectable_frames_do_not_push_toward_unlocking(
+        self, window: WindowInfo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """整張暗掉的幀問不出答案 —— 那既不是支持也不是反對,不該計入。
+
+        計入的話每次過場都往解鎖推一把,而過場正是最常出現的東西。
+        """
+        self._tight(monkeypatch, window_len=3)
+        stable = StableCalibrator(CalibrationConfig(stabilize_frames=3))
+        for _ in range(3):
+            stable.feed(good(window))
+        assert stable.locked
+        for _ in range(50):
+            stable.feed(featureless(window))
+        assert stable.locked
+
+    def test_a_manual_rect_is_never_rechecked(
+        self, window: WindowInfo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """使用者講了什麼就是什麼。畫面對不上是他要知道的事,不是這裡自作主張改掉的事。"""
+        self._tight(monkeypatch, window_len=2)
+        config = CalibrationConfig(manual_table_rect=(0.0, 0.1, 1.0, 0.8))
+        stable = StableCalibrator(config)
+        locked = stable.feed(good(window))
+        assert locked is not None
+        for _ in range(20):
+            assert stable.feed(wrong_place(window)) is locked
+
+
+class TestTheRecheckWindow:
+    """複查視窗的長度是量出來的,不是估的。"""
+
+    def test_the_window_outlasts_an_animation(self) -> None:
+        """實測鎖定正確的那份錄影,最長連續 27 次複查都不一致(和了 + 結算 + 配牌)。
+
+        視窗短過那個,一次和了就能解掉一個正確的鎖定。掃過各種長度之後取 80
+        —— 那時正確的那份在最糟的視窗裡也只有 36% 不一致,離半數還有 14 個
+        百分點;視窗 60 只剩 5 個百分點。
+        """
+        longest_outage = 27
+        assert longest_outage * 2 <= stable_module._VERIFY_WINDOW  # noqa: SLF001
+
+    def test_a_check_is_about_a_second(self) -> None:
+        """視窗真正該管的是涵蓋多少**時間** —— 查得更密不會更準,
+        只會讓同一段動畫塞滿視窗。擷取實測 15 fps。
+        """
+        assert stable_module._VERIFY_EVERY == 15  # noqa: SLF001
