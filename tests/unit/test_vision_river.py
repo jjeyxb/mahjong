@@ -173,3 +173,38 @@ class TestAgainstThePackets:
                 if match.is_confident and normalize_red(ms_to_mjai(match.label)) != truth[position]:
                     silent += 1
         assert silent <= 3, f"靜默錯誤 {silent} 張"
+
+
+class TestOccupancyUsesTheFaceOnly:
+    """有無判斷只看格子正中央那一塊,不是整格。
+
+    一格比一張牌大一圈(FACE 是 0.72 x 0.70),所以一格裝著一張牌時另外一半
+    是桌布,整格取中位數會落在牌與桌布之間。實測一局開頭河裡只有一張牌時,
+    那一格整格的中位亮度是 97,而門檻是 110 —— 判成空的。
+
+    症狀是「每局開頭的幀全部被拒絕」:own 的採用率因此只有 48.3%,
+    改看牌面之後是 89.0%。
+    """
+
+    def test_a_lone_tile_in_a_wide_cell_is_still_found(self) -> None:
+        """牌只佔一格的一半,但它在正中央 —— 要數得到。"""
+        from mia.vision.tiles.river import CELL, face_size
+
+        flat = np.full((ROWS * CELL[1], COLUMNS * CELL[0], 3), 70, dtype=np.uint8)
+        face_w, face_h = face_size()
+        x = (CELL[0] - face_w) // 2
+        y = (CELL[1] - face_h) // 2
+        flat[y : y + face_h, x : x + face_w] = 210
+
+        river = read_river(flat)
+        assert river.count == 1
+        assert river.filled == (0,)
+
+    def test_brightness_only_at_the_edges_is_not_a_tile(self) -> None:
+        """格子邊緣的亮東西(鄰桌的牌、UI)不該被當成一張牌。"""
+        from mia.vision.tiles.river import CELL
+
+        flat = np.full((ROWS * CELL[1], COLUMNS * CELL[0], 3), 70, dtype=np.uint8)
+        flat[0 : CELL[1] // 8, 0 : CELL[0]] = 210  # 只有上緣一條
+
+        assert read_river(flat).count == 0
