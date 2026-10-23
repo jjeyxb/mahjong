@@ -208,3 +208,33 @@ class TestOccupancyUsesTheFaceOnly:
         flat[0 : CELL[1] // 8, 0 : CELL[0]] = 210  # 只有上緣一條
 
         assert read_river(flat).count == 0
+
+
+class TestTileBacksAreNotDiscards:
+    """牌背不是捨牌。
+
+    牌背是橘色的,亮度跟牌面一樣高,所以只看亮度分不出來。而河的末端常常會
+    出現一張牌背 —— 實測上家有 43% 的幀因此多讀一張,一律在結尾。
+
+    它傷的不是準確率(多出來那張分數低,過不了信心門檻),是**採用率**:
+    張數一錯,那一家整幀就被拒絕。上家的採用率因此只有 56.9%,
+    加上這道檢查之後是 96.7%。
+    """
+
+    def _flat(self, colour: tuple[int, int, int]) -> np.ndarray:
+        from mia.vision.tiles.river import CELL, face_size
+
+        flat = np.full((ROWS * CELL[1], COLUMNS * CELL[0], 3), 70, dtype=np.uint8)
+        face_w, face_h = face_size()
+        x = (CELL[0] - face_w) // 2
+        y = (CELL[1] - face_h) // 2
+        flat[y : y + face_h, x : x + face_w] = colour
+        return flat
+
+    def test_an_ivory_face_counts(self) -> None:
+        """牌面幾乎沒有飽和度 —— 實測中位 4。"""
+        assert read_river(self._flat((208, 212, 210))).count == 1
+
+    def test_an_orange_back_does_not(self) -> None:
+        """牌背亮但很橘 —— 實測中位飽和度 126。"""
+        assert read_river(self._flat((40, 150, 230))).count == 0
