@@ -23,8 +23,7 @@ Steam 版的畫布不是 16:9(實機量到 1512x844 = 1.7915),選單裡的畫布
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import QPoint, QRect, Qt
-from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen, QPixmap
+from PySide6.QtCore import QRect, Qt
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -35,7 +34,8 @@ from PySide6.QtWidgets import (
 )
 
 from mia.capture.base import Frame
-from mia.ui.style import ACCENT, CAPTION, MUTED
+from mia.ui.panel.picker import DragPicker
+from mia.ui.style import CAPTION, MUTED
 from mia.ui.widgets.tiles import DEFAULT_SKIN, TileIcons, TileLabel
 from mia.utils.geometry import NormRect
 from mia.vision.tiles.classify import TemplateSet, classify_hand
@@ -44,99 +44,8 @@ from mia.vision.tiles.locate import find_hand_roi
 
 __all__ = ["HandRoiDialog"]
 
-#: 預覽圖最大邊長(邏輯像素)。再大就放不進一般的筆電螢幕。
-_PREVIEW_MAX = 820
-
 #: 預覽上畫牌的高度。
 _RESULT_TILE = 34
-
-#: 拖出來的框至少要這麼大(預覽像素),不然當成誤觸的點擊。
-_MIN_DRAG = 12
-
-
-class _Picker(QWidget):
-    """顯示畫面並讓使用者拖一個框。座標對外一律是**影像像素**。"""
-
-    def __init__(self, image: np.ndarray, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._size = (image.shape[1], image.shape[0])
-        self._pixmap = _to_pixmap(image)
-        scaled = self._pixmap.size().scaled(
-            _PREVIEW_MAX, _PREVIEW_MAX, Qt.AspectRatioMode.KeepAspectRatio
-        )
-        self._pixmap = self._pixmap.scaled(
-            scaled, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
-        )
-        self.setFixedSize(self._pixmap.size())
-        self.setCursor(Qt.CursorShape.CrossCursor)
-        self._start: QPoint | None = None
-        self._box = QRect()
-        #: 還原出來的 ROI(影像座標),畫成第二個框讓使用者看到差別。
-        self.refined: QRect | None = None
-        self.on_release: object = None
-
-    # -------------------------------------------------------------- 座標換算
-
-    def _to_image(self, rect: QRect) -> QRect:
-        """預覽座標 → 影像座標。"""
-        kx = self._size[0] / max(1, self._pixmap.width())
-        ky = self._size[1] / max(1, self._pixmap.height())
-        return QRect(
-            round(rect.x() * kx), round(rect.y() * ky), round(rect.width() * kx),
-            round(rect.height() * ky),
-        )
-
-    def _to_preview(self, rect: QRect) -> QRect:
-        kx = self._pixmap.width() / max(1, self._size[0])
-        ky = self._pixmap.height() / max(1, self._size[1])
-        return QRect(
-            round(rect.x() * kx), round(rect.y() * ky), round(rect.width() * kx),
-            round(rect.height() * ky),
-        )
-
-    @property
-    def box(self) -> QRect | None:
-        """使用者拖的那個框,影像座標。還沒拖過時 ``None``。"""
-        return self._to_image(self._box.normalized()) if not self._box.isNull() else None
-
-    # -------------------------------------------------------------- 滑鼠
-
-    def mousePressEvent(self, event: QMouseEvent) -> None:
-        self._start = event.position().toPoint()
-        self._box = QRect(self._start, self._start)
-        self.refined = None
-        self.update()
-
-    def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        if self._start is not None:
-            self._box = QRect(self._start, event.position().toPoint())
-            self.update()
-
-    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        if self._start is None:
-            return
-        self._box = QRect(self._start, event.position().toPoint()).normalized()
-        self._start = None
-        if self._box.width() < _MIN_DRAG or self._box.height() < _MIN_DRAG:
-            # 點一下沒拖 —— 當成誤觸,不要把一個幾像素的框送下去
-            self._box = QRect()
-        self.update()
-        if callable(self.on_release):
-            self.on_release()
-
-    # -------------------------------------------------------------- 畫
-
-    def paintEvent(self, _event: object) -> None:
-        painter = QPainter(self)
-        painter.drawPixmap(0, 0, self._pixmap)
-        if not self._box.isNull():
-            # 使用者拖的框畫成虛線:它是**提示**,不是最後用的那個
-            painter.setPen(QPen(QColor(255, 255, 255, 160), 1, Qt.PenStyle.DashLine))
-            painter.drawRect(self._box.normalized().adjusted(0, 0, -1, -1))
-        if self.refined is not None:
-            painter.setPen(QPen(QColor(ACCENT), 2))
-            painter.drawRect(self._to_preview(self.refined).adjusted(0, 0, -1, -1))
-        painter.end()
 
 
 class HandRoiDialog(QDialog):
@@ -173,7 +82,7 @@ class HandRoiDialog(QDialog):
         hint.setStyleSheet(CAPTION)
         layout.addWidget(hint)
 
-        self._picker = _Picker(self._image, self)
+        self._picker = DragPicker(self._image, self)
         self._picker.on_release = self._recognise
         layout.addWidget(self._picker, alignment=Qt.AlignmentFlag.AlignHCenter)
 
@@ -189,8 +98,7 @@ class HandRoiDialog(QDialog):
         # 多開一個位子給摸的那張 —— 只開 MAX_CONCEALED 的話,
         # 使用者在自己摸牌那一巡框選時,畫出來的牌會剛好少掉最關鍵的那一張。
         self._tiles = [
-            TileLabel(icons, _RESULT_TILE, self._tiles_row)
-            for _ in range(MAX_CONCEALED + 1)
+            TileLabel(icons, _RESULT_TILE, self._tiles_row) for _ in range(MAX_CONCEALED + 1)
         ]
         for label in self._tiles:
             label.setVisible(False)
@@ -229,7 +137,7 @@ class HandRoiDialog(QDialog):
         """
         self._show_tiles(())
         self.result_rect = None
-        self._picker.refined = None
+        self._picker.clear_derived()
         self._set_ok(False)
 
         box = self._picker.box
@@ -246,7 +154,7 @@ class HandRoiDialog(QDialog):
             return
 
         x, y = box.x() + roi.x, box.y() + roi.y
-        self._picker.refined = QRect(x, y, roi.width, roi.height)
+        self._picker.rects = [QRect(x, y, roi.width, roi.height)]
         tall = self._image[y : y + roi.height, x : x + roi.width]
         hand = read_hand(tall)
         if not hand.is_plausible:
@@ -285,15 +193,3 @@ class HandRoiDialog(QDialog):
             label.setVisible(True)
         for label in self._tiles[len(labels) :]:
             label.setVisible(False)
-
-
-def _to_pixmap(image: np.ndarray) -> QPixmap:
-    """BGR ndarray → QPixmap。
-
-    ``QImage`` 不複製傳進去的記憶體,而這裡的 ndarray 是臨時的 —— 不 copy()
-    的話畫出來是一片雜訊或直接當掉,而且是**有時候**才發生。
-    """
-    rgb = np.ascontiguousarray(image[:, :, ::-1])
-    height, width = rgb.shape[:2]
-    qimage = QImage(rgb.data, width, height, 3 * width, QImage.Format.Format_RGB888)
-    return QPixmap.fromImage(qimage.copy())

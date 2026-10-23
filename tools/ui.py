@@ -46,7 +46,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from mia.calibration.canvas import Canvas, CanvasChoice, best_fit
-from mia.calibration.manual import HandRoiChoice
+from mia.calibration.manual import HandRoiChoice, TableRectChoice
 from mia.capture.base import Frame
 from mia.config.models import AppConfig
 from mia.engine import AIEngine, DummyEngine, EngineGroup
@@ -283,6 +283,50 @@ class _RememberedHandRoi:
         self._state.save()
 
 
+class _RememberedTableRect:
+    """把框選的牌桌矩形轉給擷取執行緒,順手記到磁碟。
+
+    與 :class:`_RememberedHandRoi` 同一個模式,包括「去哪抓一張畫面」——
+    兩個對話框要的都是一張現在的遊戲畫面,而那怎麼抓是接線層的事。
+
+    一樣不經過 :class:`LiveRuntime`:框選不需要重啟任何東西。
+    :class:`~mia.calibration.manual.TableRectChoice` 被
+    :class:`~mia.calibration.stable.StableCalibrator` 每一幀讀一次,
+    值變了它會自己作廢舊的鎖定重算 —— 所以框完下一幀就生效。
+    """
+
+    def __init__(
+        self,
+        choice: TableRectChoice,
+        state: UiState,
+        platform: PlatformChoice,
+        config: AppConfig,
+    ) -> None:
+        self._choice = choice
+        self._state = state
+        self._platform = platform
+        self._config = config
+
+    def can_pick_table_rect(self) -> bool:
+        return True
+
+    def grab_frame(self) -> Frame:
+        from mia.live.snapshot import grab_game_frame
+
+        return grab_game_frame(self._config, self._platform.value)
+
+    def table_rect(self) -> NormRect | None:
+        return self._choice.value
+
+    def set_table_rect(self, rect: NormRect | None) -> None:
+        if rect is None:
+            self._choice.clear()
+        else:
+            self._choice.set(rect)
+        self._state.table_rect = self._choice.as_tuple()
+        self._state.save()
+
+
 class _RememberedPlatform:
     """把版本的選擇轉給 runtime,順手記到磁碟。
 
@@ -359,6 +403,7 @@ def build_live_runtime(
     style: StyleChoice | None = None,
     platform: PlatformChoice | None = None,
     hand_roi: HandRoiChoice | None = None,
+    table_rect: TableRectChoice | None = None,
 ) -> LiveRuntime:
     """組出 runtime。**什麼都還沒開始** —— 瀏覽器等使用者按「開始遊戲」,
     三個功能等使用者撥開關。
@@ -447,6 +492,7 @@ def build_live_runtime(
                 canvas=canvas,
                 platform=platform.value if platform else WEB,
                 hand_roi=hand_roi,
+                table_rect=table_rect,
             )
 
         feature_list.append(Feature(features.VISION, make_vision))
@@ -596,11 +642,13 @@ def _default_canvas(app: QApplication, state: UiState) -> str | None:
     available = screen.availableGeometry()
     canvas = best_fit(available.width(), available.height())
     if canvas is None:
-        logger.info("桌面 {}x{} 放不下任何預設畫布,改用自動偵測",
-                    available.width(), available.height())
+        logger.info(
+            "桌面 {}x{} 放不下任何預設畫布,改用自動偵測", available.width(), available.height()
+        )
         return state.canvas
-    logger.info("畫布尺寸自動選定 {}(桌面 {}x{})",
-                canvas.label, available.width(), available.height())
+    logger.info(
+        "畫布尺寸自動選定 {}(桌面 {}x{})", canvas.label, available.width(), available.height()
+    )
     state.canvas = canvas.key
     state.save()
     return canvas.key
@@ -678,6 +726,9 @@ def main(argv: list[str] | None = None) -> int:
     # 同理:上次框的手牌範圍也要先備好。沒備的話第一次打開畫面辨識會先跑
     # 一次牌桌校正(Steam 版上那條路本來就走不通),使用者得再框一次。
     hand_roi = HandRoiChoice(ui_state.hand_roi)
+    # 同理:上次框的牌桌矩形也要先備好。沒備的話第一次開畫面辨識會先去剝
+    # 一次邊框,而使用者當初會去框正是因為那條路在他的環境下走不通。
+    table_rect = TableRectChoice(ui_state.table_rect)
     # 視窗比對條件要與擷取執行緒讀的是同一份 —— 兩邊找的必須是同一個視窗,
     # 否則使用者框的是 A、辨識跑的是 B。
     from mia.config.loader import load_config
@@ -688,7 +739,13 @@ def main(argv: list[str] | None = None) -> int:
     # 只能先畫成停用,之後再想辦法補接 —— 而那正是最容易忘記做的一步。
     runtime: LiveRuntime | None = (
         build_live_runtime(
-            args, model, canvas=canvas, style=style, platform=platform, hand_roi=hand_roi
+            args,
+            model,
+            canvas=canvas,
+            style=style,
+            platform=platform,
+            hand_roi=hand_roi,
+            table_rect=table_rect,
         )
         if args.live
         else None
@@ -717,6 +774,11 @@ def main(argv: list[str] | None = None) -> int:
         platform=_RememberedPlatform(runtime, ui_state) if runtime is not None else None,
         hand_roi=(
             _RememberedHandRoi(hand_roi, ui_state, platform, app_config)
+            if runtime is not None and not args.no_vision
+            else None
+        ),
+        table_rect=(
+            _RememberedTableRect(table_rect, ui_state, platform, app_config)
             if runtime is not None and not args.no_vision
             else None
         ),

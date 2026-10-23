@@ -35,7 +35,7 @@ import time
 import numpy as np
 
 from mia.calibration.canvas import CanvasChoice
-from mia.calibration.manual import HandRoiChoice
+from mia.calibration.manual import HandRoiChoice, TableRectChoice
 from mia.calibration.stable import StableCalibrator
 from mia.calibration.table import Calibration
 from mia.capture.base import (
@@ -110,6 +110,7 @@ class VisionWorker(threading.Thread):
         canvas: CanvasChoice | None = None,
         platform: str = WEB,
         hand_roi: HandRoiChoice | None = None,
+        table_rect: TableRectChoice | None = None,
     ) -> None:
         super().__init__(name="vision", daemon=True)
         #: 要找瀏覽器視窗還是原生客戶端。兩版同時開著時這是唯一分得開的判據
@@ -133,7 +134,9 @@ class VisionWorker(threading.Thread):
         self._stop = threading.Event()
         self.status = WorkerStatus("畫面")
 
-        self._calibrator = StableCalibrator(config.calibration, canvas=canvas)
+        self._calibrator = StableCalibrator(
+            config.calibration, canvas=canvas, manual=table_rect
+        )
         self._hand_roi = hand_roi if hand_roi is not None else HandRoiChoice()
         self._rois: RoiSet | None = None
         self._templates: TemplateSet | None = None

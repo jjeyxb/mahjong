@@ -37,11 +37,15 @@ from __future__ import annotations
 
 from mia.utils.geometry import NormRect, Rect, Size
 
-__all__ = ["HandRoiChoice"]
+__all__ = ["HandRoiChoice", "TableRectChoice"]
 
 
-class HandRoiChoice:
-    """使用者框的手牌範圍,**一個可變的共用格子**。``None`` 代表沒框過。
+class _NormRectChoice:
+    """一個可變的正規化矩形格子。``None`` 代表沒框過。
+
+    兩個手動框選(手牌範圍、牌桌矩形)共用這個,因為「使用者框的一個比例框,
+    每一幀被讀一次,順手記到磁碟」對兩者是同一件事。不同的是**它代表什麼**,
+    那寫在各自的子類別上。
 
     Args:
         rect: 初始值,``(x, y, 寬, 高)`` 四個 0~1 的比例。格式不對或超出邊界時
@@ -68,7 +72,7 @@ class HandRoiChoice:
         """
         try:
             norm = rect if isinstance(rect, NormRect) else NormRect(*rect)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return False
         if norm == self._value:
             return False
@@ -98,4 +102,39 @@ class HandRoiChoice:
         return f"{v.width:.3f}x{v.height:.3f}@({v.x:.3f},{v.y:.3f})"
 
     def __repr__(self) -> str:
-        return f"<HandRoiChoice {self}>"
+        return f"<{type(self).__name__} {self}>"
+
+
+class HandRoiChoice(_NormRectChoice):
+    """使用者框的**手牌範圍**,相對擷取影像正規化。
+
+    為什麼不正規化到牌桌矩形,見模組開頭:走這條路的時候根本沒有牌桌矩形
+    —— 不跑校正正是重點。
+    """
+
+
+class TableRectChoice(_NormRectChoice):
+    """使用者框的**牌桌矩形**,相對擷取影像正規化。
+
+    與 :class:`HandRoiChoice` 是兩件事,不要混:
+
+    * 手牌範圍**取代**校正 —— 框了之後那條路上根本不算牌桌矩形。
+    * 牌桌矩形**就是**校正的結果 —— 框了之後 ROI 與四家牌河的角點仍然照常
+      相對它推導,只是那個矩形改成人給的。
+
+    所以這個框影響的東西多得多:它是所有正規化座標的共同原點。框歪 3%,
+    手牌的槽位會一路累加偏移(``HandLayout`` 的間距是 ROI 寬度的比例),
+    到第 13 張差了半張牌。
+
+    為什麼需要它
+    ------------
+    自動校正是從四邊往中間剝除整條顏色一致的帶狀區域,而它**錯的時候很安靜**:
+
+    * 實測 ``20260801-112437``(1800x1186):剝除停在瀏覽器工具列裡,
+      長寬比 1.56,整份錄影沒有一幀校得準。
+    * 同一份錄影開頭遊戲正在重連,畫面全黑 —— 黑畫面剝得特別順,給出一個
+      長寬比 1.7645(離 16:9 只差 0.7%)的矩形,兩道既有的防線都沒響,
+      於是被鎖進整場。手牌辨識 97% → 26%,全程無錯誤訊息。
+
+    框一次就好,而且框歪了使用者自己看得到。
+    """

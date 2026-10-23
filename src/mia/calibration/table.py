@@ -18,6 +18,7 @@ import numpy as np
 
 from mia.calibration.canvas import Canvas, CanvasChoice, CanvasMismatchError
 from mia.calibration.letterbox import find_content_rect, fit_aspect
+from mia.calibration.manual import TableRectChoice
 from mia.capture.base import Frame
 from mia.config.models import CalibrationConfig
 from mia.utils.geometry import NormRect, Rect, Size
@@ -89,7 +90,8 @@ class TableCalibrator:
 
     流程:
 
-    1. 設定檔若指定了 ``manual_table_rect``,直接採用(逃生門)。
+    1. 使用者手動框過(UI 的「框選牌桌範圍」,或設定檔的 ``manual_table_rect``)
+       就直接採用 —— 那是逃生門,而且人講的話不該被啟發式蓋過。
     2. 選了固定畫布尺寸的話,直接推導並驗證,**不跑剝除**。
     3. 否則裁掉四周純色邊框,得到內容區。
     4. 檢查內容區的寬高比;偏離 16:9 超過容許值就置中裁成 16:9 並記一筆警告。
@@ -107,9 +109,13 @@ class TableCalibrator:
         config: CalibrationConfig | None = None,
         *,
         canvas: CanvasChoice | None = None,
+        manual: TableRectChoice | None = None,
     ) -> None:
         self.config = config or CalibrationConfig()
         self.canvas = canvas or CanvasChoice(Canvas.parse(self.config.canvas))
+        #: 使用者在 UI 上框的牌桌矩形。與 ``canvas`` 同樣是可變的共用格子 ——
+        #: 框完下一幀就生效,不必重啟擷取執行緒。
+        self.manual = manual or TableRectChoice(self.config.manual_table_rect)
         #: 上一次寫進日誌的警告。見 :meth:`_warn_once`。
         self._last_warning: str | None = None
 
@@ -142,10 +148,10 @@ class TableCalibrator:
         image_size = frame.size
         cfg = self.config
 
-        if cfg.manual_table_rect is not None:
-            x, y, w, h = cfg.manual_table_rect
-            table_rect = NormRect(x, y, w, h).to_pixels(image_size)
-            logger.debug("使用設定檔指定的牌桌矩形: {}", table_rect)
+        manual = self.manual.pixels(image_size)
+        if manual is not None:
+            table_rect = manual
+            logger.debug("使用手動指定的牌桌矩形: {}", table_rect)
             self._clear_warning()
             return Calibration(
                 table_rect=table_rect,
