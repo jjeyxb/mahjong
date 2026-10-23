@@ -72,8 +72,8 @@ CELL = (90, 120)
 FACE = (0.72, 0.70)
 
 #: 判定一格有牌的中位亮度門檻。牌面是象牙色、桌布是深藍,實測真牌 177~223、
-#: 桌布 50~62。用中位數而不是平均:一格裡若有一半是牌、一半是桌布,
-#: 平均會落在中間變得不好判,中位數則跟著佔多數的那一邊走。
+#: 桌布 50~62。用中位數而不是平均:取樣區若有一半是牌、一半是桌布,平均會
+#: 落在中間變得不好判,中位數則跟著佔多數的那一邊走。
 _OCCUPIED_MEDIAN = 110.0
 
 
@@ -207,12 +207,32 @@ def read_river(flat: np.ndarray, *, cell: tuple[int, int] = CELL) -> River:
     for index in range(COLUMNS * ROWS):
         rect = Rect((index % COLUMNS) * width, (index // COLUMNS) * height, width, height)
         cells.append(rect)
-        occupied.append(_occupied(flat, rect))
+        occupied.append(_occupied(flat, _face_of(rect, cell)))
     return River(cells=tuple(cells), occupied=tuple(occupied))
 
 
+def _face_of(cell: Rect, size: tuple[int, int]) -> Rect:
+    """格子正中央、牌面該在的那一塊。
+
+    **有無判斷只能看這裡,不能看整格。** 一格比一張牌大一圈(:data:`FACE`
+    是 0.72 x 0.70,也就是牌面只佔一格的一半),所以一格裡裝著一張牌時,
+    另外一半是桌布 —— 整格取中位數會落在牌與桌布之間。
+
+    實測:一局開頭河裡只有一張牌時,那一格整格的中位亮度是 97,而門檻是
+    110 —— 判成空的。症狀是「每局開頭的幀全部被拒絕」,而 own 的採用率
+    因此只有一半。
+    """
+    face_width, face_height = face_size(size)
+    return Rect(
+        cell.x + (cell.width - face_width) // 2,
+        cell.y + (cell.height - face_height) // 2,
+        face_width,
+        face_height,
+    )
+
+
 def _occupied(image: np.ndarray, cell: Rect) -> bool:
-    """這一格是牌還是桌布。見 :data:`_OCCUPIED_MEDIAN`。"""
+    """這一塊是牌還是桌布。見 :data:`_OCCUPIED_MEDIAN`。"""
     patch = image[cell.as_slice()]
     if patch.size == 0:
         return False
