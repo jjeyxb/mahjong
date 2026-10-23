@@ -10,12 +10,12 @@ from pathlib import Path
 
 import pytest
 
-from mia.eval.material import require_one_calibration
+from mia.eval.material import parse_table_rect, require_one_calibration
 from mia.recorder.session import SessionReader, SessionWriter
 from tests.conftest import make_letterboxed
 
 from mia.capture.base import Frame, WindowInfo  # isort: skip
-from mia.utils.geometry import Rect  # isort: skip
+from mia.utils.geometry import Rect, Size  # isort: skip
 
 
 def _session(tmp_path: Path, window: WindowInfo, rects: list[Rect]) -> SessionReader:
@@ -60,3 +60,38 @@ class TestRequireOneCalibration:
         session = _session(tmp_path, window, [Rect(0, 30, 320, 180)])
         session.manifest.table_rect_from = 0
         require_one_calibration(session)
+
+
+class TestParseTableRect:
+    """``--table-rect`` 的格式。自動校正走不通時,手動框的值從這裡進來。"""
+
+    SIZE = Size(1800, 1186)
+
+    def test_proportions_become_pixels(self) -> None:
+        """與 ``calibration.manual_table_rect`` 同格式 —— 同一組數字兩邊都能用,
+        不必換算兩次。
+        """
+        assert parse_table_rect("0.0,0.1,1.0,0.8", self.SIZE) == Rect(0, 119, 1800, 949)
+
+    @pytest.mark.parametrize(
+        ("text", "why"),
+        [
+            ("0.1,0.1,0.5", "少一個數字"),
+            ("0.1,0.1,0.5,0.5,0.5", "多一個數字"),
+            ("a,b,c,d", "不是數字"),
+            ("0.1,0.1,0,0.5", "寬是 0"),
+            ("0.1,0.1,0.5,-0.2", "高是負的"),
+            ("0.6,0.1,0.5,0.5", "右邊超出去"),
+            ("-0.1,0.1,0.5,0.5", "左邊超出去"),
+        ],
+    )
+    def test_bad_input_is_refused_on_the_spot(self, text: str, why: str) -> None:
+        """越界的框切出來是空的或殘缺的,而症狀是「準確率很低」——
+        跟真的認不出來分不開。所以當場擋掉,不要讓它跑完整份評測。
+        """
+        with pytest.raises(SystemExit):
+            parse_table_rect(text, self.SIZE), why
+
+    def test_a_full_frame_is_allowed(self) -> None:
+        """整張畫面本來就是合法的框(沒有瀏覽器邊框的擷取),不能被邊界檢查擋掉。"""
+        assert parse_table_rect("0,0,1,1", self.SIZE) == Rect(0, 0, 1800, 1186)

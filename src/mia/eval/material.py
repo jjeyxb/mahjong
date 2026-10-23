@@ -8,9 +8,10 @@
 from __future__ import annotations
 
 from mia.recorder.session import SessionReader
+from mia.utils.geometry import NormRect, Rect, Size
 from mia.utils.logging import logger
 
-__all__ = ["require_one_calibration"]
+__all__ = ["parse_table_rect", "require_one_calibration"]
 
 
 def require_one_calibration(session: SessionReader, *, anyway: bool = False) -> None:
@@ -44,3 +45,36 @@ def require_one_calibration(session: SessionReader, *, anyway: bool = False) -> 
         logger.warning(message)
         return
     raise SystemExit(message)
+
+
+def parse_table_rect(text: str, size: Size) -> Rect:
+    """把 ``--table-rect`` 的 ``x,y,w,h`` 比例換成像素框。
+
+    用比例而不是像素,是為了與 ``calibration.manual_table_rect`` 同格式 ——
+    同一組數字貼進設定檔就是即時路徑會用的那個,不必換算兩次。
+    ``tools/frame_table.py`` 兩種寫法都印得出來。
+
+    Args:
+        text: 四個 0~1 的比例,逗號分隔。
+        size: 擷取影像的尺寸。
+
+    Returns:
+        像素框。
+
+    Raises:
+        SystemExit: 格式不對,或框到影像外面。當場擋掉 —— 一個越界的框
+            切出來的影像會是空的或殘缺的,而症狀是「準確率很低」,
+            跟真的認不出來分不開。
+    """
+    try:
+        parts = tuple(float(v) for v in text.split(","))
+    except ValueError as exc:
+        raise SystemExit(f"--table-rect 要四個數字,拿到 {text!r}") from exc
+    if len(parts) != 4:
+        raise SystemExit(f"--table-rect 要四個數字(x,y,寬,高),拿到 {len(parts)} 個")
+    x, y, w, h = parts
+    if w <= 0 or h <= 0:
+        raise SystemExit(f"--table-rect 的寬高要是正數,拿到 {w}x{h}")
+    if x < 0 or y < 0 or x + w > 1.0001 or y + h > 1.0001:
+        raise SystemExit(f"--table-rect {text} 超出影像範圍(四個值都是 0~1 的比例)")
+    return NormRect(x, y, w, h).to_pixels(size)

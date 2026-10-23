@@ -25,7 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mia.eval.align import SETTLE
-from mia.eval.material import require_one_calibration
+from mia.eval.material import parse_table_rect, require_one_calibration
 from mia.eval.rivers import (
     RiverFrameResult,
     align_rivers,
@@ -69,6 +69,25 @@ def _work(chunk: list) -> list[RiverFrameResult]:
     return out
 
 
+def _table_rect(session: SessionReader, args: argparse.Namespace) -> Rect:
+    """這份素材要用哪個牌桌矩形。
+
+    ROI 與四家角點全部相對它正規化,所以這一個值決定了整份報告有沒有意義 ——
+    而它錯掉的時候報告看起來完全正常。相關的三道檢查都收在這裡。
+    """
+    if args.table_rect is not None:
+        rect = parse_table_rect(args.table_rect, session.image_size)
+        print(f"手動指定牌桌矩形:{rect}(蓋過錄製時存的 {session.table_rect})")
+        return rect
+    if session.table_rect is None:
+        raise SystemExit(
+            "session 沒有 table_rect —— 錄製時校正沒鎖定。"
+            "可以用 tools/frame_table.py 框一個,再用 --table-rect 傳進來。"
+        )
+    require_one_calibration(session, anyway=args.anyway)
+    return session.table_rect
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -83,14 +102,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--anyway", action="store_true", help="校正中途換過也照跑(數字量的會是校正)"
     )
+    parser.add_argument(
+        "--table-rect",
+        default=None,
+        metavar="X,Y,寬,高",
+        help="手動指定牌桌矩形(0~1 的比例),蓋過錄製時存的。見 tools/frame_table.py",
+    )
     parser.add_argument("--log-level", default="WARNING")
     args = parser.parse_args(argv)
     setup_logging(level=args.log_level)
 
     session = SessionReader(args.session)
-    if session.table_rect is None:
-        raise SystemExit("session 沒有 table_rect —— 錄製時校正沒鎖定")
-    require_one_calibration(session, anyway=args.anyway)
+    table = _table_rect(session, args)
     print(f"畫面 {args.session}:{len(session.manifest.frames)} 幀")
     timeline = build_river_timeline(args.dump)
     print(f"封包 {args.dump}:{len(timeline)} 個牌河狀態,自己坐 {timeline.seat}")
@@ -127,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if jobs <= 1:
-        _setup(args.session, session.table_rect, args.skin)
+        _setup(args.session, table, args.skin)
         for done, chunk in enumerate(chunks, 1):
             results.extend(_work(chunk))
             tick(min(done * CHUNK, len(paired)))
@@ -137,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
         with ProcessPoolExecutor(
             max_workers=jobs,
             initializer=_setup,
-            initargs=(args.session, session.table_rect, args.skin),
+            initargs=(args.session, table, args.skin),
         ) as pool:
             for done, block in enumerate(pool.map(_work, chunks), 1):
                 results.extend(block)

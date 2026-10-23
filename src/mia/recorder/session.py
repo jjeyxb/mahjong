@@ -52,7 +52,7 @@ import cv2
 import numpy as np
 
 from mia.capture.base import Frame, WindowInfo
-from mia.utils.geometry import Rect
+from mia.utils.geometry import Rect, Size
 from mia.utils.logging import logger
 
 __all__ = ["FrameRecord", "SessionManifest", "SessionReader", "SessionWriter"]
@@ -331,6 +331,22 @@ class SessionReader:
         if self.manifest.table_rect is None:
             return None
         return Rect(*self.manifest.table_rect)
+
+    @property
+    def image_size(self) -> Size:
+        """錄製時的擷取影像尺寸。
+
+        正規化座標(``manual_table_rect``、ROI)要靠它才換算得回像素。
+        manifest 裡沒有的話(2026-07 之前的舊格式)就去讀第一幀 ——
+        那是慢路,但比拋錯好:整份素材沒有別的問題。
+        """
+        if self.manifest.image_size:
+            width, height = self.manifest.image_size
+            return Size(width, height)
+        if not self.manifest.frames:
+            raise ValueError(f"session {self.manifest.session_id} 既沒有 image_size 也沒有幀")
+        height, width = self.load_image(self.manifest.frames[0]).shape[:2]
+        return Size(width, height)
 
     @property
     def can_align(self) -> bool:
