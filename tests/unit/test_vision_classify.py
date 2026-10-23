@@ -20,6 +20,7 @@ import pytest
 from mia.mjai.tiles import ms_to_mjai
 from mia.vision.tiles.classify import (
     FACE_RATIO,
+    MIN_BRIGHTNESS,
     Match,
     TemplateSet,
     classify,
@@ -32,10 +33,30 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 #: 三張參考畫面裡**目視確認過**的牌。鍵是「素材代號 + 槽位」,
 #: 素材 B 的第 13 個是摸進來的那張(白板)。
 EXPECTED = {
-    "hand_13_full": {0: "3m", 1: "3m", 4: "7m", 5: "7m", 6: "9m", 7: "9m",
-                     8: "5p", 10: "8p", 11: "9p", 12: "9p"},
-    "hand_14_with_draw": {0: "3m", 1: "8m", 2: "8m", 3: "8p", 4: "8p", 5: "1s",
-                          10: "9s", 11: "1z", 12: "3z", 13: "5z"},
+    "hand_13_full": {
+        0: "3m",
+        1: "3m",
+        4: "7m",
+        5: "7m",
+        6: "9m",
+        7: "9m",
+        8: "5p",
+        10: "8p",
+        11: "9p",
+        12: "9p",
+    },
+    "hand_14_with_draw": {
+        0: "3m",
+        1: "8m",
+        2: "8m",
+        3: "8p",
+        4: "8p",
+        5: "1s",
+        10: "9s",
+        11: "1z",
+        12: "3z",
+        13: "5z",
+    },
     "hand_4_with_melds": {0: "4z", 1: "4z", 2: "7z", 3: "7z"},
 }
 
@@ -104,9 +125,7 @@ class TestAccuracy:
                     weak.append(f"{fixture} 槽 {index}: {match}")
         assert not weak, "\n".join(weak)
 
-    def test_red_fives_do_not_swallow_normal_fives(
-        self, templates: TemplateSet
-    ) -> None:
+    def test_red_fives_do_not_swallow_normal_fives(self, templates: TemplateSet) -> None:
         """赤五與普通五只差顏色和一個小紅點,是這套模板最薄的一組差距。
 
         灰階比對時差距只有 0.021~0.031,改成彩色後拉開到 0.063~0.113。
@@ -144,9 +163,7 @@ class TestClassifyHand:
         assert drawn.label == "5z"
         assert "5z" not in [m.label for m in concealed]
 
-    def test_no_drawn_tile_when_it_is_not_your_turn(
-        self, templates: TemplateSet
-    ) -> None:
+    def test_no_drawn_tile_when_it_is_not_your_turn(self, templates: TemplateSet) -> None:
         roi = cv2.imread(str(FIXTURES / "hand_13_full.png"))
         concealed, drawn = classify_hand(roi, read_hand(roi), templates)
         assert len(concealed) == 13
@@ -260,6 +277,29 @@ class TestGuards:
         noise = rng.integers(0, 256, (207, 122, 3), dtype=np.uint8)
         assert not classify(noise, templates).is_confident
 
+    def test_table_felt_is_never_confident(self, templates: TemplateSet) -> None:
+        """一整塊桌布,不是牌。
+
+        這是真實踩過的洞:``TM_CCOEFF_NORMED`` 對亮度不變,而白板幾乎沒有
+        結構(像素標準差 8.3,其餘 36 個模板最低 44),所以平滑的深色桌布
+        可以跟它對到 0.69 —— 分數與差距都過關,而那一格根本不是牌。
+        """
+        felt = np.full((207, 122, 3), (90, 60, 40), dtype=np.uint8)
+        match = classify(felt, templates)
+        assert not match.is_confident
+        assert match.brightness < MIN_BRIGHTNESS
+
+    def test_a_real_tile_is_bright_enough(self, templates: TemplateSet) -> None:
+        """反面:亮度檢查不能把真的牌也擋掉。
+
+        素材是真實遊戲畫面,不是模板本身 —— 擋掉真牌的代價是棄權成本上升,
+        那在評測報告上看得到,但要有這個測試才會在改壞的當下就知道。
+        """
+        strip = cv2.imread(str(FIXTURES / "hand_13_full.png"))
+        hand = read_hand(strip)
+        concealed, _ = classify_hand(strip, hand, templates)
+        assert all(m.brightness >= MIN_BRIGHTNESS for m in concealed)
+
     def test_face_ratio_leaves_room_to_search(self) -> None:
         """比例逼近 1.0 就沒有平移餘裕,matchTemplate 會退化成單點比較。"""
         assert 0.5 < FACE_RATIO < 0.95
@@ -277,6 +317,17 @@ class TestMatch:
 
     def test_a_wide_margin_on_a_low_score_is_not_confident_either(self) -> None:
         assert not Match("3m", 0.30, "8m", 0.01).is_confident
+
+    def test_a_dark_region_is_not_confident_however_good_the_score_looks(self) -> None:
+        """落在桌布上的牌框:分數 0.69、差距 0.35,看起來毫無問題。
+
+        實測素材裡兩次高信心誤判都長這樣 —— 見 :data:`MIN_BRIGHTNESS`。
+        """
+        assert not Match("5z", 0.69, "8p", 0.34, 0.28).is_confident
+
+    def test_brightness_defaults_to_fine_when_nobody_measured_it(self) -> None:
+        """手工建構的 Match 不該因為少填一個欄位就被判成不可信。"""
+        assert Match("3m", 0.98, "8m", 0.77).brightness >= MIN_BRIGHTNESS
 
 
 #: 桌布的顏色。實際值不重要 —— 這裡只需要「不是一張牌」的東西來填抬起來之後
@@ -346,9 +397,7 @@ class TestHoverHeadroom:
 
         assert blind.label != expected.label or not blind.is_confident
 
-    def test_the_lifted_tile_does_not_disturb_its_neighbours(
-        self, templates: TemplateSet
-    ) -> None:
+    def test_the_lifted_tile_does_not_disturb_its_neighbours(self, templates: TemplateSet) -> None:
         """一次只會抬一張。旁邊那幾張跟著變答案的話,問題比原本那個還大。"""
         roi, boxes = _tiles("hand_13_full")
         hand = read_hand(roi)
@@ -356,18 +405,13 @@ class TestHoverHeadroom:
 
         tall, _ = self._tall("hand_13_full")
         _lift(tall, boxes[self.SLOT], self.LIFT)
-        after = [
-            m.label
-            for m in classify_hand(tall, hand, templates, headroom=self.HEADROOM)[0]
-        ]
+        after = [m.label for m in classify_hand(tall, hand, templates, headroom=self.HEADROOM)[0]]
 
         assert after == plain
 
 
 class TestTileHeight:
-    def test_the_template_is_sized_by_the_tile_not_the_strip(
-        self, templates: TemplateSet
-    ) -> None:
+    def test_the_template_is_sized_by_the_tile_not_the_strip(self, templates: TemplateSet) -> None:
         """拿整條的高度去縮模板會把牌面拉長 —— 那比搜不到還糟,因為它仍然會
         給出一個答案。"""
         roi, boxes = _tiles("hand_13_full")

@@ -15,7 +15,7 @@ import cv2
 import pytest
 
 from mia.eval.align import AlignedFrame, HandState
-from mia.eval.report import FrameResult, evaluate_frame, summarize
+from mia.eval.report import FrameResult, TileOutcome, evaluate_frame, summarize
 from mia.vision.tiles.classify import TemplateSet
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
@@ -30,7 +30,7 @@ def templates() -> TemplateSet:
 def result(truth: str, predicted: str, *, index: int = 0) -> FrameResult:
     """``"1m 2m"`` 這種寫法比一串 tuple 好讀,而且不容易數錯張數。"""
     t, p = tuple(sorted(truth.split())), tuple(sorted(predicted.split()))
-    return FrameResult(index, t, p, count_ok=len(t) == len(p), low_confidence=0)
+    return FrameResult(index, t, p, count_ok=len(t) == len(p))
 
 
 class TestFrameResult:
@@ -146,3 +146,101 @@ class TestEvaluateFrame:
         again = evaluate_frame(image, self._frame(first.predicted), templates)
         assert again.exact
         assert summarize([again]).tile_accuracy == 1.0
+
+
+def scored(
+    truth: str, predicted: str, outcomes: list[tuple[str, bool, float, float]]
+) -> FrameResult:
+    """帶著信心明細的一幀。``outcomes`` 是 ``(牌, 對不對, 分數, 差距)``。"""
+    t, p = tuple(sorted(truth.split())), tuple(sorted(predicted.split()))
+    tiles = tuple(TileOutcome(label, ok, score, margin) for label, ok, score, margin in outcomes)
+    return FrameResult(0, t, p, count_ok=len(t) == len(p), tiles=tiles)
+
+
+#: 過得了現行門檻(0.55 / 0.04)的分數與差距。
+SURE = (0.90, 0.30)
+#: 分數夠但差距不夠 —— 「像兩張牌」的那種不確定。
+UNSURE = (0.90, 0.01)
+
+
+class TestConfidenceTable:
+    """信心 × 正確。四格裡只有「有信心卻錯」那一格是真的危險。"""
+
+    def test_a_confident_mistake_is_a_silent_error(self) -> None:
+        """自檢抓不到它 —— 它在系統內部跟正確答案無法區分。"""
+        frame = scored("1m 9s", "1m 4s", [("1m", True, *SURE), ("4s", False, *SURE)])
+        report = summarize([frame])
+        assert report.confidence_table()[(True, False)] == 1
+        assert report.silent_error_rate() == 0.5
+
+    def test_an_unsure_mistake_is_not_silent(self) -> None:
+        """錯了但自己舉手的,上層丟掉這一幀就好,不需要人工確認。"""
+        frame = scored("1m 9s", "1m 4s", [("1m", True, *SURE), ("4s", False, *UNSURE)])
+        report = summarize([frame])
+        assert report.silent_error_rate() == 0.0
+        assert report.confidence_table()[(False, False)] == 1
+
+    def test_a_correct_tile_below_the_threshold_costs_abstention(self) -> None:
+        frame = scored("1m 2m", "1m 2m", [("1m", True, *SURE), ("2m", True, *UNSURE)])
+        assert summarize([frame]).abstain_rate() == 0.5
+
+    def test_raising_the_threshold_trades_silence_for_abstention(self) -> None:
+        """門檻拉到極高能讓靜默錯誤歸零,代價是什麼都不敢講。
+
+        單看任何一邊都會得到錯的結論 —— 這就是 SWEEP 存在的理由。
+        """
+        frame = scored("1m 9s", "1m 4s", [("1m", True, *SURE), ("4s", False, *SURE)])
+        report = summarize([frame])
+        assert report.silent_error_rate(0.95, 0.04) == 0.0
+        assert report.abstain_rate(0.95, 0.04) == 0.5
+
+    def test_no_detail_reports_nan_rather_than_zero(self) -> None:
+        """回 0 會被讀成「完全沒有靜默錯誤」,而實際上是「沒測」。"""
+        report = summarize([result("1m 2m", "1m 4m")])
+        assert math.isnan(report.silent_error_rate())
+        assert math.isnan(report.abstain_rate())
+
+    def test_low_confidence_is_derived_from_the_detail(self) -> None:
+        frame = scored("1m 2m", "1m 2m", [("1m", True, *SURE), ("2m", True, *UNSURE)])
+        assert frame.low_confidence == 1
+
+
+class TestConfidentConfusions:
+    """要修的那張清單:渲染是確定性的,所以高信心錯誤是可列舉的 bug。"""
+
+    def test_a_confident_mistake_records_its_direction(self) -> None:
+        frame = scored("1m 9s", "1m 4s", [("1m", True, *SURE), ("4s", False, *SURE)])
+        report = summarize([frame])
+        assert report.confident_confusions[("9s", "4s")] == 1
+        assert "9s → 4s" in report.summary()
+
+    def test_an_unsure_mistake_stays_out_of_the_list(self) -> None:
+        """它會進一般的混淆表,但不進這張 —— 這張只收自檢攔不住的。"""
+        frame = scored("1m 9s", "1m 4s", [("1m", True, *SURE), ("4s", False, *UNSURE)])
+        report = summarize([frame])
+        assert report.confusions[("9s", "4s")] == 1
+        assert report.confident_confusions == {}
+
+
+class TestBrightnessReachesTheStatistics:
+    """亮度要一路帶到統計裡,不然修好的東西在報告上看不出來。
+
+    這是真的踩過:``Match`` 加了亮度檢查、三個誤判也確實被擋下了,但
+    ``TileOutcome`` 沒有這個欄位,於是報告重算信心時完全不知道有這回事 ——
+    數字一個字都沒變,看起來像是修了個沒用的東西。
+    """
+
+    def test_a_dark_tile_is_never_confident(self) -> None:
+        frame = scored("1m 9s", "1m 4s", [("1m", True, *SURE), ("4s", False, *SURE)])
+        dark = frame.tiles[1].__class__("4s", False, 0.69, 0.34, 0.28)
+        assert not dark.confident
+
+    def test_brightness_does_not_move_with_the_threshold_sweep(self) -> None:
+        """門檻放寬不會讓一塊桌布變成一張牌。"""
+        dark = TileOutcome("5z", False, 0.99, 0.90, 0.28)
+        assert not dark.confident_at(0.0, 0.0)
+
+    def test_a_bright_tile_still_follows_the_sweep(self) -> None:
+        bright = TileOutcome("3m", True, 0.60, 0.05, 1.0)
+        assert bright.confident_at(0.55, 0.04)
+        assert not bright.confident_at(0.70, 0.12)
