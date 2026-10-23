@@ -144,3 +144,84 @@ class TestAgainstTheTemplates:
             )
             read.append(best[1])
         assert read == ["4z", "1s", "6z", "8m", "7z"]
+
+
+class TestUpright:
+    """把四家轉成同一個方向。
+
+    素材是同一幀裡四家各自的 river ROI。轉正的方向是目視確認的 ——
+    轉完之後牌面上的字是正的 —— 這裡再用模板分數交叉驗一次:正確的方向
+    該明顯優於其餘三個,而不是剛好贏一點點。
+    """
+
+    @pytest.mark.parametrize("seat", ["own", "shimocha", "toimen", "kamicha"])
+    def test_every_seat_has_a_rotation(self, seat: str) -> None:
+        from mia.vision.tiles.river import ROTATION, SEATS, upright
+
+        assert seat in SEATS
+        image = np.zeros((20, 30, 3), dtype=np.uint8)
+        assert upright(image, seat).ndim == 3
+        assert seat in ROTATION
+
+    def test_own_is_already_upright(self) -> None:
+        from mia.vision.tiles.river import ROTATION, upright
+
+        assert ROTATION["own"] is None
+        image = np.zeros((20, 30, 3), dtype=np.uint8)
+        assert upright(image, "own") is image, "不轉就沒有複製的理由"
+
+    def test_a_side_seat_swaps_the_axes(self) -> None:
+        from mia.vision.tiles.river import upright
+
+        image = np.zeros((20, 30, 3), dtype=np.uint8)
+        assert upright(image, "kamicha").shape[:2] == (30, 20)
+
+    def test_an_unknown_seat_is_refused(self) -> None:
+        from mia.vision.tiles.river import upright
+
+        with pytest.raises(ValueError, match="不認得的座位"):
+            upright(np.zeros((4, 4, 3), dtype=np.uint8), "toimen_river")
+
+    @pytest.mark.parametrize("seat", ["toimen", "kamicha", "shimocha"])
+    def test_the_chosen_rotation_beats_the_other_three(self, seat: str) -> None:
+        """四個方向各比一次,正確的那個分數要最高。
+
+        這是在釘住 ROTATION 的內容。轉錯方向的症狀是「準確率莫名其妙地低」,
+        而那看起來跟幾何沒調好一模一樣 —— 分不出來就會往錯的方向修。
+        """
+        from mia.vision.tiles.river import ROTATION, upright
+
+        source = cv2.imread(str(FIXTURES / f"river_{seat}.png"))
+        assert source is not None
+        templates = TemplateSet.load()
+
+        def mean_top_score(image: np.ndarray) -> float:
+            river = read_river(image)
+            if not river.filled:
+                return 0.0
+            size = (image.shape[1], image.shape[0])
+            total = 0.0
+            for index in river.filled:
+                scaled = templates.scaled(DEFAULT_RIVER.face_size(size, index))
+                total += max(
+                    float(
+                        cv2.matchTemplate(
+                            image[river.cells[index].as_slice()], face, cv2.TM_CCOEFF_NORMED
+                        ).max()
+                    )
+                    for _label, face in scaled
+                )
+            return total / len(river.filled)
+
+        chosen = mean_top_score(upright(source, seat))
+        others = [
+            mean_top_score(source if rot is None else cv2.rotate(source, rot))
+            for rot in (
+                None,
+                cv2.ROTATE_90_CLOCKWISE,
+                cv2.ROTATE_180,
+                cv2.ROTATE_90_COUNTERCLOCKWISE,
+            )
+            if rot != ROTATION[seat]
+        ]
+        assert chosen > max(others), f"{seat}: 選的方向 {chosen:.3f} 不是最好的 {others}"

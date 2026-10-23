@@ -39,7 +39,35 @@ import numpy as np
 
 from mia.utils.geometry import Rect
 
-__all__ = ["COLUMNS", "DEFAULT_RIVER", "ROWS", "RiverLayout", "RowLayout", "read_river"]
+__all__ = [
+    "COLUMNS",
+    "DEFAULT_RIVER",
+    "ROTATION",
+    "ROWS",
+    "SEATS",
+    "RiverLayout",
+    "RowLayout",
+    "read_river",
+    "upright",
+]
+
+#: 四家,與 ``data/roi_ref/roi.yaml`` 的鍵一致。順序是**出牌順序** ——
+#: 自己、下家、對家、上家。
+SEATS = ("own", "shimocha", "toimen", "kamicha")
+
+#: 把每一家的牌河轉成與自己同向所需的旋轉。``None`` 表示本來就是正的。
+#:
+#: 轉**影像**而不是轉模板:一家只要轉一次,轉模板要轉 37 次。而且轉完之後
+#: 四家共用同一套「由遠而近、由左而右」的索引,上層不必各家各寫一遍。
+#:
+#: 四個方向都目視確認過 —— 轉完之後牌面上的字是正的。另外用模板分數交叉
+#: 驗過:每一家在正確的方向上分數最高,其餘三個方向明顯較差。
+ROTATION: dict[str, int | None] = {
+    "own": None,
+    "shimocha": cv2.ROTATE_90_CLOCKWISE,
+    "toimen": cv2.ROTATE_180,
+    "kamicha": cv2.ROTATE_90_COUNTERCLOCKWISE,
+}
 
 #: 牌河的格數。雀魂固定 6 格一排、三排。
 COLUMNS = 6
@@ -157,6 +185,23 @@ class River:
         這與手牌的張數檢查是同一個用意,而那個檢查實測攔下了八成的靜默錯誤。
         """
         return self.filled == tuple(range(self.count))
+
+
+def upright(image: np.ndarray, seat: str) -> np.ndarray:
+    """把一家的牌河轉成與自己同向。
+
+    Args:
+        image: 該家 ``river`` ROI 裁出來的 BGR 影像。
+        seat: :data:`SEATS` 之一。
+
+    Returns:
+        轉正後的影像。``own`` 回傳的是**原物件**,不是複本 —— 不轉就沒有
+        複製的理由,而呼叫端本來就不該改它。
+    """
+    if seat not in ROTATION:
+        raise ValueError(f"不認得的座位 {seat!r},要是 {SEATS} 之一")
+    rotation = ROTATION[seat]
+    return image if rotation is None else cv2.rotate(image, rotation)
 
 
 def read_river(image: np.ndarray, layout: RiverLayout = DEFAULT_RIVER) -> River:
