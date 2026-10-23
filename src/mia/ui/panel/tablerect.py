@@ -51,7 +51,13 @@ from mia.utils.geometry import NormRect, Rect, Size
 from mia.vision.roi import RoiSet
 from mia.vision.tiles.classify import TemplateSet, classify_hand
 from mia.vision.tiles.hand import MAX_CONCEALED, read_hand
-from mia.vision.tiles.river import DEFAULT_CORNERS, SEATS
+from mia.vision.tiles.river import (
+    DEFAULT_CORNERS,
+    SEATS,
+    classify_river_tile,
+    face_size,
+    read_river,
+)
 
 __all__ = ["TableRectDialog"]
 
@@ -64,6 +70,39 @@ _EXPECTED_ASPECT = 16 / 9
 #: 長寬比差多少才提醒。不擋 —— 有些環境本來就不是 16:9
 #: (實測 Steam 版客戶區 1512x844 = 1.7915)。
 _ASPECT_HINT = 0.03
+
+#: 四家的中文稱呼。用字典而不是跟著 :data:`~mia.vision.tiles.river.SEATS`
+#: 的順序排一個 tuple —— 順序一旦改掉,tuple 會安靜地對應錯,而症狀是
+#: 訊息說「對家」但其實是上家。
+SEAT_NAMES = {"own": "自己", "shimocha": "下家", "toimen": "對家", "kamicha": "上家"}
+
+#: 牌河至少要有這麼多張才拿來評分。
+#:
+#: 一局剛開始時四家加起來只有兩三張,那時的「有信心比例」是兩三個樣本的事,
+#: 報出來只會誤導。寧可說「牌河還太空」也不要給一個會晃的數字。
+_MIN_RIVER_TILES = 8
+
+#: 牌河的「有信心比例」低於這個就是框歪了。
+#:
+#: 為什麼要這一條
+#: --------------
+#: **張數與連續性完全看不出框歪。** 實測同一幀把牌桌矩形的上緣往下推:
+#:
+#: ============  ======  ======  ==========  ============
+#: 偏移          張數    連續    平均把握    有信心比例
+#: ============  ======  ======  ==========  ============
+#: 0(正確)      65      4/4     0.693       83%
+#: +0.2% 高      65      4/4     0.676       74%
+#: +0.5% 高      65      4/4     0.632       63%
+#: +1.0% 高      65      4/4     0.481       23%
+#: ============  ======  ======  ==========  ============
+#:
+#: 張數一路都是 65、四家一路都連續 —— 即時路徑的採用條件(連續 + 張數)
+#: 在這裡**一個都攔不住**。1921 幀的全量也是同一回事:上緣偏 1% 時採用率
+#: 仍有 93.3%,而每張牌正確率從 94.6% 掉到 32.9%。
+#:
+#: 所以能用的只有把握度。取 0.65:正確的框實測 0.83,偏 0.5% 是 0.63。
+_MIN_RIVER_CONFIDENT = 0.65
 
 
 class TableRectDialog(QDialog):
@@ -214,7 +253,7 @@ class TableRectDialog(QDialog):
         self._message.setText(
             f"認出 {len(concealed)} 張暗手牌"
             + (f" + 摸的 {drawn.label}" if drawn else "")
-            + f",平均把握 {score:.2f}。綠線是四家牌河 —— 都落在牌上就按「確定」。"
+            + f",平均把握 {score:.2f}。\n{self._river_note(table)}"
             + aspect_note
         )
         self.result_rect = NormRect(
@@ -222,6 +261,49 @@ class TableRectDialog(QDialog):
         )
         self._set_ok(True)
         self._picker.update()
+
+    def _river_note(self, table: Rect) -> str:
+        """四家牌河讀起來怎麼樣。
+
+        **不要叫使用者用眼睛判斷綠線正不正。** 容忍度比看得出來的還窄:實測
+        牌桌矩形的上緣只要偏 0.5% 的高度(1608 px 的畫面上是 8 px),每張牌
+        正確率就從 94.6% 掉到 79.2%,偏 1% 掉到 32.9% —— 而那時綠線看起來
+        仍然「大致落在牌上」。
+
+        也不能只報張數與連續性:那兩個在上面那些偏移下**完全沒有反應**
+        (見 :data:`_MIN_RIVER_CONFIDENT`)。所以這裡報的是把握度。
+        """
+        if self._templates is None:
+            self._templates = TemplateSet.load()
+        size = face_size()
+        counts: list[int] = []
+        holes: list[str] = []
+        confident = total = 0
+        for seat in SEATS:
+            flat = DEFAULT_CORNERS[seat].rectify(self._image, table)
+            river = read_river(flat)
+            counts.append(river.count)
+            if not river.is_plausible():
+                holes.append(SEAT_NAMES[seat])
+            for index in river.filled:
+                match = classify_river_tile(
+                    flat[river.cells[index].as_slice()], self._templates, size=size
+                )
+                total += 1
+                confident += match.is_confident
+
+        read = "/".join(str(c) for c in counts)
+        if holes:
+            return f"⚠ {'、'.join(holes)}的牌河中間有洞(讀到 {read} 張)—— 框歪了,重拖一次。"
+        if total < _MIN_RIVER_TILES:
+            return f"牌河現在只有 {read} 張,太空了看不準 —— 這一局打久一點再框會比較有把握。"
+        ratio = confident / total
+        if ratio < _MIN_RIVER_CONFIDENT:
+            return (
+                f"⚠ 四家牌河讀到 {read} 張,但只有 {ratio:.0%} 有把握"
+                f"(正常是八成以上)—— 框歪了,重拖一次。"
+            )
+        return f"四家牌河讀到 {read} 張,{ratio:.0%} 有把握 —— 可以按「確定」。"
 
     def _show_tiles(self, labels: list[str] | tuple[str, ...]) -> None:
         for label, tile in zip(self._tiles, labels, strict=False):
