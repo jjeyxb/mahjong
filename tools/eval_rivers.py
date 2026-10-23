@@ -25,6 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mia.eval.align import SETTLE
+from mia.eval.material import require_one_calibration
 from mia.eval.rivers import (
     RiverFrameResult,
     align_rivers,
@@ -79,6 +80,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=0, help="最多評幾幀,0 表示全部")
     parser.add_argument("--jobs", type=int, default=None, help="幾個工人行程")
     parser.add_argument("--dry-run", action="store_true", help="只檢查對得上對不上")
+    parser.add_argument(
+        "--anyway", action="store_true", help="校正中途換過也照跑(數字量的會是校正)"
+    )
     parser.add_argument("--log-level", default="WARNING")
     args = parser.parse_args(argv)
     setup_logging(level=args.log_level)
@@ -86,6 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     session = SessionReader(args.session)
     if session.table_rect is None:
         raise SystemExit("session 沒有 table_rect —— 錄製時校正沒鎖定")
+    require_one_calibration(session, anyway=args.anyway)
     print(f"畫面 {args.session}:{len(session.manifest.frames)} 幀")
     timeline = build_river_timeline(args.dump)
     print(f"封包 {args.dump}:{len(timeline)} 個牌河狀態,自己坐 {timeline.seat}")

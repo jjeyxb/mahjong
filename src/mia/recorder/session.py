@@ -109,6 +109,15 @@ class SessionManifest:
     window_bounds: list[int] = field(default_factory=list)  # [x, y, w, h] 邏輯座標
     image_size: list[int] = field(default_factory=list)  # [width, height] 像素
     table_rect: list[int] | None = None  # 校正結果 [x, y, w, h] 像素
+    #: ``table_rect`` 是從第幾幀開始成立的。
+    #:
+    #: 校正**可能中途改變** —— StableCalibrator 鎖定之後會繼續複查,發現鎖錯
+    #: 了就解鎖重來(例如錄製開頭遊戲還在載入,鎖到的是載入畫面的邊界)。
+    #: 改了之後這裡記的是最後一次鎖定的幀序號,**在那之前的幀是用別的矩形
+    #: 錄的**,評測時要當成沒有校正。
+    #:
+    #: 0 表示從頭到尾只鎖過一次。舊格式沒有這個欄位,一樣讀成 0。
+    table_rect_from: int = 0
     image_format: str = "png"
     frame_count: int = 0
     stored_frames: int = 0
@@ -215,15 +224,25 @@ class SessionWriter:
 
         # 校正**不是**第一幀就有:StableCalibrator 要蒐集數幀才鎖定,在那之前
         # 傳進來的是 None。所以這段不能放在上面的「第一幀」分支裡,否則整份
-        # manifest 會永遠沒有 table_rect。第一個拿到的值就定案,後面不再改
-        # —— 校正一旦鎖定就不會變,真的變了(視窗縮放)是另一場錄製的事。
-        if table_rect is not None and self.manifest.table_rect is None:
-            self.manifest.table_rect = [
-                table_rect.x,
-                table_rect.y,
-                table_rect.width,
-                table_rect.height,
-            ]
+        # manifest 會永遠沒有 table_rect。
+        #
+        # 改了就跟著改,**不是第一個值定案**。校正鎖定之後會繼續複查,鎖錯了
+        # 會解鎖重來;而鎖錯最常見的原因正是錄製開頭遊戲還在載入,那時畫面上
+        # 根本沒有牌桌。沿用第一個值等於把那次錯誤焊進整份素材 —— 實測
+        # 20260801-112437 就是這樣,整場的 ROI 與牌河角點全部偏掉,
+        # 而唯一的症狀是準確率難看。
+        if table_rect is not None:
+            current = [table_rect.x, table_rect.y, table_rect.width, table_rect.height]
+            if current != self.manifest.table_rect:
+                if self.manifest.table_rect is not None:
+                    logger.info(
+                        "牌桌矩形由 {} 改為 {}(第 {} 幀起)",
+                        self.manifest.table_rect,
+                        current,
+                        self.manifest.frame_count,
+                    )
+                    self.manifest.table_rect_from = self.manifest.frame_count
+                self.manifest.table_rect = current
 
         index = self.manifest.frame_count
         timestamp = frame.captured_at - self._start_time

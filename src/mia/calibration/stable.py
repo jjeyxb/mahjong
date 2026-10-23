@@ -51,6 +51,32 @@
 那次鎖進去的矩形位移了約 0.7 張牌寬,手牌辨識從 96% 掉到 29%,**整場錄影
 沒有任何錯誤訊息**。所以現在的規則是:近期丟棄的比採用的多就不鎖,
 讓上層當場說「校正失敗」。詳見 :mod:`mia.calibration.canvas`。
+
+鎖定之後還要繼續複查
+--------------------
+上面兩道防線擋的都是「候選看起來不對」。但有一種情況是候選看起來**完全正常**
+而答案仍然是錯的:鎖定時畫面根本還不是牌桌。
+
+實測 ``data/recordings/20260801-112437``:錄製開頭遊戲正在重連,前十幾幀是
+黑色載入畫面。剝除在那上面剝得很乾淨,給出 ``1708x968@(69,218)``,寬高比
+1.7645 —— 離 16:9 只差 0.7%,兩道防線一道都沒響(採用 15 個候選、丟棄 0 個)。
+那個矩形被鎖進整場,而牌桌出現之後真正的答案是 ``1798x1152@(1,27)``。
+
+後果與前面那次一樣:手牌的槽位整排在飄(``pitch`` 是 ROI 寬度的比例,誤差
+會累加,到第 13 張差了半張牌),四家牌河的角點也全部偏掉。**而且一樣沒有
+任何錯誤訊息** —— 唯一的症狀是準確率難看。
+
+所以鎖定不是終點。鎖定之後定期拿單幀校正跟鎖定值對一次,近期不一致的比
+一致的多就解鎖重來。兩者分得很開(抽 122 幀):
+
+=========================  ============  ==========
+錄影                        不一致比例    偏差中位
+=========================  ============  ==========
+110639(鎖定值正確)          16%           10 px
+112437(鎖定在載入畫面上)    97%          191 px
+=========================  ============  ==========
+
+16% 正是單幀校正本來的雜訊,多數決離它很遠。
 """
 
 from __future__ import annotations
@@ -70,6 +96,48 @@ __all__ = ["StableCalibrator"]
 #: 鎖定後,若各候選在任一分量上的全距超過短邊的這個比例,就在結果裡記一筆警告。
 #: 不拒絕鎖定 —— 中位數本來就是為了在雜訊中給答案,但使用者該知道畫面很不穩。
 _SPREAD_WARN_RATIO = 0.02
+
+#: 鎖定後每隔幾幀複查一次。
+#:
+#: 不是每幀都查:複查要重跑一次剝除,而鎖定後本來就不用再算了。15 幀約一秒
+#: (實測擷取 15 fps),所以複查大致是一秒一次。
+#:
+#: **這個值與 :data:`_VERIFY_WINDOW` 要一起看** —— 真正該管的是視窗涵蓋多少
+#: **時間**,不是多少次。查得更密不會讓判斷更準,只會讓同一段動畫塞滿視窗。
+_VERIFY_EVERY = 15
+
+#: 複查的滑動視窗長度(次)。約一秒一次,所以這也約等於秒數。
+#:
+#: 為什麼要這麼長
+#: --------------
+#: 和了動畫、結算、配牌那段時間畫面上沒有牌桌邊界可剝,複查會連續不一致 ——
+#: 那是**沒看到**,不是鎖錯了。實測 ``20260801-110639``(鎖定值正確)最長
+#: 連續不一致 27 次,所以視窗必須明顯長過那個,不然一次和了就能把一個正確的
+#: 鎖定解掉,而解錯的代價是整個辨識停擺。
+#:
+#: 掃過各種長度,取兩份錄影在各自最糟的視窗裡的不一致比例:
+#:
+#: ======  ====================  ====================
+#: 視窗    110639(鎖定正確)      112437(鎖在載入畫面)
+#: ======  ====================  ====================
+#: 15      100%                  100%
+#: 30      90%                   100%
+#: 60      45%                   100%
+#: **80**  **36%**               **100%**
+#: 120     28%                   100%
+#: ======  ====================  ====================
+#:
+#: 取 80:正確的那份離半數還有 14 個百分點,而錯誤的那份是滿分。視窗 60 的
+#: 餘裕只剩 5 個百分點,太薄。代價是發現錯誤鎖定要約 80 秒 —— 對一場十分鐘
+#: 的對局可以接受,而現狀是**永遠不會發現**。
+_VERIFY_WINDOW = 80
+
+#: 複查時,鎖定值與單幀答案在任一分量上差多少才算「不一致」,以短邊為單位。
+#:
+#: 與 :data:`_SPREAD_WARN_RATIO` 同值不是巧合:那裡問的是「各幀彼此差多少」,
+#: 這裡問的是「現在跟當初差多少」,兩者是同一種容忍度。實測正確的鎖定偏差
+#: 中位 10 px(門檻 32 px),錯誤的鎖定偏差中位 191 px(門檻 24 px)。
+_VERIFY_TOLERANCE = 0.02
 
 #: 判斷「丟太多」時只看最近這麼多次嘗試,單位是 ``stabilize_frames`` 的倍數。
 #:
@@ -113,6 +181,8 @@ class StableCalibrator:
         self._blocked: str | None = None
         self._result: Calibration | None = None
         self._size: Size | None = None
+        self._checks: deque[bool] = deque(maxlen=_VERIFY_WINDOW)
+        self._until_check = _VERIFY_EVERY
 
     @property
     def canvas(self) -> CanvasChoice:
@@ -151,18 +221,20 @@ class StableCalibrator:
         self._blocked = None
         self._result = None
         self._size = None
+        self._checks.clear()
+        self._until_check = _VERIFY_EVERY
 
     # ------------------------------------------------------------------ 主流程
 
     def feed(self, frame: Frame) -> Calibration | None:
         """餵一幀進去。回傳已鎖定的校正,或 ``None`` 表示還在蒐集。"""
         if self._size is not None and frame.size != self._size:
-            logger.info(
-                "影像尺寸由 {} 變為 {},重新校正", self._size, frame.size
-            )
+            logger.info("影像尺寸由 {} 變為 {},重新校正", self._size, frame.size)
             self.reset()
 
-        if self._result is not None:
+        # 解鎖之後這一幀要繼續往下當成候選蒐集 —— 直接 return None 的話,
+        # 畫面已經好了的情況下還要多等一幀才開始,沒有理由。
+        if self._result is not None and self._still_valid(frame):
             return self._result
 
         self._size = frame.size
@@ -200,6 +272,68 @@ class StableCalibrator:
         return self._result
 
     # ------------------------------------------------------------------ 內部
+
+    def _still_valid(self, frame: Frame) -> bool:
+        """已鎖定的校正現在還對嗎。不對就當場解鎖,回 ``False``。
+
+        複查的理由見模組說明:前面兩道防線問的都是「候選看起來對不對」,
+        而鎖定在載入畫面上的那次,候選看起來完全正常。唯一分得出來的證據是
+        **牌桌出現之後,畫面說的跟當初鎖的不一樣**。
+
+        手動指定與畫布推導不複查 —— 那兩個是算出來的,不是從畫面猜的,
+        使用者講了什麼就是什麼。畫面對不上是使用者要知道的事,不是這裡該
+        自作主張改掉的事。
+        """
+        assert self._result is not None
+        if self._result.source in ("manual", "canvas"):
+            return True
+
+        self._until_check -= 1
+        if self._until_check > 0:
+            return True
+        self._until_check = _VERIFY_EVERY
+
+        matched = self._matches_lock(frame)
+        if matched is None:
+            # 這一幀連內容區都找不到(暗轉、全黑)。那是「沒看到」,不是
+            # 「鎖錯了」—— 當成不一致會讓每次過場都往解鎖推一把。
+            return True
+        self._checks.append(matched)
+        if len(self._checks) < _VERIFY_WINDOW:
+            return True
+        disagreed = self._checks.count(False)
+        if disagreed * 2 <= len(self._checks):
+            return True
+
+        logger.warning(
+            "牌桌校正 {} 與畫面對不上(最近 {} 次複查有 {} 次不一致),重新校正。"
+            "常見原因是鎖定當下畫面還停在載入或選單,而不是牌桌上。",
+            self._result.table_rect,
+            len(self._checks),
+            disagreed,
+        )
+        self.reset()
+        return False
+
+    def _matches_lock(self, frame: Frame) -> bool | None:
+        """這一幀單獨算出來的答案,跟鎖定值算不算同一個。
+
+        Returns:
+            一致 / 不一致;這一幀**問不出答案**時回 ``None``。
+        """
+        assert self._result is not None
+        candidate = self._calibrator.calibrate(frame)
+        if candidate.source == "fallback":
+            return None
+        locked, now = self._result.table_rect, candidate.table_rect
+        limit = min(frame.size.width, frame.size.height) * _VERIFY_TOLERANCE
+        drift = max(
+            abs(now.x - locked.x),
+            abs(now.y - locked.y),
+            abs(now.width - locked.width),
+            abs(now.height - locked.height),
+        )
+        return drift <= limit
 
     def _accepts(self, candidate: Calibration) -> bool:
         """這個候選值不值得納入中位數。
@@ -245,9 +379,7 @@ class StableCalibrator:
         ys = [r.y for r in self._samples]
         ws = [r.width for r in self._samples]
         hs = [r.height for r in self._samples]
-        rect = Rect(
-            round(median(xs)), round(median(ys)), round(median(ws)), round(median(hs))
-        )
+        rect = Rect(round(median(xs)), round(median(ys)), round(median(ws)), round(median(hs)))
 
         warnings: list[str] = []
         short_edge = min(frame.size.width, frame.size.height)
