@@ -21,12 +21,15 @@ from mia.utils.geometry import Rect
 from mia.vision.tiles.classify import TemplateSet, classify
 from mia.vision.tiles.river import (
     CELL,
+    CHECK_FACE_HEIGHT,
     COLUMNS,
     DEFAULT_CORNERS,
+    FACE,
     ROWS,
     SEATS,
     River,
     RiverView,
+    classify_river_tile,
     face_size,
     read_river,
 )
@@ -64,7 +67,7 @@ def _read(image: np.ndarray, seat: str, templates: TemplateSet) -> list[str]:
     size = face_size()
     out = []
     for index in river.filled:
-        match = classify(flat[river.cells[index].as_slice()], templates, size=size)
+        match = classify_river_tile(flat[river.cells[index].as_slice()], templates, size=size)
         out.append(normalize_red(ms_to_mjai(match.label)))
     return out
 
@@ -158,7 +161,10 @@ class TestAgainstThePackets:
     ) -> None:
         """靜默錯誤:有信心卻認錯。那是自檢攔不住、只有人工確認擋得住的那一格。
 
-        實測四家合計 56 張有信心、2 張錯。
+        實測四家合計 54 張有信心、**0 張錯**(加上兩個尺度的覆核之前是
+        56 張有信心、2 張錯 —— 那兩張都是 ``2m`` 被讀成 ``1m``)。
+
+        留 1 張的餘地,因為這裡釘的是「幾乎不會錯」,不是「這一幀剛好全對」。
         """
         silent = 0
         for seat in SEATS:
@@ -169,10 +175,12 @@ class TestAgainstThePackets:
             for position, index in enumerate(river.filled):
                 if position >= len(truth):
                     continue
-                match = classify(flat[river.cells[index].as_slice()], templates, size=size)
+                match = classify_river_tile(
+                    flat[river.cells[index].as_slice()], templates, size=size
+                )
                 if match.is_confident and normalize_red(ms_to_mjai(match.label)) != truth[position]:
                     silent += 1
-        assert silent <= 3, f"靜默錯誤 {silent} 張"
+        assert silent <= 1, f"靜默錯誤 {silent} 張"
 
 
 class TestOccupancyUsesTheFaceOnly:
@@ -238,3 +246,67 @@ class TestTileBacksAreNotDiscards:
     def test_an_orange_back_does_not(self) -> None:
         """牌背亮但很橘 —— 實測中位飽和度 126。"""
         assert read_river(self._flat((40, 150, 230))).count == 0
+
+
+class TestTwoScalesMustAgree:
+    """同一格用兩個模板高度各認一次,答案不一樣就棄權。
+
+    擋的是**門檻擋不住的那一種錯**:``2m`` 在 0.70 的高度下有三分之二被讀成
+    ``1m``,而且錯的那個分數還比對的高(0.692 vs 0.670)—— 調門檻只會把對的
+    一起擋掉。模板拉高到 0.73 時 ``2m`` 就對了,但其他牌開始變差,所以沒有
+    一個高度兩邊都好。
+
+    那就不要選邊。尺度是這裡的干擾參數,而「換個尺度答案就變了」本身就是
+    不可信的證據。實測 own 的靜默錯誤 2.09% → 0.16%,合計 0.65% → 0.18%,
+    代價是多 0.93 個百分點的棄權。
+    """
+
+    def test_the_two_heights_really_differ(self) -> None:
+        """兩個高度一樣的話整個覆核就是空轉 —— 而且不會有任何症狀。"""
+        assert round(CHECK_FACE_HEIGHT * CELL[1]) != round(FACE[1] * CELL[1])
+
+    def test_agreement_passes_the_match_through(
+        self, table_image: np.ndarray, templates: TemplateSet
+    ) -> None:
+        """兩邊同意時回傳的就是原本那個 Match,不打任何折扣。"""
+        flat = DEFAULT_CORNERS["shimocha"].rectify(table_image, TABLE)
+        river = read_river(flat)
+        size = face_size()
+        agreed = 0
+        for index in river.filled:
+            cell = flat[river.cells[index].as_slice()]
+            checked = classify_river_tile(cell, templates, size=size)
+            plain = classify(cell, templates, size=size)
+            if checked.runner_up_score != checked.score:
+                assert checked == plain
+                agreed += 1
+        assert agreed, "整家都不一致的話,這個測試什麼都沒驗到"
+
+    def test_disagreement_cannot_be_confident(
+        self, table_image: np.ndarray, templates: TemplateSet
+    ) -> None:
+        """不一致時差距歸零 —— 任何門檻都過不了,不是只有現行這組。"""
+        flat = DEFAULT_CORNERS["own"].rectify(table_image, TABLE)
+        river = read_river(flat)
+        size = face_size()
+        for index in river.filled:
+            cell = flat[river.cells[index].as_slice()]
+            checked = classify_river_tile(cell, templates, size=size)
+            if checked.runner_up_score == checked.score:
+                assert checked.margin == 0.0
+                assert not checked.is_confident
+
+    def test_the_second_height_scales_with_the_cell(
+        self, table_image: np.ndarray, templates: TemplateSet
+    ) -> None:
+        """呼叫端給別的 size 時,第二個尺度要跟著按比例走。
+
+        硬套 :data:`CELL` 會讓兩個尺度的相對關係跑掉,而症狀是「覆核好像
+        沒在運作」—— 那不會有任何錯誤訊息。
+        """
+        flat = DEFAULT_CORNERS["own"].rectify(table_image, TABLE)
+        cell = flat[read_river(flat).cells[0].as_slice()]
+        half = (face_size()[0] // 2, face_size()[1] // 2)
+        # 只要不拋錯、而且確實跑了兩次就夠 —— 第二個尺度若按 CELL 算,
+        # 這裡會拿到一個比格子還大的模板而拿不到結果。
+        assert classify_river_tile(cell, templates, size=half).label

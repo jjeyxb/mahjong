@@ -47,9 +47,15 @@ from mia.vision.tiles.classify import (
     MIN_MARGIN,
     MIN_SCORE,
     TemplateSet,
-    classify,
 )
-from mia.vision.tiles.river import CONFIDENT, DEFAULT_CORNERS, SEATS, face_size, read_river
+from mia.vision.tiles.river import (
+    CONFIDENT,
+    DEFAULT_CORNERS,
+    SEATS,
+    classify_river_tile,
+    face_size,
+    read_river,
+)
 
 __all__ = [
     "OFF_SCREEN",
@@ -309,7 +315,8 @@ def evaluate_rivers(
         flat = DEFAULT_CORNERS[seat].rectify(image, table)
         river = read_river(flat)
         matches = [
-            classify(flat[river.cells[i].as_slice()], templates, size=size) for i in river.filled
+            classify_river_tile(flat[river.cells[i].as_slice()], templates, size=size)
+            for i in river.filled
         ]
         results.append(
             RiverFrameResult(
