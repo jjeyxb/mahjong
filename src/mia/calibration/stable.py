@@ -85,10 +85,11 @@ from collections import deque
 from statistics import median
 
 from mia.calibration.canvas import CanvasChoice
+from mia.calibration.manual import TableRectChoice
 from mia.calibration.table import Calibration, TableCalibrator
 from mia.capture.base import Frame
 from mia.config.models import CalibrationConfig
-from mia.utils.geometry import Rect, Size
+from mia.utils.geometry import NormRect, Rect, Size
 from mia.utils.logging import logger
 
 __all__ = ["StableCalibrator"]
@@ -170,9 +171,10 @@ class StableCalibrator:
         config: CalibrationConfig | None = None,
         *,
         canvas: CanvasChoice | None = None,
+        manual: TableRectChoice | None = None,
     ) -> None:
         self.config = config or CalibrationConfig()
-        self._calibrator = TableCalibrator(self.config, canvas=canvas)
+        self._calibrator = TableCalibrator(self.config, canvas=canvas, manual=manual)
         self._samples: list[Rect] = []
         self._rejected = 0
         self._recent: deque[bool] = deque(
@@ -183,11 +185,24 @@ class StableCalibrator:
         self._size: Size | None = None
         self._checks: deque[bool] = deque(maxlen=_VERIFY_WINDOW)
         self._until_check = _VERIFY_EVERY
+        #: 目前這個鎖定是在哪個手動框之下成立的。使用者重框之後要重算,
+        #: 而「重框了沒」只有比對得出來 —— 那個格子不會通知任何人。
+        self._manual: NormRect | None = None
 
     @property
     def canvas(self) -> CanvasChoice:
         """使用者選的畫布尺寸。改了之後要自己呼叫 :meth:`reset`。"""
         return self._calibrator.canvas
+
+    @property
+    def manual(self) -> TableRectChoice:
+        """使用者框的牌桌矩形。**改了不必自己 reset** —— :meth:`feed` 每一幀
+        都看一次,所以框完下一幀就生效。
+
+        與 :attr:`canvas` 不同是刻意的:選畫布是在選單裡挑一個 preset,動作
+        結束在選單上;框牌桌是對著畫面拖一個框,使用者期待的是「框完就好了」。
+        """
+        return self._calibrator.manual
 
     # ------------------------------------------------------------------ 狀態
 
@@ -223,11 +238,21 @@ class StableCalibrator:
         self._size = None
         self._checks.clear()
         self._until_check = _VERIFY_EVERY
+        self._manual = None
 
     # ------------------------------------------------------------------ 主流程
 
     def feed(self, frame: Frame) -> Calibration | None:
         """餵一幀進去。回傳已鎖定的校正,或 ``None`` 表示還在蒐集。"""
+        # 使用者在 UI 上重框了牌桌 —— 立刻作廢,不要等複查。那是人明確下的
+        # 指令,而複查最快也要八十秒;那八十秒裡畫面上會「框完了卻沒反應」,
+        # 而那正是這個功能要解決的那種沉默。
+        manual = self.manual.value
+        if self._result is not None and manual != self._manual:
+            logger.info("手動框選的牌桌矩形改成 {},重新校正", self.manual)
+            self.reset()
+        self._manual = manual
+
         if self._size is not None and frame.size != self._size:
             logger.info("影像尺寸由 {} 變為 {},重新校正", self._size, frame.size)
             self.reset()

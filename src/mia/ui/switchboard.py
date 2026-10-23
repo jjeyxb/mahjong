@@ -23,6 +23,7 @@ __all__ = [
     "PlatformPicker",
     "StylePicker",
     "Switchboard",
+    "TableRectPicker",
     "is_on",
 ]
 
@@ -88,6 +89,30 @@ class HandRoiPicker(Protocol):
     def grab_frame(self) -> Frame: ...
     def hand_roi(self) -> NormRect | None: ...
     def set_hand_roi(self, rect: NormRect | None) -> None: ...
+
+
+class TableRectPicker(Protocol):
+    """能讓使用者自己框**牌桌範圍**的東西。
+
+    與 :class:`HandRoiPicker` 是兩件事,不要混:
+
+    * 手牌範圍**取代**校正 —— 框了之後那條路上根本不算牌桌矩形。
+    * 牌桌矩形**就是**校正的結果 —— ROI 與四家牌河的角點仍然照常相對它推導,
+      只是那個矩形改成人給的。
+
+    所以它影響的東西多得多(見 :mod:`mia.ui.panel.tablerect`),而這也是
+    它值得一個獨立 Protocol 而不是塞進 :class:`HandRoiPicker` 的理由 ——
+    兩個能不能用的條件不一樣:手牌範圍在 Steam 版上是主要那條路,牌桌矩形
+    則是自動校正走不通時才動的。
+
+    :meth:`grab_frame` 與 :class:`HandRoiPicker` 的同名方法是同一件事,
+    同一個接線類別通常兩個都實作。
+    """
+
+    def can_pick_table_rect(self) -> bool: ...
+    def grab_frame(self) -> Frame: ...
+    def table_rect(self) -> NormRect | None: ...
+    def set_table_rect(self, rect: NormRect | None) -> None: ...
 
 
 class CanvasPicker(Protocol):

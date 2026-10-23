@@ -26,6 +26,7 @@ pytest.importorskip("PySide6", reason="UI 測試需要 PySide6")
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage
+from PySide6.QtWidgets import QPushButton
 
 from mia.calibration.canvas import PRESETS as CANVAS_PRESETS
 from mia.ui.panel.window import PanelWindow, present
@@ -35,6 +36,7 @@ from mia.ui.widgets.tiles import (
     TILE_ASPECT,
     TileIcons,
 )
+from mia.utils.geometry import NormRect
 
 TENPAI = ["1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "1p", "2p", "3p"]
 
@@ -486,9 +488,7 @@ class FakeSwitchboard:
     ``missing`` 裡的 key 根本不存在 —— 模擬 --no-vision / --no-packets。
     """
 
-    def __init__(
-        self, refuse: set[str] | None = None, missing: set[str] | None = None
-    ) -> None:
+    def __init__(self, refuse: set[str] | None = None, missing: set[str] | None = None) -> None:
         self.state: dict[str, bool] = {}
         self.refuse = refuse or set()
         self.missing = missing or set()
@@ -1185,3 +1185,76 @@ class TestPlatformPicker:
         window = PanelWindow(ViewModel())
         qtbot.addWidget(window)
         assert not window._platform_picker.isEnabled()  # noqa: SLF001
+
+
+class FakeTableRectPicker:
+    """假的牌桌框選接線。不開對話框 —— 那需要一張真的遊戲畫面。"""
+
+    def __init__(self, *, can_pick: bool = True, framed: NormRect | None = None) -> None:
+        self._can_pick = can_pick
+        self._rect = framed
+        self.calls: list[NormRect | None] = []
+
+    def can_pick_table_rect(self) -> bool:
+        return self._can_pick
+
+    def grab_frame(self):  # pragma: no cover - 這些測試不走到抓畫面
+        raise AssertionError("這組測試不該抓畫面")
+
+    def table_rect(self) -> NormRect | None:
+        return self._rect
+
+    def set_table_rect(self, rect: NormRect | None) -> None:
+        self._rect = rect
+        self.calls.append(rect)
+
+
+class TestTableRectPicker:
+    """向聽分析頁上的「框選牌桌範圍」。
+
+    自動校正是從四邊剝除邊框,而它**錯的時候很安靜** —— 實測鎖在載入畫面上
+    之後,整場的手牌辨識從 97% 掉到 26%,全程沒有任何錯誤訊息。
+    """
+
+    def _window(self, qtbot, picker):
+        window = PanelWindow(ViewModel(), switchboard=FakeSwitchboard(), table_rect=picker)
+        qtbot.addWidget(window)
+        return window
+
+    def test_it_lives_on_the_analysis_page(self, qtbot) -> None:
+        """與「框選手牌範圍」並排 —— 兩個都是對著這一頁的內容在調的校正,
+        而且框完這一頁當場就會變。設定頁放的是「整個程式的前提」。
+        """
+        window = self._window(qtbot, FakeTableRectPicker())
+        on_analysis = window._analysis_page.findChildren(QPushButton)  # noqa: SLF001
+        assert window._table_rect_button in on_analysis  # noqa: SLF001
+
+    def test_clear_is_disabled_until_something_is_framed(self, qtbot) -> None:
+        """沒框過的時候「改回自動」沒有意義 —— 按了什麼都不會發生,
+        而一顆按了沒反應的按鈕讓人以為程式壞了。
+        """
+        window = self._window(qtbot, FakeTableRectPicker())
+        assert not window._table_rect_clear.isEnabled()  # noqa: SLF001
+
+    def test_a_remembered_frame_shows_as_reframe(self, qtbot) -> None:
+        """上次框過的話按鈕要說「重新框選」—— 否則使用者看不出記住了沒。"""
+        window = self._window(qtbot, FakeTableRectPicker(framed=NormRect(0, 0.1, 1, 0.8)))
+        assert window._table_rect_button.text() == "重新框選"  # noqa: SLF001
+        assert window._table_rect_clear.isEnabled()  # noqa: SLF001
+
+    def test_clearing_forwards_none(self, qtbot) -> None:
+        picker = FakeTableRectPicker(framed=NormRect(0, 0.1, 1, 0.8))
+        window = self._window(qtbot, picker)
+        window._on_clear_table_rect()  # noqa: SLF001
+        assert picker.calls == [None]
+        assert window._table_rect_button.text() == "框選牌桌範圍"  # noqa: SLF001
+
+    def test_modes_without_a_screen_disable_it(self, qtbot) -> None:
+        """重播、示範、--no-vision 都沒有畫面可以框。"""
+        window = self._window(qtbot, FakeTableRectPicker(can_pick=False))
+        assert not window._table_rect_button.isEnabled()  # noqa: SLF001
+
+    def test_no_picker_at_all_disables_it(self, qtbot) -> None:
+        window = PanelWindow(ViewModel(), switchboard=FakeSwitchboard())
+        qtbot.addWidget(window)
+        assert not window._table_rect_button.isEnabled()  # noqa: SLF001

@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from mia.calibration import stable as stable_module
+from mia.calibration.manual import TableRectChoice
 from mia.calibration.stable import StableCalibrator
 from mia.capture.base import Frame, WindowInfo
 from mia.config.models import CalibrationConfig
@@ -307,3 +308,75 @@ class TestTheRecheckWindow:
         只會讓同一段動畫塞滿視窗。擷取實測 15 fps。
         """
         assert stable_module._VERIFY_EVERY == 15  # noqa: SLF001
+
+
+class TestManualFraming:
+    """使用者自己框的牌桌矩形。自動剝除走不通時的逃生門。
+
+    與「框選手牌範圍」是兩件事:那個**取代**校正,這個**就是**校正的結果 ——
+    ROI 與四家牌河的角點仍然照常相對它推導,只是那個矩形改成人給的。
+    """
+
+    def test_a_framed_rect_locks_on_the_first_frame(self, window: WindowInfo) -> None:
+        """人講的話不必「蒐集多幀取中位數」—— 那是為了對付猜的結果的雜訊。"""
+        manual = TableRectChoice((0.0, 0.25, 1.0, 0.5))
+        stable = StableCalibrator(CalibrationConfig(stabilize_frames=15), manual=manual)
+        result = stable.feed(good(window))
+        assert result is not None
+        assert result.source == "manual"
+        assert result.table_rect == Rect(0, 212, 1280, 423)
+
+    def test_the_framed_rect_beats_the_peeling(self, window: WindowInfo) -> None:
+        """剝除仍然會算出 TRUE_CANVAS,但人指定了就以人為準。
+
+        反過來做(啟發式蓋過人)的話,使用者會框了一次、看不出任何變化,
+        而那正是他去框的原因。
+        """
+        manual = TableRectChoice((0.1, 0.1, 0.5, 0.5))
+        stable = StableCalibrator(CalibrationConfig(stabilize_frames=1), manual=manual)
+        result = stable.feed(good(window))
+        assert result is not None
+        assert result.table_rect != TRUE_CANVAS
+
+    def test_reframing_takes_effect_on_the_next_frame(self, window: WindowInfo) -> None:
+        """框完要立刻生效,不能等複查 —— 那最快也要八十秒。
+
+        那八十秒裡畫面上會「框完了卻沒反應」,而那正是這個功能要解決的
+        那種沉默。
+        """
+        manual = TableRectChoice()
+        stable = StableCalibrator(CalibrationConfig(stabilize_frames=1), manual=manual)
+        first = stable.feed(good(window))
+        assert first is not None
+        assert first.table_rect == TRUE_CANVAS
+
+        manual.set((0.0, 0.25, 1.0, 0.5))
+        second = stable.feed(good(window))
+        assert second is not None
+        assert second.source == "manual"
+        assert second.table_rect == Rect(0, 212, 1280, 423)
+
+    def test_clearing_goes_back_to_the_peeling(self, window: WindowInfo) -> None:
+        """「改回自動」也要立刻生效,不然使用者會以為按鈕壞了。"""
+        manual = TableRectChoice((0.0, 0.25, 1.0, 0.5))
+        stable = StableCalibrator(CalibrationConfig(stabilize_frames=1), manual=manual)
+        assert stable.feed(good(window)) is not None
+        manual.clear()
+        back = stable.feed(good(window))
+        assert back is not None
+        assert back.table_rect == TRUE_CANVAS
+
+    def test_a_framed_rect_is_never_second_guessed(
+        self, window: WindowInfo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """複查是用來抓「程式自己猜錯了」的。人講的話不在它管轄範圍內 ——
+        畫面對不上是使用者要知道的事,不是這裡自作主張改掉的事。
+        """
+        monkeypatch.setattr(stable_module, "_VERIFY_EVERY", 1)
+        monkeypatch.setattr(stable_module, "_VERIFY_WINDOW", 2)
+        manual = TableRectChoice((0.0, 0.25, 1.0, 0.5))
+        stable = StableCalibrator(CalibrationConfig(stabilize_frames=1), manual=manual)
+        locked = stable.feed(good(window))
+        assert locked is not None
+        for _ in range(20):
+            assert stable.feed(wrong_place(window)) is locked
