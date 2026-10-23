@@ -42,11 +42,18 @@ from mia.mjai.table import TableTracker
 from mia.mjai.tiles import ms_to_mjai, normalize_red
 from mia.recorder.session import SessionReader
 from mia.utils.geometry import Rect
-from mia.vision.tiles.classify import TemplateSet, classify
-from mia.vision.tiles.river import DEFAULT_CORNERS, SEATS, face_size, read_river
+from mia.vision.tiles.classify import (
+    MIN_BRIGHTNESS,
+    MIN_MARGIN,
+    MIN_SCORE,
+    TemplateSet,
+    classify,
+)
+from mia.vision.tiles.river import CONFIDENT, DEFAULT_CORNERS, SEATS, face_size, read_river
 
 __all__ = [
     "OFF_SCREEN",
+    "SWEEP",
     "AlignedRivers",
     "RiverFrameResult",
     "RiverReport",
@@ -62,6 +69,18 @@ __all__ = [
 #: 與手牌那邊的 ``HAND_OFF_SCREEN`` 是同一個用意:時間軸必須說得出
 #: 「現在沒有東西可以評分」,否則那十幾秒會每一幀都被判成 CV 認錯。
 OFF_SCREEN = frozenset({"hora", "ryukyoku", "end_kyoku", "end_game"})
+
+#: 門檻掃描用的 ``(最低分數, 最小差距)``。第一組是手牌在用的現行值。
+#:
+#: 牌河比手牌小、斜、而且沒人會核對,所以它**未必該用同一組門檻**。這個掃描
+#: 就是在問:把門檻拉高,換得到多少靜默錯誤的減少,又要付出多少棄權?
+SWEEP = (
+    (MIN_SCORE, MIN_MARGIN),
+    (0.55, 0.08),
+    CONFIDENT,
+    (0.65, 0.12),
+    (0.70, 0.15),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,16 +206,43 @@ class RiverFrameResult:
         seat: 視角座位名(:data:`~mia.vision.tiles.river.SEATS` 之一)。
         truth: 標準答案,依序。
         predicted: CV 讀出來的,依序。
-        confident: 每一張有沒有過信心門檻。與 :attr:`predicted` 等長。
+        scores: 每一張的相關係數。與 :attr:`predicted` 等長。
+        margins: 每一張與次高分的差距。
+        brightness: 每一張的比對區與模板的亮度比。
         contiguous: 有牌的格子是不是從頭連續 —— 不連續代表攤平歪了。
+
+    Note:
+        存的是**分數本身**而不是「有沒有信心」的布林值。門檻是可以調的,
+        而調門檻正是這份報告要回答的問題 —— 存成布林值就只能看到現行門檻下
+        的樣子,想問「拉高會怎樣」得重跑一次完整辨識。
+
+        手牌那邊踩過一次:``Match`` 加了亮度檢查、誤判也確實被擋下了,但統計
+        那層沒有這個欄位,於是報告重算信心時完全不知道有這回事,數字一個字
+        都沒變,看起來像修了個沒用的東西。
     """
 
     index: int
     seat: str
     truth: tuple[str, ...]
     predicted: tuple[str, ...]
-    confident: tuple[bool, ...]
+    scores: tuple[float, ...]
+    margins: tuple[float, ...]
+    brightness: tuple[float, ...]
     contiguous: bool
+
+    def confident_at(
+        self, index: int, min_score: float = CONFIDENT[0], min_margin: float = CONFIDENT[1]
+    ) -> bool:
+        """第 ``index`` 張在指定門檻下算不算有信心。
+
+        亮度**不隨掃描而變** —— 分數與差距問的是「像不像」,可以在準確率與
+        棄權之間換;亮度問的是「這裡到底是不是一張牌」,那沒有什麼好換的。
+        """
+        return (
+            self.scores[index] >= min_score
+            and self.margins[index] >= min_margin
+            and self.brightness[index] >= MIN_BRIGHTNESS
+        )
 
     @property
     def count_ok(self) -> bool:
@@ -224,13 +270,22 @@ class RiverFrameResult:
         """逐格對上幾張。**逐格**比對是刻意的 —— 牌河是有序的,位置也要對。"""
         return sum(a == b for a, b in zip(self.truth, self.predicted, strict=False))
 
-    @property
-    def silent_errors(self) -> int:
+    def silent_errors(
+        self, min_score: float = CONFIDENT[0], min_margin: float = CONFIDENT[1]
+    ) -> int:
         """有信心卻認錯。自檢攔不住的那一格。"""
         return sum(
             1
             for i, (a, b) in enumerate(zip(self.truth, self.predicted, strict=False))
-            if a != b and self.confident[i]
+            if a != b and self.confident_at(i, min_score, min_margin)
+        )
+
+    def abstained(self, min_score: float = CONFIDENT[0], min_margin: float = CONFIDENT[1]) -> int:
+        """其實是對的,卻被判為沒信心 —— 棄權的代價。"""
+        return sum(
+            1
+            for i, (a, b) in enumerate(zip(self.truth, self.predicted, strict=False))
+            if a == b and not self.confident_at(i, min_score, min_margin)
         )
 
 
@@ -262,7 +317,9 @@ def evaluate_rivers(
                 seat=seat,
                 truth=frame.truth.rivers[position],
                 predicted=tuple(normalize_red(ms_to_mjai(m.label)) for m in matches),
-                confident=tuple(m.is_confident for m in matches),
+                scores=tuple(m.score for m in matches),
+                margins=tuple(m.margin for m in matches),
+                brightness=tuple(m.brightness for m in matches),
                 contiguous=river.is_plausible(),
             )
         )
@@ -299,7 +356,12 @@ class RiverReport:
         rows = self._for(seat)
         return _ratio(sum(r.contiguous for r in rows), len(rows))
 
-    def silent_error_rate(self, seat: str | None = None) -> float:
+    def silent_error_rate(
+        self,
+        seat: str | None = None,
+        min_score: float = CONFIDENT[0],
+        min_margin: float = CONFIDENT[1],
+    ) -> float:
         """高信心卻認錯,佔全部讀出來的牌的比例。
 
         只算**張數正確**的幀:張數不對時整串索引已經位移,那時候的「錯」
@@ -308,7 +370,22 @@ class RiverReport:
         """
         rows = self._accepted(seat)
         total = sum(len(r.predicted) for r in rows)
-        return _ratio(sum(r.silent_errors for r in rows), total)
+        return _ratio(sum(r.silent_errors(min_score, min_margin) for r in rows), total)
+
+    def abstain_rate(
+        self,
+        seat: str | None = None,
+        min_score: float = CONFIDENT[0],
+        min_margin: float = CONFIDENT[1],
+    ) -> float:
+        """其實是對的卻被判為沒信心,佔全部讀出來的牌的比例。
+
+        與 :meth:`silent_error_rate` 是同一個門檻的兩端。單看任一邊都會得到
+        錯的結論:門檻拉到極高能讓靜默錯誤歸零,代價是什麼都不敢講。
+        """
+        rows = self._accepted(seat)
+        total = sum(len(r.predicted) for r in rows)
+        return _ratio(sum(r.abstained(min_score, min_margin) for r in rows), total)
 
     def confusions(self, seat: str | None = None) -> Counter[tuple[str, str]]:
         """``(標準答案, 認成什麼)`` → 次數。只在張數正確的幀上統計。"""
@@ -338,6 +415,13 @@ class RiverReport:
                 f"{self.count_accuracy(seat):>10.1%}"
                 f"{self.tile_accuracy(seat):>10.1%}"
                 f"{self.silent_error_rate(seat):>10.2%}"
+            )
+        lines += ["", "門檻掃描(分數/差距 → 靜默錯誤 / 棄權成本):"]
+        for min_score, min_margin in SWEEP:
+            lines.append(
+                f"  {min_score:.2f} / {min_margin:.2f}"
+                f"  {self.silent_error_rate(None, min_score, min_margin):>8.2%}"
+                f"  {self.abstain_rate(None, min_score, min_margin):>8.2%}"
             )
         worst = self.confusions().most_common(8)
         if worst:

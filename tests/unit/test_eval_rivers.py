@@ -19,15 +19,28 @@ from mia.eval.rivers import (
 )
 from mia.vision.tiles.river import SEATS
 
+#: 穩穩過關的分數與差距,以及一個不會被亮度擋掉的亮度比。
+SURE = (0.90, 0.30, 1.0)
+#: 分數夠但差距不夠 —— 「像兩張牌」的那種不確定。
+UNSURE = (0.90, 0.01, 1.0)
+
 
 def result(
     truth: str, predicted: str, *, seat: str = "own", confident: str | None = None
 ) -> RiverFrameResult:
     """``"1m 2m"`` 這種寫法比一串 tuple 好讀。``confident`` 用 ``"y n y"``。"""
     t, p = tuple(truth.split()), tuple(predicted.split())
-    flags = tuple(c == "y" for c in confident.split()) if confident else (True,) * len(p)
+    flags = [c == "y" for c in confident.split()] if confident else [True] * len(p)
+    picked = [SURE if ok else UNSURE for ok in flags]
     return RiverFrameResult(
-        index=0, seat=seat, truth=t, predicted=p, confident=flags, contiguous=True
+        index=0,
+        seat=seat,
+        truth=t,
+        predicted=p,
+        scores=tuple(v[0] for v in picked),
+        margins=tuple(v[1] for v in picked),
+        brightness=tuple(v[2] for v in picked),
+        contiguous=True,
     )
 
 
@@ -67,7 +80,7 @@ class TestRiverFrameResult:
     def test_silent_errors_only_count_the_confident_ones(self) -> None:
         """沒信心又認錯的,上層本來就會丟掉,不算靜默。"""
         frame = result("1m 2m 3m", "1m 9p 9s", confident="y y n")
-        assert frame.silent_errors == 1
+        assert frame.silent_errors() == 1
 
     def test_a_hole_makes_the_frame_unusable(self) -> None:
         """牌河中間有洞代表攤平歪了,或畫面上根本不是牌桌。"""
@@ -76,7 +89,9 @@ class TestRiverFrameResult:
             seat="own",
             truth=("1m",),
             predicted=("1m",),
-            confident=(True,),
+            scores=(0.9,),
+            margins=(0.3,),
+            brightness=(1.0,),
             contiguous=False,
         )
         assert frame.count_ok
@@ -92,7 +107,9 @@ class TestRiverReport:
             seat="own",
             truth=("1m", "2m"),
             predicted=("9p", "9s"),
-            confident=(True, True),
+            scores=(0.9, 0.9),
+            margins=(0.3, 0.3),
+            brightness=(1.0, 1.0),
             contiguous=False,
         )
         report = summarize_rivers([good, bad])
@@ -156,3 +173,60 @@ class TestRiverTimeline:
     @pytest.mark.parametrize("wall", [99.0, 100.2])
     def test_unstable_moments_are_refused(self, wall: float) -> None:
         assert self._timeline(100.0).stable_at(wall, 0.4) is None
+
+
+class TestThresholds:
+    """牌河有自己的信心門檻,不跟手牌共用。
+
+    兩邊的風險不同:手牌認錯使用者一眼就發現,牌河沒人會去核對。
+    """
+
+    def test_the_river_is_stricter_than_the_hand(self) -> None:
+        from mia.vision.tiles.classify import MIN_MARGIN, MIN_SCORE
+        from mia.vision.tiles.river import CONFIDENT
+
+        assert CONFIDENT[0] >= MIN_SCORE
+        assert CONFIDENT[1] > MIN_MARGIN
+
+    def test_a_thin_margin_is_not_confident(self) -> None:
+        """2m 與 1m 差一橫,在牌河的解析度下常常只差 0.05 —— 那種時候該棄權。"""
+        frame = RiverFrameResult(
+            index=0,
+            seat="own",
+            truth=("2m",),
+            predicted=("1m",),
+            scores=(0.684,),
+            margins=(0.046,),
+            brightness=(1.0,),
+            contiguous=True,
+        )
+        assert frame.confident_at(0, 0.55, 0.04), "手牌的門檻放得過"
+        assert not frame.confident_at(0, 0.60, 0.10), "牌河的門檻該擋下來"
+
+    def test_brightness_does_not_move_with_the_sweep(self) -> None:
+        """門檻放寬不會讓一塊桌布變成一張牌。"""
+        frame = RiverFrameResult(
+            index=0,
+            seat="own",
+            truth=("1m",),
+            predicted=("P",),
+            scores=(0.99,),
+            margins=(0.90,),
+            brightness=(0.28,),
+            contiguous=True,
+        )
+        assert not frame.confident_at(0, 0.0, 0.0)
+
+    def test_raising_the_threshold_trades_silence_for_abstention(self) -> None:
+        """單看任一邊都會得到錯的結論 —— 門檻拉到極高能讓靜默錯誤歸零,
+        代價是什麼都不敢講。
+        """
+        report = summarize_rivers([result("1m 2m", "1m 9p")])
+        assert report.silent_error_rate(None, 0.55, 0.04) == 0.5
+        assert report.abstain_rate(None, 0.55, 0.04) == 0.0
+        assert report.silent_error_rate(None, 0.95, 0.04) == 0.0
+        assert report.abstain_rate(None, 0.95, 0.04) == 0.5
+
+    def test_the_summary_shows_the_sweep(self) -> None:
+        report = summarize_rivers([result("1m", "1m")])
+        assert "門檻掃描" in report.summary()
