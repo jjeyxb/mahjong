@@ -104,6 +104,30 @@ CONFIDENT = (0.60, 0.10)
 #: 落在中間變得不好判,中位數則跟著佔多數的那一邊走。
 _OCCUPIED_MEDIAN = 110.0
 
+#: 牌面飽和度的上限。超過就是**牌背**,不是一張捨牌。
+#:
+#: 牌背是橘色的,亮度跟牌面一樣高,所以只看亮度分不出來。而河的末端常常會
+#: 出現一張牌背 —— 實測 kamicha 有 43% 的幀多讀一張,一律在結尾,放大看
+#: 全是橘色、沒有任何圖案的牌背。
+#:
+#: 多出來那一張會被硬認成某張牌(實測 2s / 白板 / S / 8p 都出現過),雖然
+#: 分數低、過不了信心門檻,但**張數已經錯了** —— 而張數錯會讓那一家整幀
+#: 被拒絕。所以它傷的不是準確率,是採用率。
+#:
+#: 實測(400 幀、四家):牌面中位飽和度 4(95 百分位 37),牌背中位 126
+#: (5 百分位 80)。中間 37~80 是空的。
+#:
+#: 在那個區間裡掃過三個值,取合計採用率最高的 70:
+#:
+#: ======  ==========  ================================
+#: 門檻    合計採用率  備註
+#: ======  ==========  ================================
+#: 60      91.8%       擋掉了一些真牌(對家 88.8%)
+#: **70**  **93.4%**   取這個
+#: 75      91.9%       牌背開始漏過(上家掉回 90.1%)
+#: ======  ==========  ================================
+_FACE_SATURATION = 70.0
+
 
 @dataclass(frozen=True, slots=True)
 class RiverView:
@@ -260,9 +284,22 @@ def _face_of(cell: Rect, size: tuple[int, int]) -> Rect:
 
 
 def _occupied(image: np.ndarray, cell: Rect) -> bool:
-    """這一塊是牌還是桌布。見 :data:`_OCCUPIED_MEDIAN`。"""
+    """這一塊是一張**攤開的捨牌**嗎。
+
+    兩道都要過:
+
+    * 夠亮 —— 不是桌布。見 :data:`_OCCUPIED_MEDIAN`。
+    * 夠白 —— 不是牌背。見 :data:`_FACE_SATURATION`。
+
+    只看亮度的話牌背會過關,因為橘色跟象牙色一樣亮。
+    """
     patch = image[cell.as_slice()]
     if patch.size == 0:
         return False
+    # 亮度用灰階而不是 HSV 的 V。V 是三通道的最大值,所以藍色桌布的 V
+    # 會被藍通道拉高到門檻以上 —— 那會讓空格子變成「有牌」。
     grey = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
-    return bool(np.median(grey) >= _OCCUPIED_MEDIAN)
+    saturation = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)[:, :, 1]
+    bright = float(np.median(grey)) >= _OCCUPIED_MEDIAN
+    pale = float(np.median(saturation)) <= _FACE_SATURATION
+    return bright and pale
