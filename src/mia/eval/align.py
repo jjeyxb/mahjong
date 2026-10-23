@@ -33,7 +33,14 @@ from mia.mjai.handstate import HandTracker, UnknownSeatError
 from mia.recorder.session import SessionReader
 from mia.utils.logging import logger
 
-__all__ = ["SETTLE", "AlignedFrame", "HandTimeline", "align", "build_timeline"]
+__all__ = [
+    "SETTLE",
+    "AlignedFrame",
+    "HandTimeline",
+    "align",
+    "build_timeline",
+    "stable_index",
+]
 
 #: 一個狀態的前後各要安靜這麼久,落在中間的幀才算「穩定」。
 #:
@@ -77,6 +84,33 @@ class HandState:
     boundary: bool = False
 
 
+def stable_index(walls: Sequence[float], wall: float, settle: float) -> int | None:
+    """這個時刻該採用哪一個狀態 —— 前後都安靜夠久才回答。
+
+    抽出來是因為手牌與牌河各有一條時間軸,而「什麼時候可以相信畫面」對兩者
+    是同一件事。狀態的**內容**不同(一副手牌 vs 四家的河),但「動畫演完了沒」
+    只跟時間有關。
+
+    Args:
+        walls: 各狀態的牆上時鐘,**已排序**。
+        wall: 幀的牆上時鐘。
+        settle: 前後各要安靜多久。
+
+    Returns:
+        可用的索引;落在轉場期間回 ``None``。
+    """
+    index = bisect.bisect_right(walls, wall) - 1
+    if index < 0:
+        return None
+    # 動畫還沒演完
+    if wall - walls[index] < settle:
+        return None
+    # 下一個狀態已經在路上,畫面隨時會變
+    if index + 1 < len(walls) and walls[index + 1] - wall < settle:
+        return None
+    return index
+
+
 @dataclass(slots=True)
 class HandTimeline:
     """一整場的手牌變化,依時間排序。
@@ -117,17 +151,11 @@ class HandTimeline:
         Returns:
             穩定的手牌狀態;落在轉場期間、或事件流已經對不上時回 ``None``。
         """
-        index = bisect.bisect_right(self._walls, wall) - 1
-        if index < 0:
+        index = stable_index(self._walls, wall, settle)
+        if index is None:
             return None
         state = self.states[index]
         if state.boundary or not state.in_sync:
-            return None
-        # 動畫還沒演完
-        if wall - state.wall < settle:
-            return None
-        # 下一個狀態已經在路上,畫面隨時會變
-        if index + 1 < len(self.states) and self._walls[index + 1] - wall < settle:
             return None
         return state
 
@@ -206,9 +234,7 @@ def build_timeline(dump: Path | str) -> HandTimeline:
     if timeline.states and not seen_wall:
         # 全是 0 的話,時間軸看起來完全正常,但每一幀都會配到第一個狀態 ——
         # 準確率報告會出來一個很難看的數字,而原因與 CV 無關。當場擋掉。
-        raise ValueError(
-            f"{dump} 沒有 wall 欄位(2026-07-27 之前的舊格式),無法與畫面對齊。"
-        )
+        raise ValueError(f"{dump} 沒有 wall 欄位(2026-07-27 之前的舊格式),無法與畫面對齊。")
 
     timeline.seat = tracker.seat
     return timeline.freeze()
