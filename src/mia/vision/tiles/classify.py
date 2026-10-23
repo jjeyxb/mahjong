@@ -228,7 +228,13 @@ class TemplateSet:
         return f"TemplateSet({len(self._faces)} 類)"
 
 
-def classify(tile: np.ndarray, templates: TemplateSet, *, tile_height: int | None = None) -> Match:
+def classify(
+    tile: np.ndarray,
+    templates: TemplateSet,
+    *,
+    tile_height: int | None = None,
+    size: tuple[int, int] | None = None,
+) -> Match:
     """判斷一張牌是什麼。
 
     Args:
@@ -237,6 +243,13 @@ def classify(tile: np.ndarray, templates: TemplateSet, *, tile_height: int | Non
             是一條更高的直條,見 ``tile_height``。
         templates: 對應目前牌面皮膚的模板集。
         tile_height: 牌框本身的高度。``None`` 表示 ``tile`` 就是牌框。
+        size: 模板要縮到的 ``(寬, 高)``,單位像素。給了就**蓋過**
+            :data:`FACE_RATIO` 推出來的尺寸。
+
+            牌河用得到:那裡的牌是攤平之後的俯視圖,牌面佔一格的比例與手牌
+            不同(手牌 0.84,牌河約 0.71),而且橫豎兩個方向也不一樣。硬套
+            手牌的比例會讓模板大一圈,分數整片掉下來 —— 症狀看起來像幾何
+            沒校好,但其實幾何是對的,而往幾何去修會越修越糟。
             給值時代表 ``tile`` 是一條含額外搜尋空間的直條,模板仍然依牌框
             大小縮放 —— 拿整條的高度去縮模板會把牌面拉長,那比搜不到還糟。
 
@@ -250,7 +263,8 @@ def classify(tile: np.ndarray, templates: TemplateSet, *, tile_height: int | Non
 
     height, width = tile.shape[:2]
     face_height = tile_height if tile_height is not None else height
-    size = (int(width * FACE_RATIO), int(face_height * FACE_RATIO))
+    if size is None:
+        size = (int(width * FACE_RATIO), int(face_height * FACE_RATIO))
     if min(size) < MIN_TEMPLATE_PX or size[0] >= width or size[1] >= height:
         raise ValueError(
             f"牌框 {width}x{face_height} 太小 —— 模板會縮成 {size[0]}x{size[1]},"

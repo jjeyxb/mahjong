@@ -300,6 +300,36 @@ class TestGuards:
         concealed, _ = classify_hand(strip, hand, templates)
         assert all(m.brightness >= MIN_BRIGHTNESS for m in concealed)
 
+    def test_an_explicit_size_overrides_the_face_ratio(self, templates: TemplateSet) -> None:
+        """牌河要用這個:那裡的牌面佔一格的比例與手牌不同(0.71 對 0.84)。
+
+        硬套手牌那個比例會讓模板大一圈,分數整片掉下來 —— 而症狀看起來像
+        幾何沒校好,往幾何去修會越修越糟。
+        """
+        strip = cv2.imread(str(FIXTURES / "hand_13_full.png"))
+        hand = read_hand(strip)
+        box = hand.concealed[0]
+        tile = strip[box.y : box.y + box.height, box.x : box.x + box.width]
+
+        default = classify(tile, templates)
+        # 把 FACE_RATIO 算出來的那組尺寸明講一次 —— 結果該與不講完全相同
+        same = classify(
+            tile,
+            templates,
+            size=(int(box.width * FACE_RATIO), int(box.height * FACE_RATIO)),
+        )
+        assert (same.label, same.score) == (default.label, default.score)
+
+        # 換一組就該得到不同的分數,否則這個參數根本沒接上
+        other = classify(tile, templates, size=(int(box.width * 0.71), int(box.height * 0.71)))
+        assert other.score != default.score
+
+    def test_a_size_too_big_to_search_in_is_refused(self, templates: TemplateSet) -> None:
+        """模板與搜尋區一樣大的話,matchTemplate 退化成單點比較。"""
+        tile = np.full((100, 60, 3), 200, dtype=np.uint8)
+        with pytest.raises(ValueError, match="太小"):
+            classify(tile, templates, size=(60, 100))
+
     def test_face_ratio_leaves_room_to_search(self) -> None:
         """比例逼近 1.0 就沒有平移餘裕,matchTemplate 會退化成單點比較。"""
         assert 0.5 < FACE_RATIO < 0.95

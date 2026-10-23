@@ -1,33 +1,33 @@
-"""讀出牌河:哪一格有牌、那一格在畫面上的哪裡。
+"""讀出四家的牌河:攤平成俯視圖,再切成 6x3 的網格。
 
-與 :mod:`~mia.vision.tiles.hand` 是同一類的東西 —— 位置是**固定的**,不需要
-偵測,查表就好。差別在牌河是二維的,而且**每一排的幾何都不一樣**。
+與 :mod:`~mia.vision.tiles.hand` 的差別在於**牌是躺著的**。手牌立在自己面前,
+正對鏡頭,所以一組固定比例的槽位就夠;牌河平躺在桌上,而鏡頭是斜的,四家
+各在桌子的一邊 —— 同一張牌在上家與下家的河裡,在畫面上是兩個不同的形狀。
 
-為什麼每一排要各一組常數
-------------------------
-牌河平躺在桌上,而鏡頭是斜的。離鏡頭越遠的那一排看起來越窄:實測 own 的
-三排間距是 ``82.0 / 84.5 / 85.6``(ROI 寬 514),遠排比近排窄 4%。
+為什麼用 homography
+-------------------
+牌河的牌全部平躺,而且每張一樣厚,所以**四家的牌面落在同一個平面上**。
+一個平面在針孔相機下的成像,正是 homography 的定義 —— 它不是「夠用的近似」,
+它就是正確的模型。攤平之後每一格都是正面、直立、等大的牌面,
+:func:`~mia.vision.tiles.classify.classify` 的模板一張都不用改。
 
-4% 聽起來很小,但一排有六格,累積到第六格就是 20 px —— 比牌縫還寬。用同一組
-常數切三排,最遠那排會整排偏掉,而偏掉的格子切到的是隔壁那張牌的一半。
-實測症狀是「只有一排讀得出來」,而那一排是碰巧對上的那排。
+旋轉也一併吃掉了:四個角點的**順序**決定攤平後的方向,所以不需要再對影像
+轉 90/180/270 一次。角點依「遠左、遠右、近右、近左」排列,「遠近」是相對
+那一家自己 —— 他的第一張捨牌落在遠排左邊。
 
-**只有縮放,沒有梯形變形。** 一度以為近排的牌被壓得比遠排扁(那樣就得上
-homography),實測牌面長寬比遠排 1.17、近排 1.18 —— 一樣。透視只體現在整體
-大小上,不在單張牌的內部,所以每排一組縮放就夠了。
+走過的冤枉路
+------------
+一度以為近排的牌有梯形變形(單張牌內部的上緣被壓得比下緣扁),那會需要
+逐格校正。實測牌面長寬比遠排 1.17、近排 1.18 —— 一樣,**那個變形不存在**。
+真正的問題是整個網格的軸與影像的軸對不齊:own 的三排剛好是水平的,所以
+「每排一組起點加間距」能走;側面兩家的排是斜的,同樣的模型套上去整排偏掉。
 
-為什麼不量上下緣,而是給一條夠寬的搜尋帶
-----------------------------------------
-``cv2.matchTemplate`` 本來就會在搜尋區裡平移找最佳位置,所以垂直方向只要給
-一條**比牌高一些**的帶子,它自己會對上去。反過來把帶子切得剛好貼著牌,等於
-把平移餘裕拿掉 —— 實測同一張「北」在寬鬆格子裡是 0.845,貼著切之後掉到
-0.403。切得準不會比較好,切得準只是比較難。
+校正是搜出來的,不是量出來的
+----------------------------
+角點用座標下降搜,目標是「攤平之後有牌的格數 + 有信心的格數」。不用標準答案
+—— 正確的攤平會讓整片**同時**變得有信心,錯的攤平是整片都勉強。
 
-牌河最多 18 格,但不是 18 張
----------------------------
-6 格 x 3 排。被別家鳴走的牌會從河裡**消失**,後面的往前遞補,所以第 k 格裝的
-不一定是第 k 張捨牌。拿封包對答案時要用
-:attr:`~mia.mjai.table.Player.visible_river`,不是 ``river``。
+兩個目標函數的陷阱都踩過,都寫在 :data:`DEFAULT_CORNERS` 的說明裡。
 """
 
 from __future__ import annotations
@@ -40,116 +40,116 @@ import numpy as np
 from mia.utils.geometry import Rect
 
 __all__ = [
+    "CELL",
     "COLUMNS",
-    "DEFAULT_RIVER",
-    "ROTATION",
+    "DEFAULT_CORNERS",
+    "FACE",
     "ROWS",
     "SEATS",
-    "RiverLayout",
-    "RowLayout",
+    "River",
+    "RiverView",
+    "face_size",
     "read_river",
-    "upright",
 ]
-
-#: 四家,與 ``data/roi_ref/roi.yaml`` 的鍵一致。順序是**出牌順序** ——
-#: 自己、下家、對家、上家。
-SEATS = ("own", "shimocha", "toimen", "kamicha")
-
-#: 把每一家的牌河轉成與自己同向所需的旋轉。``None`` 表示本來就是正的。
-#:
-#: 轉**影像**而不是轉模板:一家只要轉一次,轉模板要轉 37 次。而且轉完之後
-#: 四家共用同一套「由遠而近、由左而右」的索引,上層不必各家各寫一遍。
-#:
-#: 四個方向都目視確認過 —— 轉完之後牌面上的字是正的。另外用模板分數交叉
-#: 驗過:每一家在正確的方向上分數最高,其餘三個方向明顯較差。
-ROTATION: dict[str, int | None] = {
-    "own": None,
-    "shimocha": cv2.ROTATE_90_CLOCKWISE,
-    "toimen": cv2.ROTATE_180,
-    "kamicha": cv2.ROTATE_90_COUNTERCLOCKWISE,
-}
 
 #: 牌河的格數。雀魂固定 6 格一排、三排。
 COLUMNS = 6
 ROWS = 3
 
-#: 判定一格有牌的中位亮度門檻。牌面是象牙色、桌布是深藍,實測真牌 177~223、
-#: 桌布 50~62 —— 中間空得很開,門檻取 110 離兩邊都遠。
+#: 四家,與 ``data/roi_ref/roi.yaml`` 的鍵一致。順序是**出牌順序** ——
+#: 自己、下家、對家、上家。
+SEATS = ("own", "shimocha", "toimen", "kamicha")
+
+#: 攤平後一格的像素大小 ``(寬, 高)``。
 #:
-#: 用中位數而不是平均:一格裡若有一半是牌、一半是桌布(切得略寬時會發生),
+#: 這個比例不是牌的真實比例,是**量出來最好認的那個**。攤平的目標是讓模板
+#: 對得上,不是還原物理尺寸 —— 模板本身就是斜著畫的貼圖,不是正投影。
+CELL = (90, 120)
+
+#: 牌面佔一格的比例 ``(寬, 高)``。手牌是 0.84,牌河小得多 —— 一格裡除了牌面
+#: 還含著牌縫與相鄰牌的邊緣。套錯會讓模板大一圈,分數整片掉下來,
+#: 而症狀看起來像幾何沒校好。
+FACE = (0.72, 0.70)
+
+#: 判定一格有牌的中位亮度門檻。牌面是象牙色、桌布是深藍,實測真牌 177~223、
+#: 桌布 50~62。用中位數而不是平均:一格裡若有一半是牌、一半是桌布,
 #: 平均會落在中間變得不好判,中位數則跟著佔多數的那一邊走。
 _OCCUPIED_MEDIAN = 110.0
 
 
 @dataclass(frozen=True, slots=True)
-class RowLayout:
-    """一排在 ROI 內的幾何,全部是**相對 ROI 尺寸**的比例。
+class RiverView:
+    """一家牌河的四個角,**相對牌桌矩形**的正規化座標。
+
+    用正規化座標而不是像素,理由與 ROI 相同:同一組數字要能跟著視窗大小走。
 
     Attributes:
-        origin: 第 0 格的左緣,相對 ROI 寬。
-        pitch: 相鄰兩格左緣的距離,相對 ROI 寬。
-        top: 搜尋帶的上緣,相對 ROI 高。
-        height: 搜尋帶的高度,相對 ROI 高。比一張牌高 —— 見模組說明。
+        corners: 四個角 ``((x, y), ...)``,順序是**遠左、遠右、近右、近左**。
+            順序就是方向 —— 換順序等於轉 90 度,所以它不只是「四個點」,
+            是「四個有編號的點」。
     """
 
-    origin: float
-    pitch: float
-    top: float
-    height: float
+    corners: tuple[
+        tuple[float, float], tuple[float, float], tuple[float, float], tuple[float, float]
+    ]
 
-    def cell(self, size: tuple[int, int], column: int) -> Rect:
-        """第 ``column`` 格的搜尋區。``size`` 是 ``(ROI 寬, ROI 高)``。"""
-        width, height = size
-        x = round((self.origin + column * self.pitch) * width)
-        return Rect(
-            x,
-            round(self.top * height),
-            round(self.pitch * width),
-            round(self.height * height),
+    def quad(self, table: Rect) -> np.ndarray:
+        """換算成擷取影像上的像素四邊形。"""
+        return np.array(
+            [[table.x + x * table.width, table.y + y * table.height] for x, y in self.corners],
+            dtype=np.float32,
         )
 
+    def rectify(
+        self, image: np.ndarray, table: Rect, *, cell: tuple[int, int] = CELL
+    ) -> np.ndarray:
+        """把這一家的牌河攤平成 ``6 x 3`` 格的俯視圖。
 
-@dataclass(frozen=True, slots=True)
-class RiverLayout:
-    """一家牌河的三排幾何。
+        Args:
+            image: 整張擷取影像(不是 ROI 裁過的)。
+            table: 牌桌矩形,見 :class:`~mia.calibration.table.Calibration`。
+            cell: 攤平後一格的大小。
 
-    Attributes:
-        rows: 由遠而近三排。順序與畫面上由上而下一致,也與捨牌順序一致 ——
-            牌河是從最遠那排開始往自己這邊填的。
-        face: 牌面佔一格的比例 ``(寬, 高)``。模板會縮到這個大小再比對。
-            寬實測三排都是 0.73~0.74,所以共用一個值;高是相對**搜尋帶**的,
-            而搜尋帶比牌高,因此這個數字看起來偏小是正常的。
-    """
-
-    rows: tuple[RowLayout, RowLayout, RowLayout]
-    face: tuple[float, float]
-
-    def cell(self, size: tuple[int, int], index: int) -> Rect:
-        """第 ``index`` 格(0~17,由遠而近、由左而右)的搜尋區。"""
-        if not 0 <= index < COLUMNS * ROWS:
-            raise ValueError(f"牌河只有 {COLUMNS * ROWS} 格,拿到 index={index}")
-        return self.rows[index // COLUMNS].cell(size, index % COLUMNS)
-
-    def face_size(self, size: tuple[int, int], index: int) -> tuple[int, int]:
-        """第 ``index`` 格該用多大的模板。``(寬, 高)``,給 ``cv2.resize`` 用。"""
-        cell = self.cell(size, index)
-        return round(self.face[0] * cell.width), round(self.face[1] * cell.height)
+        Returns:
+            ``(3 * cell高, 6 * cell寬)`` 的 BGR 影像,牌面是正的。
+        """
+        width, height = cell
+        target = np.array(
+            [[0, 0], [COLUMNS * width, 0], [COLUMNS * width, ROWS * height], [0, ROWS * height]],
+            dtype=np.float32,
+        )
+        matrix = cv2.getPerspectiveTransform(self.quad(table), target)
+        return cv2.warpPerspective(image, matrix, (COLUMNS * width, ROWS * height))
 
 
-#: own 牌河的量測值。
+#: 四家的角點。
 #:
-#: 量測條件:``data/recordings/20260801-110639``(2536x1608 擷取、牌桌矩形
-#: 2536x1430),``own.river`` ROI 裁出 514x288。起點與間距由牌縫的中心位置
-#: 量出(實測一排六格的間距差值 87/84/83/85/84/84,殘差 < 2px);搜尋帶的
-#: 上緣與牌面比例以「整排同時變得有信心」為目標擬合。
-DEFAULT_RIVER = RiverLayout(
-    rows=(
-        RowLayout(origin=0.0156, pitch=0.1595, top=0.000, height=0.389),
-        RowLayout(origin=0.0078, pitch=0.1644, top=0.243, height=0.389),
-        RowLayout(origin=0.0019, pitch=0.1665, top=0.594, height=0.389),
-    ),
-    face=(0.73, 0.63),
-)
+#: 量測條件:``data/recordings/20260801-110639`` 幀 12141(2536x1608 擷取、
+#: 牌桌矩形 2536x1430),四家牌河 15/17/17/16 張。以座標下降搜出,目標是
+#: 「有牌的格數 + 0.9 x 有信心的格數」。
+#:
+#: 目標函數踩過兩個坑,都留在這裡當紀錄:
+#:
+#: 1. **只看平均分會讓方框縮小。** 把難認的格子排除在外,平均分就上升了 ——
+#:    於是優化器主動漏掉一格,而漏掉的那格讓後面整串索引往前位移一格,
+#:    表現出來是「整家幾乎全錯」。所以格數要進目標。
+#: 2. **座標下降會卡在偏半格的局部解。** 要挪一整格才會變好,中間那段是變差
+#:    的,把步長調小救不了。所以從「原位 + 沿兩個格軸各平移 ±1 格」共九個
+#:    起點各跑一次 —— 上家正是靠 ``(-1, 0)`` 那個起點才對上的。
+#:
+#: ⚠ **只在一個畫布尺寸上驗過。** 角點是相對牌桌矩形的比例,理論上跟著縮放,
+#: 但沒有第二個尺寸的素材可以證實。
+DEFAULT_CORNERS: dict[str, RiverView] = {
+    "own": RiverView(((0.3998, 0.4839), (0.5907, 0.4839), (0.5978, 0.7021), (0.3927, 0.6895))),
+    "shimocha": RiverView(((0.5883, 0.4944), (0.5777, 0.2678), (0.7125, 0.2657), (0.7386, 0.4902))),
+    "toimen": RiverView(((0.5836, 0.2720), (0.4073, 0.2804), (0.4144, 0.1350), (0.5777, 0.1392))),
+    "kamicha": RiverView(((0.4160, 0.2667), (0.4077, 0.4960), (0.2468, 0.5002), (0.2847, 0.2667))),
+}
+
+
+def face_size(cell: tuple[int, int] = CELL) -> tuple[int, int]:
+    """模板該縮到多大。傳給 :func:`~mia.vision.tiles.classify.classify` 的 ``size``。"""
+    return round(FACE[0] * cell[0]), round(FACE[1] * cell[1])
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,8 +157,8 @@ class River:
     """一家牌河讀出來的結果。
 
     Attributes:
-        cells: 每一格的搜尋區,由遠而近、由左而右。長度固定 18 —— 空格也留著,
-            因為「第幾格」要對得上捨牌順序。
+        cells: 每一格在**攤平後影像**上的矩形,由遠而近、由左而右。長度固定
+            18 —— 空格也留著,因為「第幾格」要對得上捨牌順序。
         occupied: 每一格有沒有牌。
     """
 
@@ -178,55 +178,36 @@ class River:
     def is_plausible(self) -> bool:
         """有牌的格子是不是從頭連續排到某一格。
 
-        牌河是**從第 0 格依序往後填**的,中間不會有洞 —— 被鳴走的牌後面會
-        往前遞補。所以出現「有、沒有、有」就代表切歪了或是抓在動畫中間,
+        牌河是**從第 0 格依序往後填**的,中間不會有洞 —— 被別家鳴走的牌後面
+        會往前遞補。所以出現「有、沒有、有」就代表攤平歪了或是抓在動畫中間,
         整家丟掉比較安全。
 
-        這與手牌的張數檢查是同一個用意,而那個檢查實測攔下了八成的靜默錯誤。
+        與手牌的張數檢查是同一個用意,而那個檢查實測攔下了八成的靜默錯誤。
         """
         return self.filled == tuple(range(self.count))
 
 
-def upright(image: np.ndarray, seat: str) -> np.ndarray:
-    """把一家的牌河轉成與自己同向。
+def read_river(flat: np.ndarray, *, cell: tuple[int, int] = CELL) -> River:
+    """在**攤平後**的影像上切 18 格,並判斷每一格有沒有牌。
 
     Args:
-        image: 該家 ``river`` ROI 裁出來的 BGR 影像。
-        seat: :data:`SEATS` 之一。
-
-    Returns:
-        轉正後的影像。``own`` 回傳的是**原物件**,不是複本 —— 不轉就沒有
-        複製的理由,而呼叫端本來就不該改它。
-    """
-    if seat not in ROTATION:
-        raise ValueError(f"不認得的座位 {seat!r},要是 {SEATS} 之一")
-    rotation = ROTATION[seat]
-    return image if rotation is None else cv2.rotate(image, rotation)
-
-
-def read_river(image: np.ndarray, layout: RiverLayout = DEFAULT_RIVER) -> River:
-    """切出一家牌河的 18 格,並判斷每一格有沒有牌。
-
-    Args:
-        image: 該家 ``river`` ROI 裁出來的 BGR 影像。**已經轉正** —— 側面與
-            對家的牌河要先旋轉成與自己同向,見 :mod:`mia.vision.tiles.seats`。
-        layout: 幾何。預設是 own 的量測值。
+        flat: :meth:`RiverView.rectify` 的輸出。
+        cell: 攤平時用的一格大小。
 
     Returns:
         每一格的位置與有無。**不判斷牌面是什麼** —— 那是
         :func:`~mia.vision.tiles.classify.classify` 的工作。
     """
-    if image.ndim != 3 or image.shape[2] != 3:
-        raise ValueError(f"需要 BGR 三通道影像,拿到 shape={image.shape}")
+    if flat.ndim != 3 or flat.shape[2] != 3:
+        raise ValueError(f"需要 BGR 三通道影像,拿到 shape={flat.shape}")
 
-    height, width = image.shape[:2]
-    size = (width, height)
+    width, height = cell
     cells: list[Rect] = []
     occupied: list[bool] = []
     for index in range(COLUMNS * ROWS):
-        cell = layout.cell(size, index)
-        cells.append(cell)
-        occupied.append(_occupied(image, cell))
+        rect = Rect((index % COLUMNS) * width, (index // COLUMNS) * height, width, height)
+        cells.append(rect)
+        occupied.append(_occupied(flat, rect))
     return River(cells=tuple(cells), occupied=tuple(occupied))
 
 
