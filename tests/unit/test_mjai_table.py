@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from mia.groundtruth.stream import MjaiDecoder
-from mia.mjai import Chi, Dahai, Kakan, Pon, Reach, StartGame, StartKyoku
+from mia.mjai import Ankan, Chi, Dahai, Kakan, Pon, Reach, StartGame, StartKyoku
 from mia.mjai.table import TableTracker
 from mia.mjai.tiles import normalize_red
 
@@ -21,8 +21,13 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
 def _start(dora: str = "1z") -> StartKyoku:
     return StartKyoku(
-        bakaze="E", kyoku=1, honba=0, kyotaku=0, oya=0,
-        dora_marker=dora, tehais=[["?"] * 13 for _ in range(4)],
+        bakaze="E",
+        kyoku=1,
+        honba=0,
+        kyotaku=0,
+        oya=0,
+        dora_marker=dora,
+        tehais=[["?"] * 13 for _ in range(4)],
         scores=[25000] * 4,
     )
 
@@ -136,7 +141,6 @@ class TestMeldsAreThreatsToo:
         assert t.threats == []
 
 
-
 class TestNewHand:
     def test_a_new_kyoku_forgets_everything(self) -> None:
         """上一局的安全牌在這一局毫無意義 —— 留著不會有任何症狀,
@@ -201,6 +205,32 @@ class TestAgainstARealGame:
         path = FIXTURES / "real_game_full.jsonl"
         return [e for d in MjaiDecoder().decode_file(path) for e in d.events]
 
+    def test_every_called_tile_left_exactly_one_river(self, replay: list) -> None:
+        """整場 17 次鳴牌,河裡就該少 17 張 —— 一張不多一張不少。
+
+        多了代表有人的河被重複扣(同一次鳴牌動到兩家),少了代表漏算。
+        兩種都會讓畫面比對的標準答案悄悄偏掉,而症狀看起來像「辨識不準」。
+        """
+        tracker = TableTracker()
+        calls = taken = 0
+        for event in replay:
+            if event.TYPE == "start_kyoku":
+                taken += sum(len(p.called) for p in tracker.players)
+            if event.TYPE in ("chi", "pon", "daiminkan"):
+                calls += 1
+            tracker.handle(event)
+        taken += sum(len(p.called) for p in tracker.players)
+        assert calls == 17, "素材變了的話下面那個數字也要跟著改"
+        assert taken == calls
+
+    def test_a_visible_river_never_exceeds_the_grid(self, replay: list) -> None:
+        """雀魂的牌河是 6x3,一家最多 18 格。超過代表 called 沒扣到。"""
+        tracker = TableTracker()
+        for event in replay:
+            tracker.handle(event)
+            for player in tracker.players:
+                assert len(player.visible_river) <= 18
+
     def test_no_deal_in_tile_was_ever_called_safe(self, replay: list) -> None:
         """**這一組測試的重點。**
 
@@ -258,8 +288,14 @@ class TestYakuhaiLowersTheThreshold:
         t.handle(StartGame(id=0))
         t.handle(
             StartKyoku(
-                bakaze="E", kyoku=1, honba=0, kyotaku=0, oya=oya, dora_marker="1z",
-                tehais=[["?"] * 13 for _ in range(4)], scores=[25000] * 4,
+                bakaze="E",
+                kyoku=1,
+                honba=0,
+                kyotaku=0,
+                oya=oya,
+                dora_marker="1z",
+                tehais=[["?"] * 13 for _ in range(4)],
+                scores=[25000] * 4,
             )
         )
         return t
@@ -327,8 +363,14 @@ class TestSuitRead:
         t.handle(StartGame(id=0))
         t.handle(
             StartKyoku(
-                bakaze="E", kyoku=1, honba=0, kyotaku=0, oya=0, dora_marker="1z",
-                tehais=[["?"] * 13 for _ in range(4)], scores=[25000] * 4,
+                bakaze="E",
+                kyoku=1,
+                honba=0,
+                kyotaku=0,
+                oya=0,
+                dora_marker="1z",
+                tehais=[["?"] * 13 for _ in range(4)],
+                scores=[25000] * 4,
             )
         )
         return t
@@ -371,3 +413,58 @@ class TestSuitRead:
         for pai in ("P", "F", "C"):
             t.handle(Pon(actor=1, target=0, pai=pai, consumed=[pai, pai]))
         assert t.players[1].suit_read is None
+
+
+class TestVisibleRiver:
+    """畫面上還看得到的牌河。
+
+    與 ``river`` 的差別只有被鳴走的那幾張。拿錯的那個去跟畫面比對,會得到
+    一個看起來只是「準確率有點低」的結果,而真正的原因與辨識完全無關 ——
+    所以這裡測的重點是兩者**確實不同**,不是兩者都存在。
+    """
+
+    def test_an_untouched_river_is_entirely_visible(self) -> None:
+        t = _tracker()
+        t.handle(Dahai(actor=1, pai="3m", tsumogiri=False))
+        t.handle(Dahai(actor=1, pai="7p", tsumogiri=True))
+        assert t.players[1].visible_river == ["3m", "7p"]
+
+    def test_a_called_tile_leaves_the_table(self) -> None:
+        """那張牌已經移到鳴牌者的副露去了,河裡看不到它。"""
+        t = _tracker()
+        t.handle(Dahai(actor=1, pai="3m", tsumogiri=False))
+        t.handle(Chi(actor=2, target=1, pai="3m", consumed=["1m", "2m"]))
+        assert t.players[1].visible_river == []
+        assert t.players[1].river == ["3m"], "振聽仍然算他打過"
+
+    def test_only_the_called_one_leaves(self) -> None:
+        t = _tracker()
+        t.handle(Dahai(actor=1, pai="3m", tsumogiri=False))
+        t.handle(Dahai(actor=1, pai="7p", tsumogiri=True))
+        t.handle(Pon(actor=3, target=1, pai="7p", consumed=["7p", "7p"]))
+        t.handle(Dahai(actor=1, pai="9s", tsumogiri=False))
+        assert t.players[1].visible_river == ["3m", "9s"]
+
+    def test_a_pon_only_takes_from_the_target(self) -> None:
+        """鳴的是剛打出來的那張,所以只動 target 一個人的河。"""
+        t = _tracker()
+        t.handle(Dahai(actor=1, pai="7p", tsumogiri=False))
+        t.handle(Dahai(actor=2, pai="7p", tsumogiri=False))
+        t.handle(Pon(actor=0, target=2, pai="7p", consumed=["7p", "7p"]))
+        assert t.players[1].visible_river == ["7p"]
+        assert t.players[2].visible_river == []
+
+    def test_a_new_hand_clears_it(self) -> None:
+        t = _tracker()
+        t.handle(Dahai(actor=1, pai="3m", tsumogiri=False))
+        t.handle(Chi(actor=2, target=1, pai="3m", consumed=["1m", "2m"]))
+        t.handle(_start())
+        assert t.players[1].visible_river == []
+        assert t.players[1].called == set()
+
+    def test_an_ankan_takes_nothing_from_any_river(self) -> None:
+        """暗槓四張全部來自手上,沒有人的河會少一張。"""
+        t = _tracker()
+        t.handle(Dahai(actor=1, pai="3m", tsumogiri=False))
+        t.handle(Ankan(actor=2, consumed=["9s"] * 4))
+        assert t.players[1].visible_river == ["3m"]

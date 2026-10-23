@@ -150,6 +150,9 @@ class Player:
     Attributes:
         river: 打出去的牌,依序。被別家鳴走的也留著 —— 振聽看的是「他打過」,
             不是「那張牌現在在哪」。
+        called: :attr:`river` 之中**被別家鳴走**的那幾張的索引。畫面上那些牌
+            已經移到鳴牌者的副露去了,所以要拿牌河跟畫面比對時,要用
+            :attr:`visible_river` 而不是 :attr:`river`。
         melds: 副露,每組一個 tuple(完整內容,給人看的)。
         revealed: 副露之中**從自己手上拿出來**的那幾張。數「場上看得見幾張」
             時要用這個而不是 ``melds``:被鳴走的那張已經記在打者的 ``river``
@@ -172,12 +175,32 @@ class Player:
     """
 
     river: list[str] = field(default_factory=list)
+    called: set[int] = field(default_factory=set)
     melds: list[tuple[str, ...]] = field(default_factory=list)
     revealed: list[str] = field(default_factory=list)
     reach: bool = False
     reach_turn: int | None = None
     safe: set[str] = field(default_factory=set)
     yakuhai: frozenset[str] = frozenset(DRAGONS)
+
+    @property
+    def visible_river(self) -> list[str]:
+        """**畫面上還看得到**的牌河。
+
+        與 :attr:`river` 的差別只有一個:被別家鳴走的那幾張不在裡面。
+        那些牌在畫面上已經移到鳴牌者的副露區了,河裡那一格會空出來,
+        後面的牌**往前遞補**(雀魂不留空位)。
+
+        兩個都要留著,因為它們回答不同的問題:
+
+        * :attr:`river` —— 「他打過什麼」。振聽看這個,鳴走了也算打過。
+        * :attr:`visible_river` —— 「畫面上有什麼」。畫面辨識的標準答案
+          看這個,不然每被鳴一次就會多出一張對不上的牌。
+
+        拿錯會得到一個看起來只是「準確率有點低」的結果,而真正的原因
+        與辨識完全無關。
+        """
+        return [tile for index, tile in enumerate(self.river) if index not in self.called]
 
     @property
     def melded(self) -> int:
@@ -282,6 +305,7 @@ class TableTracker:
             case Chi() | Pon() | Daiminkan():
                 # 被鳴的那張來自別人的河,那裡已經數過了
                 self._meld(event.actor, (event.pai, *event.consumed), event.consumed)
+                self._take(event.target)
             case Ankan():
                 # 四張全部來自手上
                 self._meld(event.actor, tuple(event.consumed), event.consumed)
@@ -322,6 +346,14 @@ class TableTracker:
         for index, player in enumerate(self.players):
             if index != actor and player.reach:
                 player.safe.add(pai)
+
+    def _take(self, target: int) -> None:
+        """被鳴走的是 ``target`` 河裡的**最後**一張 —— 鳴牌只能鳴剛打出來的那張。"""
+        if not self._valid(target):
+            return
+        river = self.players[target].river
+        if river:
+            self.players[target].called.add(len(river) - 1)
 
     def _reach(self, actor: int) -> None:
         if not self._valid(actor):
