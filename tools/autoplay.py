@@ -65,9 +65,15 @@ SHOT_DIR = Path("out/autoplay")
 #: 心跳間隔(秒)。
 _HEARTBEAT = 10.0
 
-#: 切牌最多存幾張。按鈕不設上限 —— 那幾顆本來就難得跳一次,而且是真正
-#: 沒量過的東西;切牌一局七十幾次,存多了只會把按鈕那幾張淹掉。
-_TILE_SHOTS = 3
+#: 切牌最多存幾張。
+#:
+#: 存切牌不只是為了對牌的座標 —— **立直鈕會出現在這些圖裡**。立直是在
+#: 自己的回合可以宣告的,而切牌也是自己的回合,所以切牌前的畫面上只要
+#: 這一巡能立直,那顆按鈕就在。這是拿到立直座標最省事的辦法:不必等引擎
+#: 真的決定立直(實測整場 81 個決策裡只有 2 次)。
+#:
+#: 20 張約 56 MB,錄一場夠用。按鈕本身不設上限 —— 那幾顆難得跳一次。
+_TILE_SHOTS = 20
 
 #: 剛摸進來那張牌在畫面上的位置,相對 viewport 的比例 (x, y)。
 #:
@@ -86,6 +92,55 @@ DRAWN_TILE = (0.798, 0.925)
 #: 伺服器回的那個事件才會清掉,在那之前狀態仍然說「該打牌」。沒有這道閘
 #: 就會連點,而連點在雀魂上的後果是把下一巡的牌也打掉。
 _COOLDOWN = 2.0
+
+
+def viewport(page: Page) -> tuple[int, int] | None:
+    """分頁的可視區大小。拿不到回 ``None``。
+
+    **不能只看 ``page.viewport_size``。** 瀏覽器是用 ``no_viewport=True``
+    開的(那是為了讓雀魂跟著視窗縮放重新排版,見 cdp.py),而那個選項的
+    意思就是「不要設 viewport」—— 於是這個屬性永遠是 ``None``。
+
+    實測這正是「自動打牌完全沒反應」的原因:計畫做好了、在等著動手,
+    而 ``act`` 每次都卡在 ``if not size: return`` 然後**安靜地**返回。
+    心跳印出「等著動手」但「動作 0」才看得出來。
+
+    所以直接問頁面自己。``window.innerWidth`` 不管有沒有設 viewport 都對,
+    而且它就是 CSS 像素 —— 與 ``page.mouse`` 吃的座標系同一個。
+    """
+    try:
+        size = page.evaluate("() => [window.innerWidth, window.innerHeight]")
+    except Exception as exc:  # noqa: BLE001 - 分頁可能剛被關掉
+        logger.warning("問不到可視區大小:{}", exc)
+        return None
+    if not size or len(size) != 2 or not all(isinstance(v, int | float) and v > 0 for v in size):
+        return None
+    return int(size[0]), int(size[1])
+
+
+#: 按住多久(毫秒)。
+#:
+#: **不能用 ``page.mouse.click``。** 它的 down 與 up 之間幾乎沒有間隔,
+#: 而雀魂是畫在 canvas 上的遊戲 —— 這類遊戲多半是每個繪製影格去**輪詢**
+#: 輸入狀態,而不是監聽事件。零長度的按壓有機會整個落在兩個影格之間,
+#: 於是遊戲從頭到尾沒看到「現在是按下的」。
+#:
+#: 120 ms 在 60 fps 下橫跨約 7 個影格,怎麼樣都會被輪詢到。
+_PRESS_MS = 120
+
+
+def _press(page: Page, x: int, y: int) -> None:
+    """在 (x, y) 按一下 —— 移過去、按住、放開。
+
+    先 ``move`` 再按:canvas 遊戲常常要先收到 hover 才會把那個位置當成
+    可互動的目標(按鈕的高亮狀態就是這樣來的)。直接在沒有 hover 的位置
+    按下去,有些實作會當作沒按在任何東西上。
+    """
+    page.mouse.move(x, y)
+    page.wait_for_timeout(60)
+    page.mouse.down()
+    page.wait_for_timeout(_PRESS_MS)
+    page.mouse.up()
 
 
 @dataclass
@@ -172,70 +227,36 @@ def tile_point(index: int, concealed: int, *, drawn: bool = False) -> tuple[floa
     return rx + (inner + layout.width / 2) * rw, ry + rh / 2
 
 
-#: 畫面上那幾顆按鈕的位置,相對 viewport 的比例。
+#: 按鈕那一排的垂直位置與水平間距,相對 viewport。**量過的**:
+#: 2026-10-24 從 ``out/autoplay/skip-01`` 量,碰 (0.533, 0.760)、
+#: 跳過 (0.682, 0.760),兩者相距 0.149。兩個點都確認正中按鈕。
+_BUTTON_Y = 0.760
+_BUTTON_PITCH = 0.149
+
+#: 最右邊那一格的位置。雀魂把按鈕**靠右對齊**,而「跳過」永遠在最右邊 ——
+#: 所以固定座標是錯的模型:按鈕數量一變,其他每一顆都跟著移位。
+_BUTTON_RIGHT = 0.682
+
+#: 從右邊數,每一種按鈕在第幾格。
 #:
-#: ⚠ **這組數字沒有量過。** 手牌的槽位有量測基礎(見 :func:`tile_point`),
-#: 但「立直」「碰」「跳過」那幾顆按鈕沒有人量過座標。先用估計值,再用
-#: ``--autoplay-dry-run`` 對著實際畫面校正 —— 那個模式只印要點哪裡、不真的點。
+#: ⚠ **只有 0 與 1 是量過的。** 跳過在第 0 格、碰在第 1 格,兩者都用
+#: 實際畫面確認過。其餘是推測:同時出現兩個以上可鳴的動作本來就少見,
+#: 而最常見的情況(只有一種可鳴 + 跳過)不管是哪一種都落在第 1 格 ——
+#: 那一格已經驗過了。
 #:
-#: 按錯的後果不嚴重(雀魂會超時自動處理),但會讓那一局不像正常對局。
-_BUTTONS: dict[str, tuple[float, float]] = {
-    "reach": (0.62, 0.78),
-    "chi": (0.50, 0.78),
-    "pon": (0.56, 0.78),
-    "kan": (0.56, 0.78),
-    "hora": (0.68, 0.78),
-    "skip": (0.74, 0.78),
-}
+#: 立直也在這一排,**與碰同一格**。使用者實際看過畫面這麼回報的。
+#: 它出現在自己的回合(那時候沒有「跳過」),所以原本以為它不在這一排、
+#: 要另外量 —— 不必。
+_BUTTON_SLOT = {"skip": 0, "pon": 1, "chi": 1, "kan": 1, "hora": 1, "reach": 1}
 
 
-def viewport(page: Page) -> tuple[int, int] | None:
-    """分頁的可視區大小。拿不到回 ``None``。
-
-    **不能只看 ``page.viewport_size``。** 瀏覽器是用 ``no_viewport=True``
-    開的(那是為了讓雀魂跟著視窗縮放重新排版,見 cdp.py),而那個選項的
-    意思就是「不要設 viewport」—— 於是這個屬性永遠是 ``None``。
-
-    實測這正是「自動打牌完全沒反應」的原因:計畫做好了、在等著動手,
-    而 ``act`` 每次都卡在 ``if not size: return`` 然後**安靜地**返回。
-    心跳印出「等著動手」但「動作 0」才看得出來。
-
-    所以直接問頁面自己。``window.innerWidth`` 不管有沒有設 viewport 都對,
-    而且它就是 CSS 像素 —— 與 ``page.mouse`` 吃的座標系同一個。
-    """
-    try:
-        size = page.evaluate("() => [window.innerWidth, window.innerHeight]")
-    except Exception as exc:  # noqa: BLE001 - 分頁可能剛被關掉
-        logger.warning("問不到可視區大小:{}", exc)
-        return None
-    if not size or len(size) != 2 or not all(isinstance(v, int | float) and v > 0 for v in size):
-        return None
-    return int(size[0]), int(size[1])
+def button_point(name: str) -> tuple[float, float]:
+    """某一顆按鈕在畫面上的位置,相對 viewport 的比例。"""
+    slot = _BUTTON_SLOT.get(name, 1)
+    return _BUTTON_RIGHT - slot * _BUTTON_PITCH, _BUTTON_Y
 
 
-#: 按住多久(毫秒)。
-#:
-#: **不能用 ``page.mouse.click``。** 它的 down 與 up 之間幾乎沒有間隔,
-#: 而雀魂是畫在 canvas 上的遊戲 —— 這類遊戲多半是每個繪製影格去**輪詢**
-#: 輸入狀態,而不是監聽事件。零長度的按壓有機會整個落在兩個影格之間,
-#: 於是遊戲從頭到尾沒看到「現在是按下的」。
-#:
-#: 120 ms 在 60 fps 下橫跨約 7 個影格,怎麼樣都會被輪詢到。
-_PRESS_MS = 120
-
-
-def _press(page: Page, x: int, y: int) -> None:
-    """在 (x, y) 按一下 —— 移過去、按住、放開。
-
-    先 ``move`` 再按:canvas 遊戲常常要先收到 hover 才會把那個位置當成
-    可互動的目標(按鈕的高亮狀態就是這樣來的)。直接在沒有 hover 的位置
-    按下去,有些實作會當作沒按在任何東西上。
-    """
-    page.mouse.move(x, y)
-    page.wait_for_timeout(60)
-    page.mouse.down()
-    page.wait_for_timeout(_PRESS_MS)
-    page.mouse.up()
+_BUTTONS: dict[str, tuple[float, float]] = {name: button_point(name) for name in _BUTTON_SLOT}
 
 
 @dataclass
@@ -442,7 +463,7 @@ class MortalBot:
             # 切牌。牌的座標有量測基礎,但那是**推算到 viewport** 的推算 ——
             # 中間差一個「牌桌矩形 ≈ viewport」的近似,沒有人驗過。所以也存
             # 幾張,但只存前面幾次:一局七十幾次切牌,每次都存會淹掉按鈕那幾張。
-            if not self.dry_run or self._tile_shots >= _TILE_SHOTS:
+            if self._tile_shots >= _TILE_SHOTS:
                 return
             self._tile_shots += 1
             name = "tile"
