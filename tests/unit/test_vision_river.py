@@ -36,6 +36,18 @@ from mia.vision.tiles.river import (
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
+
+def _hsv(hue: float, saturation: float, value: float) -> tuple[int, int, int]:
+    """用 HSV 描述一個顏色,回傳 BGR。
+
+    這一組測試講的全是色相與飽和度,直接寫 BGR 的話每個常數都要讀的人
+    自己換算一次 —— 而換算錯了測試仍然會過,只是測到的不是原本要測的東西。
+    """
+    pixel = np.array([[[hue, saturation, value]]], dtype=np.uint8)
+    b, g, r = cv2.cvtColor(pixel, cv2.COLOR_HSV2BGR)[0, 0]
+    return int(b), int(g), int(r)
+
+
 #: 素材那一幀的牌桌矩形。錄製時 StableCalibrator 鎖定的結果。
 TABLE = Rect(0, 174, 2536, 1430)
 
@@ -246,6 +258,35 @@ class TestTileBacksAreNotDiscards:
     def test_an_orange_back_does_not(self) -> None:
         """牌背亮但很橘 —— 實測中位飽和度 126。"""
         assert read_river(self._flat((40, 150, 230))).count == 0
+
+    def test_a_yellow_green_back_does_not_either(self) -> None:
+        """牌背在四家的光照下偏得比想像中多。
+
+        實測上家「結尾多一張」的那一格(35 幀):色相中位 55,5~95 百分位
+        42~82 —— 已經是黃綠色而不是橘。色相帶只框到 40 的話那些全部漏過去,
+        上家的採用率從 96.7% 掉回 88.5%。
+        """
+        assert read_river(self._flat(_hsv(55, 73, 145))).count == 0
+
+    def test_a_blue_haku_counts(self) -> None:
+        """**白板在牌河裡是淺藍色的,不是白的。**
+
+        它平躺著,而牌桌的藍光打在一張完全空白的牌面上就是這個結果。實測
+        (2560x1614 的畫面,三家各一張)亮度 176、飽和度 79、色相 104 ——
+        飽和度已經高過牌背的門檻 70,所以原本的規則把它判成「這格沒有牌」,
+        牌河中間破一個洞,那一家整幀被丟掉。
+
+        分類器本身完全沒問題:同一格強制去認,回的是白板 0.95 分、
+        差距 0.68。壞掉的只有「這格有沒有牌」。
+        """
+        assert read_river(self._flat(_hsv(104, 79, 176))).count == 1
+
+    def test_hue_only_matters_when_saturated(self) -> None:
+        """飽和度低的時候色相是雜訊 —— 一塊近乎無彩的象牙色,色相是哪個值
+        都不奇怪。實測一般牌面的色相就落在 30 附近(橘色那一段),
+        而它們當然是牌。
+        """
+        assert read_river(self._flat(_hsv(30, 6, 200))).count == 1
 
 
 class TestTwoScalesMustAgree:
