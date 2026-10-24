@@ -4,11 +4,18 @@
 整條路都不碰封包。所以就算引擎沒接上、或使用者只想要一個輕量的輔助,
 這一頁仍然有東西可看。
 
-進張枚數標成估計值
-------------------
-算剩餘張數時只扣掉**自己手上**看得到的。牌河、副露、寶牌指示牌都不在功能 1
-的辨識範圍內,所以一張已經被打掉三張的牌,這裡仍然當作剩 4 張。UI 上一定要
-講清楚,不然使用者會拿它當精確數字用。
+進張枚數準不準,要看封包在不在
+------------------------------
+功能 1 自己只看得到**自己手上**的牌 —— 牌河、副露、寶牌指示牌都不在它的
+辨識範圍內,所以一張已經被打掉三張的牌,它仍然當作剩 4 張。
+
+封包那條路接上之後就扣得準了(:attr:`~mia.ui.viewmodel.ViewState.seen`
+由 :class:`~mia.mjai.table.TableTracker` 提供)。所以標題是跟著狀態變的:
+有封包就寫「進張」,沒有就寫「估計值」。
+
+**不能固定寫一個。** 固定寫「估計值」會讓準的數字看起來不可信,固定寫
+「進張」則會讓不準的數字看起來可信 —— 後者是這個專案一直在躲的那種錯:
+看起來精確、實際上沒有來源。
 """
 
 from __future__ import annotations
@@ -31,6 +38,10 @@ __all__ = ["AnalysisTab"]
 
 #: 進張與打牌選項各列幾個。
 MAX_UKEIRE = 10
+
+#: 進張那一列的標題。兩個版本,依 ``ViewState.seen`` 在不在切換 —— 見模組說明。
+_UKEIRE_EXACT = "進張"
+_UKEIRE_ESTIMATE = "進張(估計值,未扣牌河與副露)"
 MAX_DISCARDS = 5
 
 
@@ -85,7 +96,7 @@ class AnalysisTab(QWidget):
 
         self._ukeire_rule = _rule(self)
         layout.addWidget(self._ukeire_rule)
-        self._ukeire_caption = _caption("進張(估計值,未扣牌河與副露)", self)
+        self._ukeire_caption = _caption(_UKEIRE_ESTIMATE, self)
         layout.addWidget(self._ukeire_caption)
         self._ukeire = HandStrip(icons, height=32, parent=self)
         layout.addWidget(self._ukeire)
@@ -153,6 +164,7 @@ class AnalysisTab(QWidget):
         self._ukeire_text.setVisible(show)
         if not show:
             return
+        self._ukeire_caption.setText(_UKEIRE_EXACT if state.seen else _UKEIRE_ESTIMATE)
         self._ukeire.set_tiles(tuple(_to_mjai(u.tile) for u in ukeire))
         total = analysis.total_ukeire if analysis else 0
         detail = "  ".join(f"{tile_name(u.tile)}×{u.count}" for u in ukeire)
@@ -211,6 +223,7 @@ def _rule(parent: QWidget) -> QFrame:
     line.setFrameShape(QFrame.Shape.HLine)
     line.setFrameShadow(QFrame.Shadow.Sunken)
     return line
+
 
 
 def _caption(text: str, parent: QWidget) -> QLabel:

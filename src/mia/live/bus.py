@@ -25,6 +25,7 @@ slot 就是型別
 from __future__ import annotations
 
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from mia.analysis.danger import DangerReport
@@ -71,9 +72,16 @@ class Dangers:
     與 :class:`Advices` 分成兩個 slot,理由同上:兩者的節奏不一樣。危險度
     每一張捨牌都會變(別人打了一張,安全牌就多一張),而建議只在輪到自己
     時才有。塞在一起會讓其中一個被另一個蓋掉。
+
+    ``seen`` 搭這班車而不另開一個 slot:它與危險度**同一個節奏**,來源也
+    是同一個 :class:`~mia.mjai.table.TableTracker`,每一張捨牌兩者一起變。
+    另開一個 slot 只會多一個可能不同步的東西。
     """
 
     report: DangerReport
+    #: 場上每種牌看得見幾張(自己的手牌、四家牌河、四家副露、寶牌指示牌)。
+    #: 拿來把進張枚數扣準,見 :func:`~mia.analysis.shanten.analyse`。
+    seen: Mapping[str, int] | None = None
 
 
 Update = CvHand | PacketHand | Advices | Dangers
