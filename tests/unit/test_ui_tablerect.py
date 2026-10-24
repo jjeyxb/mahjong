@@ -13,17 +13,18 @@ import pytest
 
 from mia.config.models import RoiConfig
 from mia.ui.panel.tablerect import (
+    _REFINE_FINALISTS,
     SEAT_NAMES,
     TableRectDialog,
     _aspect_note,
-    _clipped_note,
+    _coverage,
     _hand_roi,
     _nudge_note,
     _refine,
     _river_quads,
 )
 from mia.utils.geometry import NormRect, Rect, Size
-from mia.vision.tiles.river import SEATS
+from mia.vision.tiles.river import DEFAULT_CORNERS, SEATS, read_river
 
 #: 實測素材的牌桌矩形與畫面尺寸(``data/recordings/20260801-110639``)。
 TABLE = Rect(0, 174, 2536, 1430)
@@ -46,6 +47,33 @@ def templates():
     from mia.vision.tiles.classify import TemplateSet
 
     return TemplateSet.load()
+
+
+def _wanted(image, table: Rect) -> dict[str, list[int]]:
+    """粗掃要量哪些格子。由粗框決定一次,之後每個候選量同一批。"""
+    return {
+        seat: list(read_river(DEFAULT_CORNERS[seat].rectify(image, table)).filled)
+        for seat in SEATS
+    }
+
+
+def _body(func) -> str:
+    """函式的原始碼,**去掉說明文字**。
+
+    釘原始碼的測試要看的是程式在做什麼,不是說明在講什麼。說明裡正好會提到
+    那些被淘汰掉的做法(例如「連續性不參與」),整段抓下來就會把說明當成程式
+    誤判 —— 這個測試自己踩過一次。
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+    node = tree.body[0]
+    assert isinstance(node, ast.FunctionDef)
+    if ast.get_docstring(node) is not None:
+        node.body = node.body[1:]
+    return ast.unparse(node)
 
 
 class TestHandRoi:
@@ -214,8 +242,12 @@ class TestRefine:
 
         不要求收斂到**同一個**矩形 —— 搜尋空間上有一道脊,脊上的點一樣好
         (實測兩個差 16 px 的答案張數與連續性完全相同)。要求的是都好。
+
+        只取兩個起點,一邊一個。原本有四個,但微調一次要 17 秒(入圍 24 個
+        候選,每個都要把四家的牌認一遍),四個起點就是 69 秒 —— 這一個測試
+        曾經佔掉整套的三分之一。兩邊各一個已經涵蓋這條斷言要講的事。
         """
-        for dy in (-10, -4, 6, 12):
+        for dy in (-10, 12):
             start = Rect(TABLE.x, TABLE.y + dy, TABLE.width, TABLE.height)
             after = _refine(table_image, start, templates)
             assert _confident(table_image, after, templates) >= 50, f"從 {dy:+d} 出發"
@@ -226,9 +258,7 @@ class TestRefine:
         這個陷阱在校四家角點時踩過一次(見 DEFAULT_CORNERS 的說明),
         所以這裡釘的是原始碼本身:目標必須是**張數**。
         """
-        import inspect
-
-        source = inspect.getsource(_refine)
+        source = _body(_refine)
         assert "confident += " in source
         assert "/ total" not in source, "一旦改成比例,縮框就會變成最佳解"
 
@@ -292,26 +322,74 @@ class TestRefineStaysInsideTheFrame:
         NormRect(out.x / width, out.y / height, out.width / width, out.height / height)
 
 
-class TestClippedNote:
-    """微調的最佳解被畫面邊界卡住時要講。
+class TestTheCoarseStageOnlyExcludes:
+    """粗掃的工作是排除,不是排名。
 
-    實測一張 2560x1614 的牌譜畫面:不限邊界時最好的矩形下緣在 1620
-    (超出 6 px),有把握 57 張;夾回畫面內之後只剩 33 張。夾是必要的,
-    但不講的話使用者看到「只有 48% 有把握 —— 框歪了」,會一直重框一個
-    其實沒框錯的東西。
+    這裡釘的是一個踩過的坑。粗掃原本的目標是「有牌的格數」,而那個訊號
+    **是反著走的** —— 格線錯位時每一格都壓到隔壁的牌,於是*更多*格子看起來
+    有牌。實測一張 2560x1614 的畫面、169 個格點:張數最高(69 張、四家全
+    連續)的前五名,真正認得出來的只有 15~21 張,而真正的最佳解 58 張排在
+    第 19 名。粗掃不是沒幫上忙,是把最佳解主動淘汰掉了。
+
+    改成覆蓋率之後相關係數 +0.76,但前五名仍只到 53/58 —— 所以它仍然排不出
+    名次,入圍名額才要開到 24(24 名 → 57,48 名 → 58)。
     """
 
-    def test_a_frame_well_inside_says_nothing(self, table_image) -> None:
-        assert _clipped_note(Rect(100, 100, 1000, 800), table_image) == ""
+    def test_coverage_is_not_fooled_by_a_slipped_grid(self, table_image) -> None:
+        """錯位**不可以**讓分數上升。方向錯了,微調就會主動往壞的地方跑。
 
-    def test_touching_the_bottom_is_called_out(self, table_image) -> None:
-        height = table_image.shape[0]
-        note = _clipped_note(Rect(100, height - 800, 1000, 800), table_image)
-        assert "下" in note
-        assert "不是你框的問題" in note
+        這是張數那個目標真正的毛病:格線壓到隔壁的牌時更多格子看起來有牌,
+        所以錯得越多分越高。覆蓋率沒有這個問題 —— 錯位的格子會吃到桌布。
+        """
+        wanted = _wanted(table_image, TABLE)
+        aligned = _coverage(table_image, TABLE, wanted)
+        for dy in (-20, -12, -6):
+            slipped = Rect(TABLE.x, TABLE.y + dy, TABLE.width, TABLE.height)
+            assert _coverage(table_image, slipped, wanted) < aligned, f"偏 {dy:+d} px"
 
-    def test_it_names_every_edge_it_touches(self, table_image) -> None:
-        height, width = table_image.shape[:2]
-        note = _clipped_note(Rect(0, 0, width, height), table_image)
-        for edge in ("上", "下", "左", "右"):
-            assert edge in note
+    def test_coverage_cannot_rank(self, table_image) -> None:
+        """而它**也排不出名次** —— 這條釘的就是它不夠好這件事。
+
+        實測這張 fixture(正確答案在 0,有把握 56 張):
+
+        ====  ======  ========
+        偏移  覆蓋率  有把握
+        ====  ======  ========
+        -20   39.47   13
+        0     43.86   **56**
+        +6    44.76   49
+        +20   **44.03**   10
+        ====  ======  ========
+
+        往上偏它分得出來,往下偏幾乎是平的 —— 偏 +20 的覆蓋率還贏過正確答案,
+        而那裡只認得出 10 張。所以粗掃只能用來排除,入圍名額要開到
+        :data:`_REFINE_FINALISTS` 那麼大,名次交給細挑。
+
+        哪天有人想把名額調回 5,這條會先告訴他為什麼不行。
+        """
+        wanted = _wanted(table_image, TABLE)
+        aligned = _coverage(table_image, TABLE, wanted)
+        worse = Rect(TABLE.x, TABLE.y + 20, TABLE.width, TABLE.height)
+        assert _coverage(table_image, worse, wanted) > aligned
+        assert _REFINE_FINALISTS >= 24, "粗掃排不出名次,名額就不能小"
+
+    def test_the_cell_set_is_fixed_by_the_rough_rect(self) -> None:
+        """被評分的格子集合不可以跟著候選框跑。
+
+        這是前面那個陷阱的真正根源:候選框一動,「哪些格子有牌」就跟著動,
+        於是任何分數都可以靠「換一批好算的格子」拿到。實測四個便宜訊號
+        (連續家數、張數、覆蓋率、牌面重心偏移)全部被這件事破壞,其中重心
+        偏移甚至整個反過來 —— 偏移最小的前三名有把握只有 4~6 張。
+        """
+        source = _body(_refine)
+        assert "wanted = {" in source, "格子集合要先由粗框定下來"
+        assert source.index("wanted = {") < source.index("for dy in range")
+
+    def test_contiguity_is_not_used_at_all(self) -> None:
+        """連續性不參與微調的任何一段。
+
+        牌河被鳴牌拿走的那張會留下真正的空格,所以「不連續」本來就不代表
+        框錯。實測那張牌譜畫面的最佳解(有把握 58)只有 3/4 家連續,而拿
+        連續家數當第一順位排序正好會把它淘汰掉。
+        """
+        assert "is_plausible" not in _body(_refine)

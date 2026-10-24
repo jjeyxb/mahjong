@@ -57,6 +57,7 @@ from mia.vision.tiles.river import (
     DEFAULT_CORNERS,
     SEATS,
     classify_river_tile,
+    face_coverage,
     face_size,
     read_river,
 )
@@ -217,9 +218,9 @@ class TableRectDialog(QDialog):
         rough = Rect(box.x(), box.y(), box.width(), box.height())
         width, height = self._picker.image_size
 
-        # 微調要四五秒,而那段時間視窗是凍住的。先把話說出來並讓 Qt 把它畫上去,
+        # 微調要十幾秒,而那段時間視窗是凍住的。先把話說出來並讓 Qt 把它畫上去,
         # 不然使用者看到的是一個按了沒反應的程式 —— 而他剛拖完框,正等著回應。
-        self._message.setText("正在微調框的位置(約五秒)…")
+        self._message.setText("正在微調框的位置(約二十秒)…")
         QApplication.processEvents()
         if self._templates is None:
             self._templates = TemplateSet.load()
@@ -272,7 +273,6 @@ class TableRectDialog(QDialog):
             + (f" + 摸的 {ms_to_mjai(drawn.label)}" if drawn else "")
             + f",平均把握 {score:.2f}。{_nudge_note(nudged)}"
             + f"\n{self._river_note(table)}"
-            + _clipped_note(table, self._image)
             + aspect_note
         )
         self.result_rect = NormRect(
@@ -346,40 +346,32 @@ _REFINE_RANGE = 32
 _REFINE_STEP = 4
 
 #: 細挑階段最多試幾個候選。每一個都要把四家的牌都認一次 —— 實測單一尺度
-#: 0.64 秒、兩個尺度 1.27 秒,那是這裡最貴的事。粗掃掃滿整個網格只要 1.1 秒。
+#: 0.66 秒,那是這裡最貴的事。粗掃掃滿整個網格只要 1.7 秒。
+#:
+#: 24 個不是隨便取的。粗掃**排不出名次**(見 :func:`_coverage`),所以入圍
+#: 名額要開到夠大,讓真正的最佳解不會在細挑之前就被淘汰。實測同一張牌譜
+#: 畫面的 169 個格點(真正的最佳解是 58 張):
+#:
+#: =========  ==========
+#: 入圍名額   找得到最好
+#: =========  ==========
+#: 5          53
+#: 12         54
+#: 24         57
+#: 48         58
+#: =========  ==========
+#:
+#: 24 是轉折點,再往上只換得到 1 張。代價是 24 x 0.66 = 16 秒 —— 這是設定
+#: 的時候才按一次的東西,寧可慢也不要給錯的答案。
 #:
 #: 細挑**只用一個尺度**。兩個尺度的覆核是為了壓靜默錯誤(見
 #: :data:`~mia.vision.tiles.river.CHECK_FACE_HEIGHT`),而這裡問的是
 #: 「對得準不準」,兩個尺度一致與否不影響這個判斷的方向,只是讓它貴一倍。
-_REFINE_FINALISTS = 5
+_REFINE_FINALISTS = 24
 
-
-def _clipped_note(table: Rect, image: np.ndarray) -> str:
-    """微調的最佳解是不是被畫面邊界卡住的。
-
-    牌桌矩形是個**座標系**,不是實體邊界 —— 而擷取有可能切到畫布。實測一張
-    2560x1614 的牌譜畫面:不限邊界時最好的矩形下緣在 1620(超出 6 px),
-    有把握 57 張;硬夾回畫面內之後只剩 33 張。
-
-    夾是必要的(存成比例的型別不收超出邊界的值),但**夾掉之後要講**。
-    不講的話使用者看到的是「只有 48% 有把握 —— 框歪了,重拖一次」,
-    於是他會一直重框一個其實沒框錯的東西。
-    """
-    height, width = image.shape[:2]
-    edges = []
-    if table.y <= _REFINE_STEP:
-        edges.append("上")
-    if table.y + table.height >= height - _REFINE_STEP:
-        edges.append("下")
-    if table.x <= _REFINE_STEP:
-        edges.append("左")
-    if table.x + table.width >= width - _REFINE_STEP:
-        edges.append("右")
-    if not edges:
-        return ""
-    return (
-        f"\n(微調在畫面的{'、'.join(edges)}緣就被卡住了 —— 擷取可能切到了畫布,那不是你框的問題。)"
-    )
+#: 一格裡牌面像素要佔多少,才算「這格有對準」。見 :func:`_coverage`。
+#: 不是門檻式的判斷 —— 覆蓋率是直接加總的,這個值只用來濾掉空格。
+_COVERAGE_FLOOR = 0.15
 
 
 def _nudge_note(nudged: tuple[int, int, int, int]) -> str:
@@ -400,24 +392,66 @@ def _nudge_note(nudged: tuple[int, int, int, int]) -> str:
     return "微調了 " + "、".join(parts) + " px。"
 
 
+def _coverage(image: np.ndarray, table: Rect, wanted: dict[str, list[int]]) -> float:
+    """粗掃的分數:指定的那些格子裡,牌面像素佔了多少,全部加起來。
+
+    為什麼不是「有牌的格數」
+    ------------------------
+    因為那個訊號**是反著走的**。格線錯位的時候每一格都會壓到隔壁的牌,於是
+    *更多*格子看起來有牌。實測同一張牌譜畫面的 169 個格點:張數最高(69 張、
+    四家全連續)的前五名,真正認得出來的只有 15~21 張,而真正的最佳解 58 張
+    排在第 19 名 —— 粗掃不是沒幫上忙,是把最佳解主動淘汰掉了。
+
+    覆蓋率相反:錯位的格子會吃到桌布,佔比就掉。它懲罰錯位,不獎勵。
+
+    為什麼格子集合要由外面給
+    ------------------------
+    這是前面那個陷阱的真正根源:候選框一動,「哪些格子有牌」就跟著動,於是
+    任何分數都可以靠「換一批好算的格子」拿到。所以集合由粗框決定一次,之後
+    每個候選量的都是**同一批**格子,索引固定。
+
+    這一步把反相關修掉了(實測相關係數 +0.76),但它仍然**排不出名次** ——
+    前五名最好只到 53/58。所以它的工作是排除,不是排名,入圍名額才開到
+    :data:`_REFINE_FINALISTS` 那麼大。
+    """
+    total = 0.0
+    for seat, indices in wanted.items():
+        flat = DEFAULT_CORNERS[seat].rectify(image, table)
+        cells = read_river(flat).cells
+        for index in indices:
+            fraction = face_coverage(flat[cells[index].as_slice()])
+            if fraction > _COVERAGE_FLOOR:
+                total += fraction
+    return total
+
+
 def _refine(image: np.ndarray, table: Rect, templates: TemplateSet) -> Rect:
     """把使用者框的矩形微調到最好的那個。
 
-    兩段,因為兩個訊號的成本差三個數量級:
+    兩段,因為兩個訊號的成本差兩個數量級:
 
-    1. **粗掃**只看「四家的牌河是不是都從頭連續」。那只要算每一格的中位亮度
-       與色相,快得可以掃滿整個網格。它看得出整體縮放錯了(牌譜那次差 18 px,
-       連續從 2/4 變成 4/4),但**看不出半格以內的偏移** —— 實測上緣偏 1% 時
-       連續性與張數完全沒反應。
-    2. **細挑**在粗掃的優勝者裡把牌真的認一次,取「有把握的張數」最多的。
-       那是唯一對小偏移有反應的訊號。
+    1. **粗掃**只看牌面在格子裡的覆蓋率(:func:`_coverage`),掃滿整個網格
+       約 1.7 秒。它分得出「差很多」與「差不多」,但**排不出前後**。
+    2. **細挑**在入圍的候選裡把牌真的認一次,取「有把握的張數」最多的。
+       那是唯一對半格以內的偏移有反應的訊號,也是唯一可信的名次。
 
     目標是有把握的**張數**而不是比例。比例會獎勵把框縮小 —— 把難認的牌排除
     在外,剩下的比例自然漂亮。張數不會:少框一張牌就少一分。這個陷阱在校四家
     角點時踩過一次,見 :data:`~mia.vision.tiles.river.DEFAULT_CORNERS`。
+
+    連續性(:meth:`~mia.vision.tiles.river.River.is_plausible`)**不參與
+    任何一段**。牌河被鳴牌拿走的那張會留下真正的空格,所以「不連續」本來就
+    不代表框錯。實測這張牌譜畫面的最佳解只有 3/4 家連續,而拿連續家數當第一
+    順位排序正好會把它淘汰掉。
     """
     height, width = image.shape[:2]
-    coarse: list[tuple[int, int, Rect]] = []
+    # 要量哪些格子,由使用者拖的那個粗框決定一次。見 :func:`_coverage`。
+    wanted = {
+        seat: list(read_river(DEFAULT_CORNERS[seat].rectify(image, table)).filled)
+        for seat in SEATS
+    }
+
+    coarse: list[tuple[float, Rect]] = []
     for dy in range(-_REFINE_RANGE, _REFINE_RANGE + 1, _REFINE_STEP):
         for dh in range(-_REFINE_RANGE, _REFINE_RANGE + 1, _REFINE_STEP):
             candidate = Rect(table.x, table.y + dy, table.width, table.height + dh)
@@ -428,25 +462,18 @@ def _refine(image: np.ndarray, table: Rect, templates: TemplateSet) -> Rect:
                 continue
             if candidate.y + candidate.height > height or candidate.x + candidate.width > width:
                 continue
-            seats = tiles = 0
-            for seat in SEATS:
-                river = read_river(DEFAULT_CORNERS[seat].rectify(image, candidate))
-                seats += river.is_plausible()
-                tiles += river.count
-            coarse.append((seats, tiles, candidate))
+            coarse.append((_coverage(image, candidate, wanted), candidate))
 
     if not coarse:
         return table
-    coarse.sort(key=lambda row: (row[0], row[1]), reverse=True)
+    coarse.sort(key=lambda row: row[0], reverse=True)
 
     best, best_score = table, -1
-    for _, _, candidate in coarse[:_REFINE_FINALISTS]:
+    for _, candidate in coarse[:_REFINE_FINALISTS]:
         confident = 0
         for seat in SEATS:
             flat = DEFAULT_CORNERS[seat].rectify(image, candidate)
             river = read_river(flat)
-            if not river.is_plausible():
-                continue
             size = face_size()
             for index in river.filled:
                 match = classify(flat[river.cells[index].as_slice()], templates, size=size)
