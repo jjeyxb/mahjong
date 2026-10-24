@@ -17,6 +17,8 @@ from mia.ui.panel.tablerect import (
     TableRectDialog,
     _aspect_note,
     _hand_roi,
+    _nudge_note,
+    _refine,
     _river_quads,
 )
 from mia.utils.geometry import Rect, Size
@@ -36,6 +38,13 @@ def table_image():
     image = cv2.imread(str(path))
     assert image is not None, "讀不到 table_full.jpg"
     return image
+
+
+@pytest.fixture(scope="module")
+def templates():
+    from mia.vision.tiles.classify import TemplateSet
+
+    return TemplateSet.load()
 
 
 class TestHandRoi:
@@ -170,3 +179,91 @@ def _counts(image, table: Rect) -> tuple[int, ...]:
     from mia.vision.tiles.river import DEFAULT_CORNERS, read_river
 
     return tuple(read_river(DEFAULT_CORNERS[s].rectify(image, table)).count for s in SEATS)
+
+
+class TestRefine:
+    """把使用者框的矩形微調到最好的那個。
+
+    **人框不到那個精度。** 實測上緣偏 0.5% 的高度,每張牌正確率就從 94.6%
+    掉到 79.2%;1608 px 的畫面上那是 8 px,而預覽縮到 820 px 寬之後只剩 4 px。
+    要使用者用滑鼠拖到那個準度是不合理的要求,所以程式自己補上最後那幾像素。
+    """
+
+    def test_it_recovers_a_frame_nudged_off(self, table_image, templates) -> None:
+        """從偏掉的地方出發,要回到跟正確答案一樣好。
+
+        **用有把握的張數衡量,不是用連續性。** 連續性在這些偏移下完全沒反應
+        —— 實測上緣偏 +14 px 時四家仍然全部連續,而有把握的張數從 56 掉到 18。
+        那正是微調要存在的理由:使用者看得到的訊號(線有沒有落在牌上、張數對
+        不對)對這個級距的偏移都是瞎的。
+        """
+        off = Rect(TABLE.x, TABLE.y + 14, TABLE.width, TABLE.height)
+        assert _confident(table_image, off, templates) < 25, "前提:起點確實是壞的"
+        after = _refine(table_image, off, templates)
+        assert _confident(table_image, after, templates) >= 50
+
+    def test_it_leaves_a_good_frame_good(self, table_image, templates) -> None:
+        """已經對的框不能被微調弄壞 —— 那比不微調還糟。"""
+        after = _refine(table_image, TABLE, templates)
+        assert _confident(table_image, after, templates) >= 50
+        assert _seats_ok(table_image, after) == 4
+
+    def test_different_starts_land_somewhere_good(self, table_image, templates) -> None:
+        """使用者每次拖的位置都不一樣,結果不能隨之起舞。
+
+        不要求收斂到**同一個**矩形 —— 搜尋空間上有一道脊,脊上的點一樣好
+        (實測兩個差 16 px 的答案張數與連續性完全相同)。要求的是都好。
+        """
+        for dy in (-10, -4, 6, 12):
+            start = Rect(TABLE.x, TABLE.y + dy, TABLE.width, TABLE.height)
+            after = _refine(table_image, start, templates)
+            assert _confident(table_image, after, templates) >= 50, f"從 {dy:+d} 出發"
+
+    def test_the_objective_is_a_count_not_a_ratio(self) -> None:
+        """比例會獎勵把框縮小 —— 把難認的牌排除在外,剩下的比例自然漂亮。
+
+        這個陷阱在校四家角點時踩過一次(見 DEFAULT_CORNERS 的說明),
+        所以這裡釘的是原始碼本身:目標必須是**張數**。
+        """
+        import inspect
+
+        source = inspect.getsource(_refine)
+        assert "confident += " in source
+        assert "/ total" not in source, "一旦改成比例,縮框就會變成最佳解"
+
+
+class TestNudgeNote:
+    def test_no_movement_says_nothing(self) -> None:
+        """沒事的時候不要佔版面。"""
+        assert _nudge_note((0, 0, 0, 0)) == ""
+
+    def test_movement_is_reported(self) -> None:
+        """微調是會錯的 —— 它在小範圍裡找最好的,而那可能只是「比較不爛的」。
+
+        講出來,使用者看到「往下移了 30 px」才知道該懷疑一下自己框的位置。
+        """
+        note = _nudge_note((0, 18, 0, -6))
+        assert "+18" in note
+        assert "-6" in note
+
+
+def _confident(image, table: Rect, templates) -> int:
+    """四家合起來有幾張認得有把握。微調的目標函數就是這個。"""
+    from mia.vision.tiles.classify import classify
+    from mia.vision.tiles.river import DEFAULT_CORNERS, face_size, read_river
+
+    size = face_size()
+    total = 0
+    for seat in SEATS:
+        flat = DEFAULT_CORNERS[seat].rectify(image, table)
+        river = read_river(flat)
+        for index in river.filled:
+            match = classify(flat[river.cells[index].as_slice()], templates, size=size)
+            total += match.is_confident
+    return total
+
+
+def _seats_ok(image, table: Rect) -> int:
+    from mia.vision.tiles.river import DEFAULT_CORNERS, read_river
+
+    return sum(read_river(DEFAULT_CORNERS[s].rectify(image, table)).is_plausible() for s in SEATS)

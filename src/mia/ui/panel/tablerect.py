@@ -33,6 +33,7 @@ from __future__ import annotations
 import numpy as np
 from PySide6.QtCore import QRect, Qt
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
@@ -49,7 +50,7 @@ from mia.ui.style import CAPTION, MUTED
 from mia.ui.widgets.tiles import DEFAULT_SKIN, TileIcons, TileLabel
 from mia.utils.geometry import NormRect, Rect, Size
 from mia.vision.roi import RoiSet
-from mia.vision.tiles.classify import TemplateSet, classify_hand
+from mia.vision.tiles.classify import TemplateSet, classify, classify_hand
 from mia.vision.tiles.hand import MAX_CONCEALED, read_hand
 from mia.vision.tiles.river import (
     DEFAULT_CORNERS,
@@ -212,8 +213,22 @@ class TableRectDialog(QDialog):
             self._picker.update()
             return
 
-        table = Rect(box.x(), box.y(), box.width(), box.height())
+        rough = Rect(box.x(), box.y(), box.width(), box.height())
         width, height = self._picker.image_size
+
+        # 微調要四五秒,而那段時間視窗是凍住的。先把話說出來並讓 Qt 把它畫上去,
+        # 不然使用者看到的是一個按了沒反應的程式 —— 而他剛拖完框,正等著回應。
+        self._message.setText("正在微調框的位置(約五秒)…")
+        QApplication.processEvents()
+        if self._templates is None:
+            self._templates = TemplateSet.load()
+        table = _refine(self._image, rough, self._templates)
+        nudged = (
+            table.x - rough.x,
+            table.y - rough.y,
+            table.width - rough.width,
+            table.height - rough.height,
+        )
         self._picker.polys = _river_quads(table)
 
         hand_roi = _hand_roi(self._roi, table, Size(width, height))
@@ -238,8 +253,6 @@ class TableRectDialog(QDialog):
             self._picker.update()
             return
 
-        if self._templates is None:
-            self._templates = TemplateSet.load()
         try:
             concealed, drawn = classify_hand(crop, hand, self._templates, headroom=0)
         except ValueError as exc:
@@ -253,7 +266,8 @@ class TableRectDialog(QDialog):
         self._message.setText(
             f"認出 {len(concealed)} 張暗手牌"
             + (f" + 摸的 {drawn.label}" if drawn else "")
-            + f",平均把握 {score:.2f}。\n{self._river_note(table)}"
+            + f",平均把握 {score:.2f}。{_nudge_note(nudged)}"
+            + f"\n{self._river_note(table)}"
             + aspect_note
         )
         self.result_rect = NormRect(
@@ -311,6 +325,96 @@ class TableRectDialog(QDialog):
             label.setVisible(True)
         for label in self._tiles[len(labels) :]:
             label.setVisible(False)
+
+
+#: 微調時上下左右各搜尋多少像素,以及粗掃的步長。
+#:
+#: 為什麼一定要微調
+#: ----------------
+#: **人框不到那個精度。** 實測牌桌矩形的上緣只要偏 0.5% 的高度,每張牌正確率
+#: 就從 94.6% 掉到 79.2%;1608 px 的畫面上那是 8 px,而預覽縮到 820 px 寬之後
+#: 只剩 4 px。要使用者用滑鼠拖到那個準度是不合理的要求。
+#:
+#: 範圍取 ±32 px:實測牌譜畫面的自動校正差了 18 px(連續只有 2/4),微調之後
+#: 四家全部連續。粗掃步長 4 px 在容忍度(約 5 px)之內。
+_REFINE_RANGE = 32
+_REFINE_STEP = 4
+
+#: 細挑階段最多試幾個候選。每一個都要把四家的牌都認一次 —— 實測單一尺度
+#: 0.64 秒、兩個尺度 1.27 秒,那是這裡最貴的事。粗掃掃滿整個網格只要 1.1 秒。
+#:
+#: 細挑**只用一個尺度**。兩個尺度的覆核是為了壓靜默錯誤(見
+#: :data:`~mia.vision.tiles.river.CHECK_FACE_HEIGHT`),而這裡問的是
+#: 「對得準不準」,兩個尺度一致與否不影響這個判斷的方向,只是讓它貴一倍。
+_REFINE_FINALISTS = 5
+
+
+def _nudge_note(nudged: tuple[int, int, int, int]) -> str:
+    """微調把框移了多少。移動量是 0 就不講 —— 沒事的時候不要佔版面。
+
+    講出來不是為了炫耀,是因為**微調是會錯的**:它在一個小範圍裡找最好的,
+    而「最好的」可能只是「一堆爛的裡面比較不爛的那個」。使用者看到「往下
+    移了 30 px」就知道該懷疑一下自己原本框的位置。
+    """
+    dx, dy, dw, dh = nudged
+    if not any(nudged):
+        return ""
+    parts = []
+    if dx or dy:
+        parts.append(f"位置 ({dx:+d}, {dy:+d})")
+    if dw or dh:
+        parts.append(f"大小 ({dw:+d}, {dh:+d})")
+    return "微調了 " + "、".join(parts) + " px。"
+
+
+def _refine(image: np.ndarray, table: Rect, templates: TemplateSet) -> Rect:
+    """把使用者框的矩形微調到最好的那個。
+
+    兩段,因為兩個訊號的成本差三個數量級:
+
+    1. **粗掃**只看「四家的牌河是不是都從頭連續」。那只要算每一格的中位亮度
+       與色相,快得可以掃滿整個網格。它看得出整體縮放錯了(牌譜那次差 18 px,
+       連續從 2/4 變成 4/4),但**看不出半格以內的偏移** —— 實測上緣偏 1% 時
+       連續性與張數完全沒反應。
+    2. **細挑**在粗掃的優勝者裡把牌真的認一次,取「有把握的張數」最多的。
+       那是唯一對小偏移有反應的訊號。
+
+    目標是有把握的**張數**而不是比例。比例會獎勵把框縮小 —— 把難認的牌排除
+    在外,剩下的比例自然漂亮。張數不會:少框一張牌就少一分。這個陷阱在校四家
+    角點時踩過一次,見 :data:`~mia.vision.tiles.river.DEFAULT_CORNERS`。
+    """
+    coarse: list[tuple[int, int, Rect]] = []
+    for dy in range(-_REFINE_RANGE, _REFINE_RANGE + 1, _REFINE_STEP):
+        for dh in range(-_REFINE_RANGE, _REFINE_RANGE + 1, _REFINE_STEP):
+            candidate = Rect(table.x, table.y + dy, table.width, table.height + dh)
+            if candidate.height <= 0:
+                continue
+            seats = tiles = 0
+            for seat in SEATS:
+                river = read_river(DEFAULT_CORNERS[seat].rectify(image, candidate))
+                seats += river.is_plausible()
+                tiles += river.count
+            coarse.append((seats, tiles, candidate))
+
+    if not coarse:
+        return table
+    coarse.sort(key=lambda row: (row[0], row[1]), reverse=True)
+
+    best, best_score = table, -1
+    for _, _, candidate in coarse[:_REFINE_FINALISTS]:
+        confident = 0
+        for seat in SEATS:
+            flat = DEFAULT_CORNERS[seat].rectify(image, candidate)
+            river = read_river(flat)
+            if not river.is_plausible():
+                continue
+            size = face_size()
+            for index in river.filled:
+                match = classify(flat[river.cells[index].as_slice()], templates, size=size)
+                confident += match.is_confident
+        if confident > best_score:
+            best, best_score = candidate, confident
+    return best
 
 
 def _aspect_note(table: Rect) -> str:
