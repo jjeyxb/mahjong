@@ -318,7 +318,10 @@ class CdpCapture:
                     logger.info("瀏覽器已關閉")
                     break
         except KeyboardInterrupt:
-            logger.info("使用者中斷")
+            # 「使用者」不一定是人 —— tools/capture.py 也是發 SIGINT 來停的。
+            # 原本這裡寫「使用者中斷」,於是正常收工的訊息讀起來像出了事,
+            # 而使用者真的回報「閃退了」。
+            logger.info("收到中斷訊號,停止錄製")
         finally:
             self.stats.duration = time.monotonic() - start
 

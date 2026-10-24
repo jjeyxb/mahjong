@@ -214,6 +214,11 @@ def main(argv: list[str] | None = None) -> int:
             print("\n收到 Ctrl-C,兩邊一起收。", flush=True)
             return 1
         finally:
+            # 瀏覽器那邊關掉的時候 Playwright 常會吐一行
+            # 「Future exception was never retrieved: TargetClosedError」。
+            # 那是收尾的雜訊不是失敗,但它長得像 traceback —— 使用者看到
+            # 會以為程式掛了(實測回報「閃退了」,其實四局都錄完了)。
+            print("\n收工中(瀏覽器關閉時的 TargetClosedError 是正常的)…", flush=True)
             packets.send_signal(signal.SIGINT)
             try:
                 packets.wait(timeout=20)
@@ -222,6 +227,9 @@ def main(argv: list[str] | None = None) -> int:
                 packets.kill()
 
     print()
+    print("=" * 56)
+    print("錄完了。下面是這份素材能不能用的檢查。")
+    print("=" * 56)
     print(f"目錄  : {writer.path}")
     print(f"畫面  : {stats.frames} 幀(存檔 {stats.stored}),{stats.duration:.0f} 秒")
     print(f"封包  : {dump}")
