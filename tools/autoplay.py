@@ -44,12 +44,20 @@ from typing import TYPE_CHECKING
 from mia.groundtruth.dump import DumpFrame
 from mia.groundtruth.stream import MjaiDecoder
 from mia.mjai.handstate import HandTracker
+from mia.mjai.tiles import sort_key
 from mia.utils.logging import logger
 
 if TYPE_CHECKING:  # pragma: no cover
     from playwright.sync_api import Page
 
-__all__ = ["DRAWN_TILE", "SHOT_DIR", "MortalBot", "TsumogiriBot", "tile_point"]
+__all__ = [
+    "DRAWN_TILE",
+    "SHOT_DIR",
+    "MortalBot",
+    "TsumogiriBot",
+    "tile_point",
+    "viewport",
+]
 
 #: dry-run 時畫面存去哪。
 SHOT_DIR = Path("out/autoplay")
@@ -116,11 +124,12 @@ class TsumogiriBot:
             return
         if now - self._last_click < _COOLDOWN:
             return
-        size = page.viewport_size
-        if not size:
+        size = viewport(page)
+        if size is None:
+            logger.warning("拿不到可視區大小,這一巡跳過")
             return
-        x = int(size["width"] * DRAWN_TILE[0])
-        y = int(size["height"] * DRAWN_TILE[1])
+        x = int(size[0] * DRAWN_TILE[0])
+        y = int(size[1] * DRAWN_TILE[1])
         logger.info("摸切 {} —— 點 ({}, {})", self._hand.drawn, x, y)
         page.mouse.click(x, y)
         self._last_click = now
@@ -178,6 +187,30 @@ _BUTTONS: dict[str, tuple[float, float]] = {
     "hora": (0.68, 0.78),
     "skip": (0.74, 0.78),
 }
+
+
+def viewport(page: Page) -> tuple[int, int] | None:
+    """分頁的可視區大小。拿不到回 ``None``。
+
+    **不能只看 ``page.viewport_size``。** 瀏覽器是用 ``no_viewport=True``
+    開的(那是為了讓雀魂跟著視窗縮放重新排版,見 cdp.py),而那個選項的
+    意思就是「不要設 viewport」—— 於是這個屬性永遠是 ``None``。
+
+    實測這正是「自動打牌完全沒反應」的原因:計畫做好了、在等著動手,
+    而 ``act`` 每次都卡在 ``if not size: return`` 然後**安靜地**返回。
+    心跳印出「等著動手」但「動作 0」才看得出來。
+
+    所以直接問頁面自己。``window.innerWidth`` 不管有沒有設 viewport 都對,
+    而且它就是 CSS 像素 —— 與 ``page.mouse`` 吃的座標系同一個。
+    """
+    try:
+        size = page.evaluate("() => [window.innerWidth, window.innerHeight]")
+    except Exception as exc:  # noqa: BLE001 - 分頁可能剛被關掉
+        logger.warning("問不到可視區大小:{}", exc)
+        return None
+    if not size or len(size) != 2 or not all(isinstance(v, int | float) and v > 0 for v in size):
+        return None
+    return int(size[0]), int(size[1])
 
 
 #: 按住多久(毫秒)。
@@ -326,7 +359,11 @@ class MortalBot:
             rest.remove(self._hand.drawn)
         if self._hand.drawn == pai:
             return tile_point(0, len(rest), drawn=True)
-        order = sorted(rest)
+        # **一定要用 sort_key,不能用 sorted() 直接排字串。** 字串序是
+        # 先比點數再比花色,排出來是 1m 1p 1s 2m 2p 2s…,而雀魂是按花色
+        # 分組的;字牌更離譜,字母序排成 C E F N P S W 而不是東南西北白發中。
+        # 症狀是「有時候按歪」—— 而且只要手上牌的花色一混就會歪。
+        order = sorted(rest, key=sort_key)
         if pai not in order:
             logger.warning("引擎要打 {},但手上沒有 —— 手牌 {}", pai, order)
             return None
@@ -339,13 +376,14 @@ class MortalBot:
             return
         if now - self._last_click < _COOLDOWN:
             return
-        size = page.viewport_size
-        if not size:
+        size = viewport(page)
+        if size is None:
+            logger.warning("拿不到可視區大小,這一巡跳過")
             return
         # 一次只做一步。立直是「宣言 + 切牌」兩步,中間要等畫面換 ——
         # 連著點下去第二下會落在還沒出現的按鈕上。
         fx, fy = self._pending.pop(0)
-        x, y = int(size["width"] * fx), int(size["height"] * fy)
+        x, y = int(size[0] * fx), int(size[1] * fy)
         # **不管有沒有真的點都要印。** 原本只有 dry-run 會出聲,於是
         # 「沒反應」分不出是「沒在試」還是「試了但遊戲沒收到」—— 使用者
         # 回報「沒有自動打牌」的時候,我手上一點資訊都沒有。
@@ -354,9 +392,13 @@ class MortalBot:
             "[dry-run] 會" if self.dry_run else "",
             x, y, fx, fy,
         )
-        if self.dry_run:
+        # **按鈕一律先存畫面,就算不是 dry-run。** 那幾顆的座標是估的,
+        # 而它們難得跳一次 —— 錯過一次就要再等一局。切牌不存(座標有量測
+        # 基礎,而且一局七十幾次)。
+        name = next((k for k, v in _BUTTONS.items() if v == (fx, fy)), None)
+        if name is not None or self.dry_run:
             self._snapshot(page, fx, fy)
-        else:
+        if not self.dry_run:
             _press(page, x, y)
         self._last_click = now
         self.actions += 1
@@ -400,7 +442,7 @@ class MortalBot:
             # 切牌。牌的座標有量測基礎,但那是**推算到 viewport** 的推算 ——
             # 中間差一個「牌桌矩形 ≈ viewport」的近似,沒有人驗過。所以也存
             # 幾張,但只存前面幾次:一局七十幾次切牌,每次都存會淹掉按鈕那幾張。
-            if self._tile_shots >= _TILE_SHOTS:
+            if not self.dry_run or self._tile_shots >= _TILE_SHOTS:
                 return
             self._tile_shots += 1
             name = "tile"
