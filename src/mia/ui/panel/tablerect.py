@@ -50,6 +50,7 @@ from mia.ui.panel.picker import DragPicker
 from mia.ui.style import CAPTION, MUTED
 from mia.ui.widgets.tiles import DEFAULT_SKIN, TileIcons, TileLabel
 from mia.utils.geometry import NormRect, Rect, Size
+from mia.utils.logging import logger
 from mia.vision.roi import RoiSet
 from mia.vision.tiles.classify import TemplateSet, classify, classify_hand
 from mia.vision.tiles.hand import MAX_CONCEALED, read_hand
@@ -157,6 +158,10 @@ class TableRectDialog(QDialog):
 
         self._message = QLabel("還沒框 —— 在上面的畫面裡拖一個框", self)
         self._message.setStyleSheet(MUTED)
+        # 判斷結果有兩行,而 QLabel 預設不換行 —— 長的那行會把對話框撐寬,
+        # 撐過螢幕就看不到了。使用者回報過「0.97 看得到,牌河那行沒看到」,
+        # 而那兩行是同一次 setText 寫進去的。
+        self._message.setWordWrap(True)
         layout.addWidget(self._message)
 
         self._tiles_row = QWidget(self)
@@ -268,13 +273,17 @@ class TableRectDialog(QDialog):
         # 數字牌兩種記法剛好一樣,所以漏掉這一步的症狀是「只有字牌畫不出來」
         # —— 實測白板畫成了「5z」三個字。
         self._show_tiles([ms_to_mjai(m.label) for m in matches])
-        self._message.setText(
+        verdict = (
             f"認出 {len(concealed)} 張暗手牌"
             + (f" + 摸的 {ms_to_mjai(drawn.label)}" if drawn else "")
             + f",平均把握 {score:.2f}。{_nudge_note(nudged)}"
             + f"\n{self._river_note(table)}"
             + aspect_note
         )
+        self._message.setText(verdict)
+        # 也寫進終端機。對話框關掉之後那段字就沒了,而它是使用者唯一能
+        # 判斷框好不好的依據 —— 只活在一個 QLabel 裡太脆弱。
+        logger.info("牌桌矩形 {} —— {}", table, verdict.replace("\n", " / "))
         self.result_rect = NormRect(
             table.x / width, table.y / height, table.width / width, table.height / height
         )
@@ -313,7 +322,16 @@ class TableRectDialog(QDialog):
 
         read = "/".join(str(c) for c in counts)
         if holes:
-            return f"⚠ {'、'.join(holes)}的牌河中間有洞(讀到 {read} 張)—— 框歪了,重拖一次。"
+            # 「有洞」最常見的原因**不是**框歪。實測整份錄影 1012 條牌河裡
+            # 160 條有洞,洞裡面有 898 格量出來就是桌布 —— 那些是立直/和了的
+            # 立繪動畫蓋住了牌河,角色的皮膚色「亮、不飽和」,跟牌面的判斷條件
+            # 一模一樣,於是動畫被讀成一排牌,真正的牌反而被蓋掉。
+            # 叫人家重拖是錯的建議:等動畫播完再框就好。
+            return (
+                f"{'、'.join(holes)}的牌河中間有洞(讀到 {read} 張)—— "
+                f"畫面上有動畫(立直/和了的立繪)蓋住牌河的話,等它播完再框一次。"
+                f"沒有動畫的話才是框歪了。"
+            )
         if total < _MIN_RIVER_TILES:
             return f"牌河現在只有 {read} 張,太空了看不準 —— 這一局打久一點再框會比較有把握。"
         ratio = confident / total
@@ -449,9 +467,15 @@ def _refine(image: np.ndarray, table: Rect, templates: TemplateSet) -> Rect:
     角點時踩過一次,見 :data:`~mia.vision.tiles.river.DEFAULT_CORNERS`。
 
     連續性(:meth:`~mia.vision.tiles.river.River.is_plausible`)**不參與
-    任何一段**。牌河被鳴牌拿走的那張會留下真正的空格,所以「不連續」本來就
-    不代表框錯。實測這張牌譜畫面的最佳解只有 3/4 家連續,而拿連續家數當第一
-    順位排序正好會把它淘汰掉。
+    任何一段**。它本身是個好訊號 —— 實測它擋下來的 160 條牌河,洞裡面有
+    898 格量出來就是桌布,而那些幀是立直/和了的立繪動畫蓋住了牌河(角色的
+    皮膚色是「亮、不飽和」,跟牌面的判斷條件一模一樣)。那道閘在做對的事。
+
+    但它**不適合拿來排名**。它是個是非題,169 個候選裡有幾十個都是 4/4,
+    所以它分不出前後;而它偶爾會錯(圖案蓋滿整個牌面的八筒、赤五筒中位亮度
+    會掉到門檻以下,被判成空格),一旦拿它當第一順位,那種罕見的錯就會把
+    最佳解整個淘汰掉。實測這張牌譜畫面的最佳解只有 3/4 家連續 —— 而它少的
+    那一家,洞正是一張八筒。
     """
     height, width = image.shape[:2]
     # 要量哪些格子,由使用者拖的那個粗框決定一次。見 :func:`_coverage`。
