@@ -64,6 +64,11 @@ from mia.utils.paths import DATA_DIR
 
 DEFAULT_OUT = DATA_DIR / "recordings" / "ws_dump.jsonl"
 
+#: 瀏覽器設定檔目錄。**與 tools/ui.py 的「開始遊戲」同一個** —— 登入狀態
+#: 存在這裡,所以任一邊登入過另一邊就不必再登。兩邊各用一個的話,使用者
+#: 會覺得「有時候要登入有時候不用」,而那種不一致最難查。
+DEFAULT_PROFILE = DATA_DIR / "live" / "chrome-profile"
+
 
 # --------------------------------------------------------------------- cdp
 
@@ -77,9 +82,15 @@ def cmd_cdp(args: argparse.Namespace) -> int:
     )
     from mia.live.control import ControlFile
 
-    canvas = Canvas.parse(args.canvas)
-    if args.canvas and canvas is None:
-        print(f"看不懂的畫布尺寸 {args.canvas!r},格式是 1920x1080", file=sys.stderr)
+    wanted = args.canvas
+    if not wanted and getattr(args, "autoplay", None) and not args.connect:
+        # 自動打牌點的是**畫布**的比例。不把 viewport 調成 16:9 的話雀魂會
+        # 加黑邊,viewport 的比例就不等於畫布的比例,整組座標都會偏。
+        wanted = AUTOPLAY_CANVAS
+        print(f"自動打牌:把畫布調成 {wanted}(座標是畫布的比例,非 16:9 會加黑邊)")
+    canvas = Canvas.parse(wanted)
+    if wanted and canvas is None:
+        print(f"看不懂的畫布尺寸 {wanted!r},格式是 1920x1080", file=sys.stderr)
         return 2
     if canvas is not None and args.connect:
         # 連到別人開的瀏覽器就不該去動它的視窗大小 —— 那個視窗不是我們的。
@@ -230,6 +241,14 @@ def cmd_inspect(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------- CLI
 
 
+#: ``--autoplay`` 沒指定畫布時用的尺寸。
+#:
+#: 取 16:9 是必要的,不是偏好:自動打牌點的位置是**畫布**的比例,而雀魂在
+#: 非 16:9 的視窗裡會上下或左右加黑邊 —— 那時候 viewport 的比例與畫布的
+#: 比例不一樣,整組座標都會偏。把 viewport 調成 16:9,畫布就填滿它。
+AUTOPLAY_CANVAS = "1280x720"
+
+
 def _autoplay(args: argparse.Namespace):
     """要不要替使用者打牌。沒開就是 None —— 正常錄製是人自己打。"""
     mode = getattr(args, "autoplay", None)
@@ -305,13 +324,23 @@ def main(argv: list[str] | None = None) -> int:
                        help="連到已在跑的瀏覽器,例如 http://localhost:9222")
     p_cdp.add_argument("--duration", type=float, metavar="SEC", help="錄製秒數")
     p_cdp.add_argument("--headless", action="store_true", help="無頭模式(通常不要,你得看畫面打牌)")
-    p_cdp.add_argument("--user-data-dir", help="持久化設定檔目錄,可保留登入狀態")
+    p_cdp.add_argument(
+        "--user-data-dir", default=str(DEFAULT_PROFILE),
+        help=f"持久化設定檔目錄,登入狀態會留在這裡(預設 {DEFAULT_PROFILE})。"
+             "與 UI 的「開始遊戲」用同一個 —— 任一邊登入過,另一邊就不必再登。"
+             "給空字串則每次都是全新的瀏覽器",
+    )
     p_cdp.add_argument("--control", type=Path, metavar="FILE",
                        help="主程式用來即時改設定的 JSON 檔(見 mia.live.control)。"
                             "由 tools/ui.py 自動帶上,手動執行時不需要")
-    p_cdp.add_argument("--canvas", metavar="WxH",
-                       help="把視窗調到讓頁面 viewport 剛好是這個尺寸,例如 1920x1080。"
-                            "畫面辨識就不必再猜牌桌邊界在哪")
+    p_cdp.add_argument(
+        "--canvas", metavar="WxH",
+        help="把視窗調到讓頁面 viewport 剛好是這個尺寸,例如 1920x1080。"
+             "畫面辨識就不必再猜牌桌邊界在哪。"
+             f"**--autoplay 時不給就用 {AUTOPLAY_CANVAS}** —— 自動打牌的座標是"
+             "畫布的比例,而雀魂在非 16:9 的視窗裡會加黑邊,那時候 viewport 的"
+             "比例就不等於畫布的比例,整組座標都會偏",
+    )
     p_cdp.set_defaults(func=cmd_cdp)
 
     p_proxy = sub.add_parser("proxy", help="MITM 代理(需裝憑證,需自行導向)")

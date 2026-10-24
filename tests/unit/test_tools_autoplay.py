@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from mia.mjai.tiles import sort_key
+
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "tests" / "fixtures"
 
@@ -44,12 +46,40 @@ def _advice(action=None, follow_up=None, *, declined: bool = False):
 
 
 class FakePage:
-    """只記下被點在哪。"""
+    """照真實情況做的假分頁。
+
+    **``viewport_size`` 是 ``None``** —— 瀏覽器是用 ``no_viewport=True``
+    開的,那個選項的意思就是「不要設 viewport」。先前這個假貨回了一個
+    字典,於是測試一路綠燈,而實際跑起來 ``act`` 每次都卡在
+    ``if not size: return`` 然後安靜地返回 —— 整個自動打牌一動也不動。
+
+    假貨比真貨好用,測試就測不到東西。
+    """
 
     def __init__(self, width: int = 1280, height: int = 720) -> None:
-        self.viewport_size = {"width": width, "height": height}
+        self.viewport_size = None
+        self._size = [width, height]
         self.clicks: list[tuple[int, int]] = []
         self.mouse = self
+        self._at: tuple[int, int] | None = None
+
+    def evaluate(self, script: str):  # noqa: ARG002
+        return list(self._size)
+
+    def wait_for_timeout(self, ms: float) -> None:
+        pass
+
+    # --- mouse ---
+    def move(self, x: int, y: int) -> None:
+        self._at = (x, y)
+
+    def down(self) -> None:
+        pass
+
+    def up(self) -> None:
+        """放開才算點完一次 —— 按住不放不是一次點擊。"""
+        if self._at is not None:
+            self.clicks.append(self._at)
 
     def click(self, x: int, y: int) -> None:
         self.clicks.append((x, y))
@@ -112,13 +142,13 @@ class TestWhenItActs:
         assert 0.75 * 1280 < x < 0.85 * 1280, "右端,但不到畫面邊緣"
         assert 0.85 * 720 < y < 0.99 * 720, "最下面那一排"
 
-    def test_a_page_without_a_viewport_is_survivable(self, autoplay) -> None:
-        """分頁剛被關掉時 viewport_size 會是 None。不可以因此拋例外 ——
+    def test_a_page_that_cannot_report_its_size_is_survivable(self, autoplay) -> None:
+        """問不到大小就跳過這一巡,不可以拋例外 ——
         自動打牌壞掉不值得讓正在錄的那一場跟著死。"""
         bot = autoplay.TsumogiriBot(delay=0.0)
         bot._ready_at = 0.0  # noqa: SLF001
         page = FakePage()
-        page.viewport_size = None
+        page._size = []  # noqa: SLF001 - 問不到大小的樣子
         bot.act(page)
         assert page.clicks == []
 
@@ -219,7 +249,9 @@ class TestWhatMortalWouldClick:
         tiles = ["1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "2p", "3p", "4p"]
         bot = self._bot(autoplay, tiles)
         points = bot._plan(_advice(Dahai(actor=0, pai="5m", tsumogiri=False)))  # noqa: SLF001
-        assert points == [autoplay.tile_point(sorted(tiles).index("5m"), 13)]
+        # 期望值要用專案自己的理牌順序算。原本這裡寫 sorted(tiles) ——
+        # 那把**錯的順序寫進斷言裡**,於是它驗證的是 bug 本身。
+        assert points == [autoplay.tile_point(sorted(tiles, key=sort_key).index("5m"), 13)]
 
     def test_discarding_the_drawn_tile_uses_the_drawn_slot(self, autoplay) -> None:
         """摸切要點**摸的那個格子**,不是排序後的位置。
@@ -249,7 +281,7 @@ class TestWhatMortalWouldClick:
         points = bot._plan(advice)  # noqa: SLF001
         assert len(points) == 2
         assert points[0] == autoplay._BUTTONS["reach"]  # noqa: SLF001
-        assert points[1] == autoplay.tile_point(sorted(tiles).index("9m"), 13)
+        assert points[1] == autoplay.tile_point(sorted(tiles, key=sort_key).index("9m"), 13)
 
     def test_a_tile_we_do_not_hold_is_refused(self, autoplay) -> None:
         """引擎要打一張手上沒有的牌 —— 不要亂點一個格子。
@@ -323,3 +355,59 @@ class TestWhereFollowUpComesFrom:
         resolved = bot._resolve(_advice(Reach(actor=2)))  # noqa: SLF001
         assert resolved.follow_up is None
         assert bot._plan(resolved) == [autoplay._BUTTONS["reach"]]  # noqa: SLF001
+
+
+class TestTheHandIsOrderedLikeTheScreen:
+    """手牌的順序要跟畫面一致,否則點到的是別張牌。
+
+    這條是被「有時候會按歪」逼出來的。原本用 ``sorted()`` 直接排字串,
+    而字串序是**先比點數再比花色** —— 排出 1m 1p 1s 2m 2p 2s…,
+    雀魂卻是按花色分組的。字牌更離譜:字母序是 C E F N P S W,
+    而畫面上是東南西北白發中。
+
+    mia/mjai/tiles.py 的 ``sort_key`` 一直都在,說明的第一句就是在講
+    這個錯。我沒用它。
+    """
+
+    @staticmethod
+    def _bot(autoplay, tiles):
+        bot = autoplay.MortalBot(engine=None)
+        bot._hand.tiles = list(tiles)  # noqa: SLF001
+        bot._hand.drawn = None  # noqa: SLF001
+        return bot
+
+    def test_suits_are_grouped_not_interleaved(self, autoplay) -> None:
+        """混花色的手牌:9m 要排在 1p **之前**。
+
+        字串序會把 1p 排到 9m 前面,於是這之後每一張的位置都錯開。
+        """
+        from mia.mjai.events import Dahai
+
+        tiles = ["1m", "9m", "1p", "9p", "1s", "9s", "E", "S", "W", "N", "P", "F", "C"]
+        bot = self._bot(autoplay, tiles)
+        here = bot._plan(_advice(Dahai(actor=0, pai="9m", tsumogiri=False)))  # noqa: SLF001
+        assert here == [autoplay.tile_point(1, 13)], "9m 是第 2 張,不是第 6 張"
+
+    def test_honours_follow_the_wind_order(self, autoplay) -> None:
+        """字牌是東南西北白發中,不是字母序。
+
+        字母序把中(C)排到最前面,於是七張字牌全部錯位。
+        """
+        from mia.mjai.events import Dahai
+
+        tiles = ["1m", "2m", "3m", "4m", "5m", "6m", "E", "S", "W", "N", "P", "F", "C"]
+        bot = self._bot(autoplay, tiles)
+        here = bot._plan(_advice(Dahai(actor=0, pai="C", tsumogiri=False)))  # noqa: SLF001
+        assert here == [autoplay.tile_point(12, 13)], "中是最後一張"
+
+    def test_it_matches_the_projects_own_sort(self, autoplay) -> None:
+        """直接跟 sort_key 對 —— 哪天理牌規則改了,這裡要跟著改。"""
+        from mia.mjai.events import Dahai
+        from mia.mjai.tiles import sort_key
+
+        tiles = ["5s", "1p", "E", "3m", "C", "9p", "2s"]
+        bot = self._bot(autoplay, tiles)
+        for want in tiles:
+            here = bot._plan(_advice(Dahai(actor=0, pai=want, tsumogiri=False)))  # noqa: SLF001
+            index = sorted(tiles, key=sort_key).index(want)
+            assert here == [autoplay.tile_point(index, len(tiles))], want
