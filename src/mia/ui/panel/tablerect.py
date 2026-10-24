@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 from mia.calibration.table import Calibration
 from mia.capture.base import Frame
 from mia.config.models import RoiConfig
+from mia.mjai.tiles import ms_to_mjai
 from mia.ui.panel.picker import DragPicker
 from mia.ui.style import CAPTION, MUTED
 from mia.ui.widgets.tiles import DEFAULT_SKIN, TileIcons, TileLabel
@@ -262,12 +263,16 @@ class TableRectDialog(QDialog):
 
         matches = [*concealed, *([drawn] if drawn else [])]
         score = float(np.mean([m.score for m in matches]))
-        self._show_tiles([m.label for m in matches])
+        # classify 回的是雀魂記法(5z),而 TileIcons 吃的是 MJAI(P)。
+        # 數字牌兩種記法剛好一樣,所以漏掉這一步的症狀是「只有字牌畫不出來」
+        # —— 實測白板畫成了「5z」三個字。
+        self._show_tiles([ms_to_mjai(m.label) for m in matches])
         self._message.setText(
             f"認出 {len(concealed)} 張暗手牌"
-            + (f" + 摸的 {drawn.label}" if drawn else "")
+            + (f" + 摸的 {ms_to_mjai(drawn.label)}" if drawn else "")
             + f",平均把握 {score:.2f}。{_nudge_note(nudged)}"
             + f"\n{self._river_note(table)}"
+            + _clipped_note(table, self._image)
             + aspect_note
         )
         self.result_rect = NormRect(
@@ -349,6 +354,34 @@ _REFINE_STEP = 4
 _REFINE_FINALISTS = 5
 
 
+def _clipped_note(table: Rect, image: np.ndarray) -> str:
+    """微調的最佳解是不是被畫面邊界卡住的。
+
+    牌桌矩形是個**座標系**,不是實體邊界 —— 而擷取有可能切到畫布。實測一張
+    2560x1614 的牌譜畫面:不限邊界時最好的矩形下緣在 1620(超出 6 px),
+    有把握 57 張;硬夾回畫面內之後只剩 33 張。
+
+    夾是必要的(存成比例的型別不收超出邊界的值),但**夾掉之後要講**。
+    不講的話使用者看到的是「只有 48% 有把握 —— 框歪了,重拖一次」,
+    於是他會一直重框一個其實沒框錯的東西。
+    """
+    height, width = image.shape[:2]
+    edges = []
+    if table.y <= _REFINE_STEP:
+        edges.append("上")
+    if table.y + table.height >= height - _REFINE_STEP:
+        edges.append("下")
+    if table.x <= _REFINE_STEP:
+        edges.append("左")
+    if table.x + table.width >= width - _REFINE_STEP:
+        edges.append("右")
+    if not edges:
+        return ""
+    return (
+        f"\n(微調在畫面的{'、'.join(edges)}緣就被卡住了 —— 擷取可能切到了畫布,那不是你框的問題。)"
+    )
+
+
 def _nudge_note(nudged: tuple[int, int, int, int]) -> str:
     """微調把框移了多少。移動量是 0 就不講 —— 沒事的時候不要佔版面。
 
@@ -383,11 +416,17 @@ def _refine(image: np.ndarray, table: Rect, templates: TemplateSet) -> Rect:
     在外,剩下的比例自然漂亮。張數不會:少框一張牌就少一分。這個陷阱在校四家
     角點時踩過一次,見 :data:`~mia.vision.tiles.river.DEFAULT_CORNERS`。
     """
+    height, width = image.shape[:2]
     coarse: list[tuple[int, int, Rect]] = []
     for dy in range(-_REFINE_RANGE, _REFINE_RANGE + 1, _REFINE_STEP):
         for dh in range(-_REFINE_RANGE, _REFINE_RANGE + 1, _REFINE_STEP):
             candidate = Rect(table.x, table.y + dy, table.width, table.height + dh)
-            if candidate.height <= 0:
+            # 長到畫面外的不能要。牌桌矩形之後要存成**相對影像**的比例,
+            # 而那個型別不收超出邊界的值 —— 它會拋,而這裡是 Qt 的 slot,
+            # 例外漏出去的樣子是「訊息說可以按確定,但按鈕是灰的」。
+            if candidate.height <= 0 or candidate.y < 0:
+                continue
+            if candidate.y + candidate.height > height or candidate.x + candidate.width > width:
                 continue
             seats = tiles = 0
             for seat in SEATS:

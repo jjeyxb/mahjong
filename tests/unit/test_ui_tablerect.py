@@ -16,12 +16,13 @@ from mia.ui.panel.tablerect import (
     SEAT_NAMES,
     TableRectDialog,
     _aspect_note,
+    _clipped_note,
     _hand_roi,
     _nudge_note,
     _refine,
     _river_quads,
 )
-from mia.utils.geometry import Rect, Size
+from mia.utils.geometry import NormRect, Rect, Size
 from mia.vision.tiles.river import SEATS
 
 #: 實測素材的牌桌矩形與畫面尺寸(``data/recordings/20260801-110639``)。
@@ -267,3 +268,50 @@ def _seats_ok(image, table: Rect) -> int:
     from mia.vision.tiles.river import DEFAULT_CORNERS, read_river
 
     return sum(read_river(DEFAULT_CORNERS[s].rectify(image, table)).is_plausible() for s in SEATS)
+
+
+class TestRefineStaysInsideTheFrame:
+    """微調不可以長到畫面外。
+
+    牌桌矩形之後要存成**相對影像**的比例,而那個型別不收超出邊界的值 ——
+    它會拋 ValueError,而這裡是 Qt 的 slot。例外漏出去的樣子是:訊息寫著
+    「可以按確定」,而確定鍵是灰的,錯誤只進 stderr。使用者回報過這一幕。
+    """
+
+    @pytest.mark.parametrize(
+        "start",
+        [
+            Rect(0, 0, 2536, 1430),  # 貼著上緣
+            Rect(0, 174, 2536, 1434),  # 貼著下緣
+            Rect(0, 174, 2536, 1430),  # 一般
+        ],
+    )
+    def test_the_result_can_always_be_stored(self, table_image, templates, start) -> None:
+        out = _refine(table_image, start, templates)
+        height, width = table_image.shape[:2]
+        NormRect(out.x / width, out.y / height, out.width / width, out.height / height)
+
+
+class TestClippedNote:
+    """微調的最佳解被畫面邊界卡住時要講。
+
+    實測一張 2560x1614 的牌譜畫面:不限邊界時最好的矩形下緣在 1620
+    (超出 6 px),有把握 57 張;夾回畫面內之後只剩 33 張。夾是必要的,
+    但不講的話使用者看到「只有 48% 有把握 —— 框歪了」,會一直重框一個
+    其實沒框錯的東西。
+    """
+
+    def test_a_frame_well_inside_says_nothing(self, table_image) -> None:
+        assert _clipped_note(Rect(100, 100, 1000, 800), table_image) == ""
+
+    def test_touching_the_bottom_is_called_out(self, table_image) -> None:
+        height = table_image.shape[0]
+        note = _clipped_note(Rect(100, height - 800, 1000, 800), table_image)
+        assert "下" in note
+        assert "不是你框的問題" in note
+
+    def test_it_names_every_edge_it_touches(self, table_image) -> None:
+        height, width = table_image.shape[:2]
+        note = _clipped_note(Rect(0, 0, width, height), table_image)
+        for edge in ("上", "下", "左", "右"):
+            assert edge in note

@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from mia.capture.base import Frame
+from mia.mjai.tiles import ms_to_mjai
 from mia.ui.panel.picker import DragPicker
 from mia.ui.style import CAPTION, MUTED
 from mia.ui.widgets.tiles import DEFAULT_SKIN, TileIcons, TileLabel
@@ -176,10 +177,12 @@ class HandRoiDialog(QDialog):
 
         matches = [*concealed, *([drawn] if drawn else [])]
         score = float(np.mean([m.score for m in matches]))
-        self._show_tiles([m.label for m in matches])
+        # classify 回的是雀魂記法(5z),而 TileIcons 吃的是 MJAI(P)。數字牌
+        # 兩種剛好一樣,所以漏掉這一步只有字牌畫不出來 —— 白板會變成「5z」。
+        self._show_tiles([ms_to_mjai(m.label) for m in matches])
         self._message.setText(
             f"認出 {len(concealed)} 張暗手牌"
-            + (f" + 摸的 {drawn.label}" if drawn else "")
+            + (f" + 摸的 {ms_to_mjai(drawn.label)}" if drawn else "")
             + f",平均把握 {score:.2f} —— 對的話按「確定」"
         )
         height, width = self._image.shape[:2]
