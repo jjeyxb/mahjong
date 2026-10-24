@@ -33,6 +33,7 @@ from mia.ui.panel.window import PanelWindow, present
 from mia.ui.widgets.tiles import (
     _PAD_FRACTION,
     _RADIUS_FRACTION,
+    DEFAULT_SKIN,
     TILE_ASPECT,
     TileIcons,
 )
@@ -61,6 +62,31 @@ def shown(widget) -> bool:
 
 
 @pytest.mark.usefixtures("qapp")
+class TestTileIconsTakeMjaiNotation:
+    """:class:`TileIcons` 吃的是 **MJAI** 記法,不是雀魂記法。
+
+    數字牌兩種寫法剛好一樣(``2m`` 就是 ``2m``),所以搞錯的話**只有字牌會壞**
+    —— 而字牌在手上不是每一局都有。實測:框選對話框把 classify 回的雀魂記法
+    直接餵進來,白板(雀魂 ``5z``、MJAI ``P``)被畫成「5z」三個字。
+
+    釘在這裡,是因為這個介面沒有型別擋得住 —— 兩邊都是 str。
+    """
+
+    def test_mjai_honours_resolve(self) -> None:
+        icons = TileIcons(DEFAULT_SKIN)
+        assert not icons.pixmap("P", 32).isNull(), "白板的 MJAI 記法要畫得出來"
+
+    def test_majsoul_honours_do_not(self) -> None:
+        """這不是「可惜」,是這個測試要釘的事實:傳錯記法會靜靜地畫不出來。"""
+        icons = TileIcons(DEFAULT_SKIN)
+        assert icons.pixmap("5z", 32).isNull()
+
+    def test_number_tiles_are_the_same_either_way(self) -> None:
+        """正是這個巧合讓錯誤能活那麼久 —— 一手沒有字牌的牌看起來完全正常。"""
+        icons = TileIcons(DEFAULT_SKIN)
+        assert not icons.pixmap("2m", 32).isNull()
+
+
 class TestTileIcons:
     """QPixmap 需要 QApplication 才能建 —— 沒有的話是 segfault 而不是例外。
 
