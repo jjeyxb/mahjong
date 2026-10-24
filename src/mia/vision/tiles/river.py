@@ -51,6 +51,7 @@ __all__ = [
     "River",
     "RiverView",
     "classify_river_tile",
+    "face_coverage",
     "face_size",
     "read_river",
 ]
@@ -403,6 +404,25 @@ def _occupied(image: np.ndarray, cell: Rect) -> bool:
     if float(np.median(grey)) < _OCCUPIED_MEDIAN:
         return False
     return not _is_back(float(np.median(hsv[:, :, 0])), float(np.median(hsv[:, :, 1])))
+
+
+def face_coverage(patch: np.ndarray) -> float:
+    """這一塊裡「是攤開的牌面」的像素佔多少,0~1。
+
+    :func:`_occupied` 的逐像素版本,問的是同一件事,只是不先取中位數就表態。
+    有無判斷要的是一個是非題,而**對齊**要的是程度:格線壓到隔壁的牌時,
+    那一格仍然「有牌」,但牌面只佔得到一半。中位數看不出這件事,佔比看得出。
+
+    門檻故意與 :func:`_occupied` 共用。兩邊各寫一份的話,哪天調了其中一個,
+    另一個會安靜地跟著不準 —— 而那種不準不會有任何錯誤訊息。
+    """
+    if patch.size == 0:
+        return 0.0
+    grey = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+    hue, saturation = hsv[:, :, 0], hsv[:, :, 1]
+    back = ((hue <= _BACK_HUE[0]) | (hue >= _BACK_HUE[1])) & (saturation >= _BACK_SATURATION)
+    return float(((grey > _OCCUPIED_MEDIAN) & ~back).mean())
 
 
 def _is_back(hue: float, saturation: float) -> bool:
