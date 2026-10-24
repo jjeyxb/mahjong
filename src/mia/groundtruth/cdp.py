@@ -214,7 +214,10 @@ class CdpCapture:
         self.writer.write(payload, from_client=from_client, flow=flow)
         self.stats.frames += 1
         if self.stats.frames % 200 == 0:
-            logger.info("已錄 {} 個 frame", self.stats.frames)
+            # 講「封包」不講「frame」—— 這一行會跟螢幕錄影的「已錄 N 幀」
+            # 同時出現在終端機上,兩個都叫 frame 的話根本分不出誰是誰。
+            # 這裡數的是 WebSocket binary frame,也就是雀魂的協定封包。
+            logger.info("已錄 {} 個封包", self.stats.frames)
 
     def _flow_id(self, ws: WebSocket) -> str:
         """同一條連線給同一個穩定識別。"""
