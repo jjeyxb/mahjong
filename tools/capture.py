@@ -133,6 +133,15 @@ def main(argv: list[str] | None = None) -> int:
         help="最多錄幾分鐘。**省略才是正確用法** —— 由封包決定何時停,"
              "人訂的時限正是上次把素材錄壞的原因",
     )
+    parser.add_argument(
+        "--autoplay", choices=("tsumogiri", "mortal"), metavar="MODE",
+        help="讓程式替你打完整局 —— **只在對電腦的房間用**。見 tools/autoplay.py",
+    )
+    parser.add_argument("--mortal", metavar="WEIGHTS", help="--autoplay mortal 用的權重檔")
+    parser.add_argument(
+        "--autoplay-dry-run", action="store_true",
+        help="自動打牌只印「會點哪裡」不真的點。按鈕座標還沒量過,第一次請用這個",
+    )
     parser.add_argument("--notes", default="capture.py:畫面與封包同時錄")
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args(argv)
@@ -157,10 +166,14 @@ def main(argv: list[str] | None = None) -> int:
 
         print(f"session:{writer.path}")
         print("開瀏覽器並開始錄封包…", flush=True)
-        packets = subprocess.Popen(
-            [sys.executable, str(ROOT / "tools/gt.py"), "cdp", "--out", str(dump)],
-            cwd=ROOT,
-        )
+        command = [sys.executable, str(ROOT / "tools/gt.py"), "cdp", "--out", str(dump)]
+        if args.autoplay:
+            command += ["--autoplay", args.autoplay]
+            if args.mortal:
+                command += ["--mortal", args.mortal]
+            if args.autoplay_dry_run:
+                command.append("--autoplay-dry-run")
+        packets = subprocess.Popen(command, cwd=ROOT)
 
         try:
             window = _wait_for_window(backend, config)
