@@ -51,6 +51,7 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # 讓 --autoplay 找得到 tools/autoplay.py
 
 from mia.groundtruth import capture_addon
 from mia.groundtruth.dump import DumpWriter
@@ -99,6 +100,7 @@ def cmd_cdp(args: argparse.Namespace) -> int:
                     user_data_dir=args.user_data_dir,
                     canvas=canvas,
                     control=ControlFile(args.control) if args.control else None,
+                    autoplay=_autoplay(args),
                 )
     except PlaywrightMissingError as exc:
         print(f"\n{exc}", file=sys.stderr)
@@ -228,6 +230,32 @@ def cmd_inspect(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------- CLI
 
 
+def _autoplay(args: argparse.Namespace):
+    """要不要替使用者打牌。沒開就是 None —— 正常錄製是人自己打。"""
+    mode = getattr(args, "autoplay", None)
+    if not mode:
+        return None
+    print("⚠ 自動打牌已開啟。只在對電腦的房間用 —— 真人對局裡放機器人影響的是另外三個人。")
+    if mode == "tsumogiri":
+        from autoplay import TsumogiriBot
+
+        print("   模式:摸切(不立直、不鳴牌)")
+        return TsumogiriBot()
+
+    from autoplay import MortalBot
+    from mia.engine.mortal import mortal_engine
+
+    if not args.mortal:
+        raise SystemExit("--autoplay mortal 要同時給 --mortal 權重檔")
+    # 不傳 seat:建構時只是先給一個值,**實際座位由事件流決定**
+    # (bot.py 收到 start_game 會照它的 id 重建 Bot,權重不重載)。
+    engine = mortal_engine(args.mortal, name=Path(args.mortal).stem)
+    engine.start()
+    note = "(dry-run,只印不點)" if args.autoplay_dry_run else ""
+    print(f"   模式:Mortal({Path(args.mortal).name}){note}")
+    return MortalBot(engine=engine, dry_run=args.autoplay_dry_run)
+
+
 def _patterns(value: str | None) -> tuple[str, ...]:
     from mia.groundtruth.cdp import DEFAULT_URL_PATTERNS
 
@@ -260,6 +288,18 @@ def main(argv: list[str] | None = None) -> int:
 
     p_cdp = sub.add_parser("cdp", help="用瀏覽器除錯介面擷取(推薦,零前置設定)")
     add_capture_args(p_cdp)
+    p_cdp.add_argument(
+        "--autoplay", choices=("tsumogiri", "mortal"), metavar="MODE",
+        help="替你把整局打完,**只為了錄素材,而且只在對電腦的房間用**。"
+             "tsumogiri=摸到什麼打什麼(簡單、不會錯,但局面不像真的);"
+             "mortal=照引擎打(會立直會鳴牌,局面像真的,要配 --mortal)。"
+             "見 tools/autoplay.py",
+    )
+    p_cdp.add_argument("--mortal", metavar="WEIGHTS", help="--autoplay mortal 用的權重檔")
+    p_cdp.add_argument(
+        "--autoplay-dry-run", action="store_true",
+        help="只印「會點哪裡」,不真的點。按鈕座標還沒量過,第一次跑請用這個對一下",
+    )
     p_cdp.add_argument("--url", help="要開啟的網址,預設為網頁版雀魂")
     p_cdp.add_argument("--connect", metavar="ENDPOINT",
                        help="連到已在跑的瀏覽器,例如 http://localhost:9222")

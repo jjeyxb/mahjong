@@ -31,7 +31,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from mia.calibration.canvas import Canvas
 from mia.groundtruth.dump import DumpWriter
@@ -41,7 +41,13 @@ from mia.utils.logging import logger
 if TYPE_CHECKING:
     from playwright.sync_api import BrowserContext, Page, WebSocket
 
-__all__ = ["DEFAULT_MAJSOUL_URL", "DEFAULT_URL_PATTERNS", "CdpCapture", "CdpStats"]
+__all__ = [
+    "DEFAULT_MAJSOUL_URL",
+    "DEFAULT_URL_PATTERNS",
+    "AutoPlayer",
+    "CdpCapture",
+    "CdpStats",
+]
 
 #: 網頁版雀魂。與 Steam 桌面版走同一套協定。
 DEFAULT_MAJSOUL_URL = "https://game.maj-soul.com/1/"
@@ -78,6 +84,34 @@ class CdpStats:
         return "\n".join(lines)
 
 
+class AutoPlayer(Protocol):
+    """替使用者按畫面的東西。**本模組不知道它怎麼決定要按哪裡。**
+
+    存在的理由只有一個:錄素材。要量牌河 CV 的準確率,得有人坐在那裡打完
+    整局,而「人要坐在那裡」正是素材難補的原因(實測上一份素材因為人提早
+    停止錄影,7 次立直只涵蓋到一家)。
+
+    掛在這裡而不是另開一個行程,是因為**瀏覽器是這個行程開的**。
+    從外面控制只能用作業系統層級的滑鼠事件 —— 那會搶走使用者的游標、
+    要輔助使用權限、而且每個平台一套。``page.mouse`` 三樣都不會。
+
+    兩個掛鉤分別對應「知道」與「做」:
+
+    * :meth:`observe` 吃每一個封包,自己維護局面。
+    * :meth:`act` 在輪詢迴圈裡被呼叫,拿得到 ``page``,可以按下去。
+
+    兩者分開是因為它們的節奏不同:封包隨時會到,而按畫面只能在 Playwright
+    的同步 API 合法的那條執行緒上做。
+    """
+
+    def observe(self, payload: bytes, *, from_client: bool, flow: str) -> None:
+        """看一個封包。"""
+
+    def act(self, page: Page) -> None:
+        """輪到自己的話就動手。**不該拋例外** —— 它壞掉不值得讓錄製中斷。"""
+
+
+
 class CdpCapture:
     """透過 CDP 監聽瀏覽器的 WebSocket frame 並寫進錄影檔。"""
 
@@ -90,6 +124,10 @@ class CdpCapture:
         self.writer = writer
         self.url_patterns = [p.lower() for p in url_patterns if p]
         self.stats = CdpStats()
+        #: 替使用者按畫面的東西。見 :class:`AutoPlayer`。只有 run_launched
+        #: 會設它 —— connect_existing 接的是別人開的瀏覽器,替那邊按畫面
+        #: 是在動不屬於自己的東西。
+        self._autoplay: AutoPlayer | None = None
         self._flow_ids: dict[int, str] = {}
 
     # ------------------------------------------------------------------ 執行
@@ -104,6 +142,7 @@ class CdpCapture:
         canvas: Canvas | None = None,
         control: ControlFile | None = None,
         stop_check: Callable[[], bool] | None = None,
+        autoplay: AutoPlayer | None = None,
     ) -> CdpStats:
         """啟動一個受控的 Chromium 並開啟雀魂。
 
@@ -116,7 +155,10 @@ class CdpCapture:
             control: 主程式改設定時會寫這個檔案。**只有這個行程握著瀏覽器**,
                 所以「使用者在 UI 上換了畫布尺寸」只能靠它送進來,見
                 :mod:`mia.live.control`。
+            autoplay: 替使用者按畫面的東西,見 :class:`AutoPlayer`。
+                省略就是正常的錄製 —— 人自己打。
         """
+        self._autoplay = autoplay
         sync_playwright = _import_playwright()
         with sync_playwright() as playwright:
             # no_viewport=True:Playwright 預設會把分頁 viewport 鎖定在固定的
@@ -212,6 +254,13 @@ class CdpCapture:
             self.stats.text_frames += 1
             return
         self.writer.write(payload, from_client=from_client, flow=flow)
+        if self._autoplay is not None:
+            # **吞掉所有例外。** 自動打牌是錄素材的輔助,它壞掉不值得讓
+            # 正在錄的那一場跟著死 —— 那一場的封包仍然是完整的素材。
+            try:
+                self._autoplay.observe(payload, from_client=from_client, flow=flow)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("自動打牌看封包時出錯:{}", exc)
         self.stats.frames += 1
         if self.stats.frames % 200 == 0:
             # 講「封包」不講「frame」—— 這一行會跟螢幕錄影的「已錄 N 幀」
@@ -257,6 +306,11 @@ class CdpCapture:
                     break
                 if control is not None and page is not None:
                     self._apply_control(control, page)
+                if self._autoplay is not None and page is not None:
+                    try:
+                        self._autoplay.act(page)
+                    except Exception as exc:  # noqa: BLE001 - 同上
+                        logger.warning("自動打牌按畫面時出錯:{}", exc)
                 try:
                     # 用 Playwright 自己的等待來推進事件迴圈,frame 事件才會送達。
                     context.pages[0].wait_for_timeout(250)
