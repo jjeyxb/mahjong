@@ -218,9 +218,9 @@ class TableRectDialog(QDialog):
         rough = Rect(box.x(), box.y(), box.width(), box.height())
         width, height = self._picker.image_size
 
-        # 微調要十幾秒,而那段時間視窗是凍住的。先把話說出來並讓 Qt 把它畫上去,
+        # 微調要二十幾秒,而那段時間視窗是凍住的。先把話說出來並讓 Qt 把它畫上去,
         # 不然使用者看到的是一個按了沒反應的程式 —— 而他剛拖完框,正等著回應。
-        self._message.setText("正在微調框的位置(約二十秒)…")
+        self._message.setText("正在微調框的位置(約二十五秒)…")
         QApplication.processEvents()
         if self._templates is None:
             self._templates = TemplateSet.load()
@@ -341,7 +341,16 @@ class TableRectDialog(QDialog):
 #: 只剩 4 px。要使用者用滑鼠拖到那個準度是不合理的要求。
 #:
 #: 範圍取 ±32 px:實測牌譜畫面的自動校正差了 18 px(連續只有 2/4),微調之後
-#: 四家全部連續。粗掃步長 4 px 在容忍度(約 5 px)之內。
+#: 四家全部連續。
+#:
+#: 步長 4 px **不在**容忍度之內 —— 原本這裡寫著「容忍度約 5 px」,那是錯的。
+#: 實測使用者存下來的框 y=180 h=1434 有把握 52 張,而 y=178 h=1432 有 59 張,
+#: 正好差 dy=-2、dh=-2,落在網格的正中間搜不到。所以粗掃之後還要補一輪
+#: 半步長的局部搜尋,見 :func:`_refine` 的最後一段。
+#:
+#: 不直接把步長改成 2:那會讓粗掃的格點從 169 變成 625,而粗掃**排不出
+#: 名次**(見 :func:`_coverage`),多出來的格點只是讓入圍名單更擠,不會更準。
+#: 補一輪只要 8 次細挑,約 5 秒。
 _REFINE_RANGE = 32
 _REFINE_STEP = 4
 
@@ -470,17 +479,49 @@ def _refine(image: np.ndarray, table: Rect, templates: TemplateSet) -> Rect:
 
     best, best_score = table, -1
     for _, candidate in coarse[:_REFINE_FINALISTS]:
-        confident = 0
-        for seat in SEATS:
-            flat = DEFAULT_CORNERS[seat].rectify(image, candidate)
-            river = read_river(flat)
-            size = face_size()
-            for index in river.filled:
-                match = classify(flat[river.cells[index].as_slice()], templates, size=size)
-                confident += match.is_confident
-        if confident > best_score:
-            best, best_score = candidate, confident
+        score = _confident(image, candidate, templates)
+        if score > best_score:
+            best, best_score = candidate, score
+
+    # 粗掃踩在 4 px 的網格上,所以答案一定帶著最多 ±2 px 的相位誤差 ——
+    # 而那個誤差落在格線之間,整個搜尋都碰不到。實測使用者存下來的框
+    # (y=180 h=1434,有把握 52)最好的鄰居就在 y=178 h=1432(59),
+    # 正好是 dy=-2、dh=-2,網格的正中間。
+    for dy in (-_REFINE_STEP // 2, 0, _REFINE_STEP // 2):
+        for dh in (-_REFINE_STEP // 2, 0, _REFINE_STEP // 2):
+            if dy == 0 and dh == 0:
+                continue
+            candidate = Rect(best.x, best.y + dy, best.width, best.height + dh)
+            if candidate.height <= 0 or candidate.y < 0:
+                continue
+            if candidate.y + candidate.height > height or candidate.x + candidate.width > width:
+                continue
+            score = _confident(image, candidate, templates)
+            if score > best_score:
+                best, best_score = candidate, score
     return best
+
+
+def _confident(image: np.ndarray, table: Rect, templates: TemplateSet) -> int:
+    """這個矩形之下,四家的牌河有幾張認得出來、而且有把握。
+
+    細挑唯一可信的名次。實測在 ±2 px 的尺度上它自己有大約 ±4 張的雜訊
+    (相鄰格跳動中位 1.8%),所以差距小於 5 張不代表什麼 —— 但 y 再往下
+    偏就會真的崩(184 → 46、186 → 39),那是訊號不是雜訊。
+
+    換成「有把握的分數加總」不會比較穩:實測兩者相關 +0.992、相鄰跳動
+    同樣是 1.8%、最佳點完全相同。雜訊不是來自門檻的量化,是對齊真的
+    改變了哪些牌讀得對。
+    """
+    size = face_size()
+    total = 0
+    for seat in SEATS:
+        flat = DEFAULT_CORNERS[seat].rectify(image, table)
+        river = read_river(flat)
+        for index in river.filled:
+            match = classify(flat[river.cells[index].as_slice()], templates, size=size)
+            total += match.is_confident
+    return total
 
 
 def _aspect_note(table: Rect) -> str:

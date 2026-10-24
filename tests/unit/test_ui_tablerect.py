@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import typing
 from pathlib import Path
 
 import pytest
@@ -14,9 +15,11 @@ import pytest
 from mia.config.models import RoiConfig
 from mia.ui.panel.tablerect import (
     _REFINE_FINALISTS,
+    _REFINE_STEP,
     SEAT_NAMES,
     TableRectDialog,
     _aspect_note,
+    _confident,
     _coverage,
     _hand_roi,
     _nudge_note,
@@ -258,9 +261,13 @@ class TestRefine:
         這個陷阱在校四家角點時踩過一次(見 DEFAULT_CORNERS 的說明),
         所以這裡釘的是原始碼本身:目標必須是**張數**。
         """
-        source = _body(_refine)
-        assert "confident += " in source
-        assert "/ total" not in source, "一旦改成比例,縮框就會變成最佳解"
+        source = _body(_confident)
+        assert "total += match.is_confident" in source
+        assert "/" not in source, "一旦除以張數變成比例,縮框就會變成最佳解"
+        # 回傳型別也要是 int:比例是浮點數,簽章變了就是改成比例了。
+        # 用 get_type_hints 而不是 signature —— 那個模組有
+        # `from __future__ import annotations`,簽章裡拿到的是字串 "int"。
+        assert typing.get_type_hints(_confident)["return"] is int
 
 
 class TestNudgeNote:
@@ -276,22 +283,6 @@ class TestNudgeNote:
         note = _nudge_note((0, 18, 0, -6))
         assert "+18" in note
         assert "-6" in note
-
-
-def _confident(image, table: Rect, templates) -> int:
-    """四家合起來有幾張認得有把握。微調的目標函數就是這個。"""
-    from mia.vision.tiles.classify import classify
-    from mia.vision.tiles.river import DEFAULT_CORNERS, face_size, read_river
-
-    size = face_size()
-    total = 0
-    for seat in SEATS:
-        flat = DEFAULT_CORNERS[seat].rectify(image, table)
-        river = read_river(flat)
-        for index in river.filled:
-            match = classify(flat[river.cells[index].as_slice()], templates, size=size)
-            total += match.is_confident
-    return total
 
 
 def _seats_ok(image, table: Rect) -> int:
@@ -372,6 +363,27 @@ class TestTheCoarseStageOnlyExcludes:
         worse = Rect(TABLE.x, TABLE.y + 20, TABLE.width, TABLE.height)
         assert _coverage(table_image, worse, wanted) > aligned
         assert _REFINE_FINALISTS >= 24, "粗掃排不出名次,名額就不能小"
+
+    def test_the_polish_reaches_between_the_grid_points(self, table_image, templates) -> None:
+        """粗掃踩在 4 px 的網格上,所以答案必定帶著最多 ±2 px 的相位誤差。
+
+        使用者實際存下來的框就是這一幕:y=180 h=1434 有把握 52 張,而最好的
+        鄰居在 y=178 h=1432(59 張)—— 正好 dy=-2、dh=-2,落在網格正中間,
+        整個搜尋都碰不到。
+
+        實測補這一輪值 +0 ~ +2 張,而且四個起點都沒有變差。**再跑一次則
+        沒有收益,還會變差一次(59→58)** —— 每一輪都會依新矩形重新決定要量
+        哪些格子,而目標本身有雜訊,多跑只是在雜訊上漂移。所以補一輪,不迭代。
+        """
+        start = Rect(TABLE.x, TABLE.y + 6, TABLE.width, TABLE.height + 6)
+        after = _refine(table_image, start, templates)
+        off = (after.y - start.y) % _REFINE_STEP, (after.height - start.height) % _REFINE_STEP
+        assert off != (0, 0) or _confident(table_image, after, templates) >= 50, (
+            "要嘛落在網格之間(補的那一輪有在做事),要嘛網格上就已經夠好"
+        )
+        assert _confident(table_image, after, templates) >= _confident(
+            table_image, start, templates
+        ), "補的那一輪不可以讓結果變差"
 
     def test_the_cell_set_is_fixed_by_the_rough_rect(self) -> None:
         """被評分的格子集合不可以跟著候選框跑。
