@@ -80,15 +80,15 @@ class WebSocketDump:
             message.content, from_client=message.from_client, flow=self._flow_id(flow)
         )
         if self.frames % 200 == 0:
-            print(f"[majsoul] 已錄 {self.frames} 個 frame")
+            print(f"[majsoul] 已錄 {self.frames} 個封包")
 
     def websocket_end(self, flow: Any) -> None:  # noqa: ARG002
-        print(f"[majsoul] WebSocket 結束,累計 {self.frames} 個 frame")
+        print(f"[majsoul] WebSocket 結束,累計 {self.frames} 個封包")
 
     def done(self) -> None:
         frames = self.frames
         self.writer.close()
-        print(f"[majsoul] 錄製結束:{frames} 個 frame → {self.path}")
+        print(f"[majsoul] 錄製結束:{frames} 個封包 → {self.path}")
 
     # --- internals ---
 
