@@ -33,7 +33,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from mahjong.shanten import Shanten
@@ -203,32 +203,55 @@ def _shanten_of(array: Sequence[int]) -> int:
     return int(_shanten.calculate_shanten(array))
 
 
-def _ukeire_of(array: list[int], current: int) -> tuple[Ukeire, ...]:
+def _ukeire_of(
+    array: list[int], current: int, seen: Mapping[str, int] | None = None
+) -> tuple[Ukeire, ...]:
     """哪些牌摸到之後向聽數會前進。
 
     做法是逐一試摸:對 34 種牌各加一張、重算向聽,有變好就算進張。
     這比自己分析搭子形狀可靠得多 —— 邊張、坎張、多面聽、七對子與一般型
     的交叉情況全都自動涵蓋。
+
+    ``seen`` 給了就用它算剩餘張數,見 :func:`analyse`。
+
+    **枚數 0 的那一項仍然列出來,不會被濾掉。** 濾掉的話一手聽牌而和牌張
+    四張全見的手,進張會變成空的 —— 而空的進張在畫面上讀起來像「這手沒聽」,
+    那是最糟的那種錯:它看起來不像錯誤。列出「4s x0」才是實話,而且那正是
+    使用者最需要知道的一件事(該換聽了)。
     """
     found = []
     for index in range(34):
         if array[index] >= COPIES:
-            continue  # 四張都在自己手上,摸不到了
+            # 四張都在自己手上。這一條不是顯示上的取捨 —— 是算不出來:
+            # 試摸會湊出第五張,mahjong 套件會直接拋錯。
+            continue
         array[index] += 1
         improved = _shanten_of(array) < current
         array[index] -= 1
         if improved:
-            found.append(Ukeire(_label(index), COPIES - array[index]))
+            label = _label(index)
+            taken = array[index] if seen is None else seen.get(label, array[index])
+            found.append(Ukeire(label, max(0, COPIES - taken)))
     found.sort(key=lambda u: (-u.count, u.tile))
     return tuple(found)
 
 
-def analyse(tiles: Sequence[str]) -> HandAnalysis:
+def analyse(tiles: Sequence[str], *, seen: Mapping[str, int] | None = None) -> HandAnalysis:
     """算一手牌的向聽數與進張。
 
     Args:
         tiles: 暗手牌(雀魂記法)。含剛摸進來那張也可以 —— 副露組數由張數
             反推,不需要另外傳。
+        seen: 場上每種牌看得見幾張,通常直接給
+            :meth:`~mia.mjai.table.TableTracker.visible` 的輸出 ——
+            自己的手牌、四家牌河、四家副露、寶牌指示牌。
+
+            **它必須已經含自己的手牌**,因為 ``visible()`` 就是這樣算的。
+            省略則只扣自己手上的,進張枚數會偏高(``docs/decisions.md``
+            未解 #4)。偏高是因為看得見的牌沒被扣掉,不是因為演算法不同 ——
+            向聽數與「哪些牌算進張」完全不受 ``seen`` 影響,只有枚數會變。
+
+            紅五要先正規化(``visible()`` 已經做了):這裡的鍵是 34 種牌。
 
     Returns:
         向聽數與進張。
@@ -254,12 +277,14 @@ def analyse(tiles: Sequence[str]) -> HandAnalysis:
     shanten = _shanten_of(array)
     drawn = count in DRAWN_COUNTS
     # 已經和了就沒有「還要摸什麼」;剛摸完則是連摸兩張,牌數會爆掉。
-    ukeire = () if drawn or shanten == AGARI else _ukeire_of(array, shanten)
+    ukeire = () if drawn or shanten == AGARI else _ukeire_of(array, shanten, seen)
     melds = ((14 if drawn else 13) - count) // 3
     return HandAnalysis(shanten, ukeire, count, melds)
 
 
-def suggest_discards(tiles: Sequence[str]) -> tuple[DiscardOption, ...]:
+def suggest_discards(
+    tiles: Sequence[str], *, seen: Mapping[str, int] | None = None
+) -> tuple[DiscardOption, ...]:
     """摸完之後該切哪一張。
 
     對每一種**不同的**牌試切一次,回傳依「向聽數由小到大、同向聽則進張由多
@@ -267,6 +292,10 @@ def suggest_discards(tiles: Sequence[str]) -> tuple[DiscardOption, ...]:
 
     Args:
         tiles: 剛摸完的暗手牌,張數須為 14/11/8/5/2。
+        seen: 場上每種牌看得見幾張,見 :func:`analyse`。**會改變排序** ——
+            同向聽時是按進張枚數排的,而枚數扣掉場上看得見的牌之後,
+            「理論上進張多、實際上已經被打光」的那一手就會往後掉。
+            那正是扣掉之後才看得出來的事。
 
     Returns:
         每種可切的牌各一項。手上有兩張一樣的牌時只會出現一次 ——
@@ -294,7 +323,7 @@ def suggest_discards(tiles: Sequence[str]) -> tuple[DiscardOption, ...]:
         shanten = _shanten_of(array)
         # 切完只剩 13/10/7/4/1 張,那些張數構不成和了型(和了要 14/11/8/5/2),
         # 所以這裡不需要像 analyse() 那樣先擋掉 AGARI 再算進張。
-        ukeire = _ukeire_of(array, shanten)
+        ukeire = _ukeire_of(array, shanten, seen)
         array[index] += 1
         options.append(DiscardOption(_label(index), shanten, ukeire))
 

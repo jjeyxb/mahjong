@@ -31,14 +31,19 @@ def events() -> list:
 
 
 def _drive(events: list) -> tuple[DangerWorker, list]:
-    """同步把整場餵進去,把**每一份**投出來的報告都收下來。"""
+    """同步把整場餵進去,把**每一次**投出來的東西整個收下來。
+
+    收的是 :class:`Dangers` 本身而不是 ``.report`` —— 那班車上還有 ``seen``,
+    而兩者是分開變的。只收 report 的話,「報告沒變但看得見的牌變了」這種投遞
+    在測試眼裡會變成一次重複投遞。
+    """
     bus = UpdateBus()
     worker = DangerWorker(bus, dump=DUMP)
-    reports: list = []
+    posts: list[Dangers] = []
     for event in events:
         worker._handle(event)  # noqa: SLF001 - 就是要繞過執行緒與郵箱的合併
-        reports.extend(u.report for u in bus.drain() if isinstance(u, Dangers))
-    return worker, reports
+        posts.extend(u for u in bus.drain() if isinstance(u, Dangers))
+    return worker, posts
 
 
 @pytest.fixture(scope="module")
@@ -54,34 +59,58 @@ class TestReplayingARealGame:
     def test_it_does_not_post_on_every_event(self, driven) -> None:
         """別家摸牌、寶牌翻開這些事件不會改變任何一張牌的危險度。
         每個事件都投的話,UI 每一輪都要重畫一次一模一樣的東西。"""
-        worker, reports = driven
-        assert 0 < len(reports) < worker.events
+        worker, posts = driven
+        assert 0 < len(posts) < worker.events
 
-    def test_consecutive_reports_are_never_identical(self, driven) -> None:
-        """只在真的變了才投 —— 這是上一條的嚴格版。"""
-        _worker, reports = driven
-        assert all(a != b for a, b in pairwise(reports))
+    def test_consecutive_posts_are_never_identical(self, driven) -> None:
+        """只在真的變了才投 —— 這是上一條的嚴格版。
+
+        比的是整班車(報告 + 看得見的牌)。**連續兩份報告相同是允許的** ——
+        別人打掉一張我要的進張時,那張牌對我的安全度可能毫無影響,報告一字
+        不變,但我的進張少了一張。那一次必須投,不然畫面上的枚數會停在舊值
+        而且沒有任何徵兆。
+        """
+        _worker, posts = driven
+        assert all(a != b for a, b in pairwise(posts))
+
+    def test_some_posts_carry_the_same_report(self, driven) -> None:
+        """而且上面那種情況真的會發生 —— 不是理論上的擔心。
+
+        這條是上一條的前提檢查:如果整場下來每次投遞的報告都不同,那
+        `seen` 根本沒派上用場,上一條就只是換個寫法重測同一件事。
+        """
+        _worker, posts = driven
+        assert any(a.report == b.report for a, b in pairwise(posts))
+
+    def test_every_post_carries_what_is_visible(self, driven) -> None:
+        """看得見的牌要跟著報告一起走,不能是 None。
+
+        進張枚數靠它扣準(decisions.md 未解 #4)。少了它那條路會安靜地
+        退回估計值 —— 畫面照樣有數字,只是偏高。
+        """
+        _worker, posts = driven
+        assert all(p.seen for p in posts)
 
     def test_the_reports_are_about_our_own_hand(self, driven) -> None:
-        _worker, reports = driven
-        assert all(1 <= len(r.tiles) <= 14 for r in reports)
+        _worker, posts = driven
+        assert all(1 <= len(p.report.tiles) <= 14 for p in posts)
 
     def test_threats_are_picked_up(self, driven) -> None:
         """那場有四次立直、也有人副露到三組,兩種都該被指名。"""
-        _worker, reports = driven
-        labels = {t.label for r in reports for t in r.threats}
+        _worker, posts = driven
+        labels = {t.label for p in posts for t in p.report.threats}
         assert "立直" in labels
         assert "3副露" in labels
 
     def test_every_report_is_sorted_safest_first(self, driven) -> None:
-        _worker, reports = driven
-        for report in reports:
-            levels = [t.level for t in report.tiles]
+        _worker, posts = driven
+        for post in posts:
+            levels = [t.level for t in post.report.tiles]
             assert levels == sorted(levels)
 
     def test_it_finds_safe_tiles_somewhere_in_the_game(self, driven) -> None:
-        _worker, reports = driven
-        assert any(t.level is DangerLevel.SAFE for r in reports for t in r.tiles)
+        _worker, posts = driven
+        assert any(t.level is DangerLevel.SAFE for p in posts for t in p.report.tiles)
 
     def test_a_new_game_forgets_the_previous_table(self, events: list) -> None:
         """``start_game`` 之後座位可能變了,兩個追蹤器都要從頭來 ——

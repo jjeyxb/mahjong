@@ -24,7 +24,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 
@@ -208,6 +208,9 @@ class ViewState:
         dangers: 每張牌切出去的放銃危險度。**只有封包那條路能提供** ——
             它要的是別家的牌河與副露,而 CV 一張都看不到。功能關著或還沒
             進對局時是 ``None``,那與「都很安全」是兩件不同的事。
+        seen: 場上每種牌看得見幾張。與 :attr:`dangers` 同一個來源、同一個
+            節奏,拿來把進張枚數扣準 —— 沒有它的時候只扣得掉自己手上的,
+            枚數會偏高(``docs/decisions.md`` 未解 #4)。
         discards: 純以聽牌速度而言的打牌選項,最好的在前。
         engines: 各引擎的建議,加入順序 —— 那個順序就是 :attr:`primary` 的優先序。
         notices: 要顯示給使用者的警示(校正未鎖定、引擎掉隊、CV 沒把握…)。
@@ -223,6 +226,7 @@ class ViewState:
     analysis: HandAnalysis | None = None
     discards: tuple[DiscardOption, ...] = ()
     dangers: DangerReport | None = None
+    seen: Mapping[str, int] | None = None
     engines: tuple[EngineView, ...] = ()
     notices: tuple[str, ...] = ()
 
@@ -396,14 +400,25 @@ class ViewModel:
         views = tuple(_to_view(a) for a in advices)
         self._emit(replace(self._state, engines=views))
 
-    def update_dangers(self, report: DangerReport | None) -> None:
-        """放銃危險度。
+    def update_dangers(
+        self, report: DangerReport | None, seen: Mapping[str, int] | None = None
+    ) -> None:
+        """放銃危險度,以及場上看得見的牌。
 
         ``None`` 表示「沒有這份資訊」(功能關著、還沒進對局),與一份
         **空的**報告不同 —— 後者代表算過了但手上沒牌可評。UI 對這兩種
         情況該說不一樣的話。
+
+        收到 ``seen`` 要**重算一次進張**。別人打掉一張我要的牌時,手牌沒變、
+        危險度可能也沒變,但枚數掉了一張 —— 不重算的話畫面會停在舊值,而且
+        不會有任何徵兆。
         """
-        self._emit(replace(self._state, dangers=report))
+        state = self._state
+        analysis, discards = state.analysis, state.discards
+        if seen is not None and seen != state.seen:
+            analysis, discards = _analyse(state.hand, seen)
+        self._emit(replace(state, dangers=report, seen=seen, analysis=analysis,
+                           discards=discards))
 
     def set_notices(self, notices: Sequence[str]) -> None:
         """整批換掉警示。校正狀態、引擎存活這些由外部持續回報。"""
@@ -438,7 +453,7 @@ class ViewModel:
         drawn = packet_draw if packet else cv_draw
         source = "both" if (cv and packet) else ("packet" if packet else "cv" if cv else "")
 
-        analysis, discards = _analyse(hand)
+        analysis, discards = _analyse(hand, state.seen)
         notices = list(state.notices)
         if notice and notice not in notices:
             notices.append(notice)
@@ -476,7 +491,9 @@ class ViewModel:
             listener(self._state)
 
 
-def _analyse(hand: tuple[str, ...]) -> tuple[HandAnalysis | None, tuple[DiscardOption, ...]]:
+def _analyse(
+    hand: tuple[str, ...], seen: Mapping[str, int] | None = None
+) -> tuple[HandAnalysis | None, tuple[DiscardOption, ...]]:
     """算向聽與打牌建議。算不出來就回 ``None`` —— 那不是錯誤。
 
     手牌張數落在 3 的倍數是常態(辨識抓在動畫中間、或剛好在切牌那一刻),
@@ -486,14 +503,14 @@ def _analyse(hand: tuple[str, ...]) -> tuple[HandAnalysis | None, tuple[DiscardO
         return None, ()
     try:
         ms = [mjai_to_ms(t) for t in hand]
-        analysis = analyse(ms)
+        analysis = analyse(ms, seen=seen)
     except (HandError, ValueError):
         return None, ()
 
     discards: tuple[DiscardOption, ...] = ()
     if analysis.needs_discard:
         try:
-            discards = suggest_discards(ms)
+            discards = suggest_discards(ms, seen=seen)
         except HandError:
             discards = ()
     return analysis, discards

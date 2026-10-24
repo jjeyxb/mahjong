@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from collections import Counter
+
 import pytest
 
 from mia.analysis import (
@@ -214,3 +216,77 @@ class TestUkeire:
         result = analyse(TENPAI_13)
         counts = [u.count for u in result.ukeire]
         assert counts == sorted(counts, reverse=True)
+
+
+class TestSeenTilesMakeTheCountExact:
+    """進張枚數扣掉場上看得見的牌。
+
+    這是 ``docs/decisions.md`` 未解 #4。沒有 ``seen`` 的時候只扣得掉自己
+    手上的,所以一張已經被打掉三張的牌仍然算成剩 4 張 —— 枚數系統性偏高。
+
+    副露的**內容**在這裡才第一次派上用場。向聽數只需要組數(由張數反推),
+    但枚數需要知道那三張是什麼 —— 而那是封包給得起、影像給不起的東西
+    (對手副露是斜的、與牌背同色,切不開,見 decisions.md 第五節)。
+    """
+
+    def test_without_seen_it_only_subtracts_your_own(self) -> None:
+        hand = ["1m", "2m", "4m", "5m", "6m", "7p", "8p", "9p", "1s", "2s", "3s", "9s", "9s"]
+        counts = {u.tile: u.count for u in analyse(hand).ukeire}
+        assert counts["3m"] == 4, "自己手上沒有 3m,所以算成滿的四張"
+
+    def test_seen_tiles_are_subtracted(self) -> None:
+        """別人打掉三張 3m,進張就只剩一張。"""
+        hand = ["1m", "2m", "4m", "5m", "6m", "7p", "8p", "9p", "1s", "2s", "3s", "9s", "9s"]
+        seen = Counter(hand)
+        seen["3m"] = 3
+        counts = {u.tile: u.count for u in analyse(hand, seen=seen).ukeire}
+        assert counts["3m"] == 1
+
+    def test_the_shanten_and_the_tile_list_do_not_move(self) -> None:
+        """``seen`` 只改枚數。向聽與「哪些牌算進張」完全不受影響 ——
+        那兩件事問的是手牌的形狀,跟場上剩幾張無關。
+        """
+        hand = ["1m", "2m", "4m", "5m", "6m", "7p", "8p", "9p", "1s", "2s", "3s", "9s", "9s"]
+        seen = Counter(hand)
+        seen["3m"] = 4
+        plain, exact = analyse(hand), analyse(hand, seen=seen)
+        assert plain.shanten == exact.shanten
+        assert [u.tile for u in plain.ukeire] == [u.tile for u in exact.ukeire]
+
+    def test_a_dead_wait_is_listed_with_zero_not_dropped(self) -> None:
+        """四張全見的進張要列出來、枚數 0,**不可以濾掉**。
+
+        濾掉的話一手聽牌而和牌張全見的牌,進張會變成空的 —— 而空的進張
+        在畫面上讀起來像「這手沒聽」。那是最糟的那種錯:它看起來不像錯誤。
+        列出「x0」才是實話,而且那正是使用者最需要知道的事(該換聽了)。
+        """
+        hand = ["1m", "2m", "4m", "5m", "6m", "7p", "8p", "9p", "1s", "2s", "3s", "9s", "9s"]
+        seen = Counter(hand)
+        seen["3m"] = 4
+        result = analyse(hand, seen=seen)
+        counts = {u.tile: u.count for u in result.ukeire}
+        assert counts["3m"] == 0
+        assert result.ukeire, "進張不可以因此變成空的"
+
+    def test_four_in_your_own_hand_is_still_skipped(self) -> None:
+        """自己手上就有四張的那種**仍然**跳過 —— 那不是顯示上的取捨。
+
+        試摸會湊出第五張,mahjong 套件直接拋錯,所以那一型根本算不出來。
+        與上面那條「枚數 0 要列出來」不衝突:一個是算不了,一個是算得出
+        但沒牌了。
+        """
+        hand = ["3m", "3m", "3m", "3m", "1m", "2m", "7p", "8p", "9p", "1s", "2s", "3s", "9s"]
+        assert all(u.tile != "3m" for u in analyse(hand).ukeire)
+
+    def test_discard_order_follows_the_real_counts(self) -> None:
+        """同向聽時是按枚數排的,所以扣準之後排序會跟著變。
+
+        那正是扣掉之後才看得出來的事:理論上進張多、實際上已經被打光的
+        那一手會往後掉。
+        """
+        hand = ["1m", "2m", "4m", "5m", "6m", "7p", "8p", "9p", "1s", "2s", "3s", "9s", "9s", "1p"]
+        seen = Counter(hand)
+        seen["3m"] = 4
+        plain = suggest_discards(hand)
+        exact = suggest_discards(hand, seen=seen)
+        assert [o.total_ukeire for o in plain] != [o.total_ukeire for o in exact]

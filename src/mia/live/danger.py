@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from mia.analysis.danger import DangerReport, assess
@@ -59,9 +59,9 @@ class DangerWorker(threading.Thread):
         self._stop = threading.Event()
         self.status = WorkerStatus("放銃")
 
-        #: 上一次投出去的報告。一樣就不投 —— 別家摸牌之類的事件佔多數,
-        #: 那些不會改變任何一張牌的危險度。
-        self._last: DangerReport | None = None
+        #: 上一次投出去的(報告, 看得見的牌)。一樣就不投 —— 別家摸牌之類的
+        #: 事件佔多數,那些兩樣都不會改變。
+        self._last: tuple[DangerReport, Mapping[str, int]] | None = None
         #: 統計:處理過幾個事件、投了幾次。
         self.events = 0
         self.posts = 0
@@ -123,11 +123,15 @@ class DangerWorker(threading.Thread):
         if not hand:
             return
         report = assess(list(hand), self._table)
-        if report == self._last:
+        seen = self._table.visible(list(hand))
+        # **兩個都要比。** 只比 report 的話會漏掉一種情況:別人打掉一張我要的
+        # 進張,危險度可能一點都沒變(那張牌對我的安全度沒影響),但我的進張
+        # 枚數掉了一張。漏掉的症狀是畫面上的枚數停在舊值,而且不會有任何徵兆。
+        if (report, seen) == self._last:
             return
-        self._last = report
+        self._last = (report, seen)
         self.posts += 1
-        self._bus.post(Dangers(report))
+        self._bus.post(Dangers(report, seen))
         self.status.say("")
 
     def __repr__(self) -> str:

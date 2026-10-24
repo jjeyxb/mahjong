@@ -524,7 +524,7 @@ class LiveRuntime:
                     case Advices():
                         self._viewmodel.update_advices(update.advices)
                     case Dangers():
-                        self._viewmodel.update_dangers(update.report)
+                        self._viewmodel.update_dangers(update.report, update.seen)
             self._sync_notices()
 
     def _settle_capture(self) -> None:
