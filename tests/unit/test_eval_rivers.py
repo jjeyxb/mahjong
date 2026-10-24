@@ -83,7 +83,14 @@ class TestRiverFrameResult:
         assert frame.silent_errors() == 1
 
     def test_a_hole_makes_the_frame_unusable(self) -> None:
-        """牌河中間有洞代表攤平歪了,或畫面上根本不是牌桌。"""
+        """牌河中間有洞的那一幀不能用。
+
+        實測整份 20260801-110639(1012 條牌河)有 160 條有洞,洞裡面 898 格
+        量出來就是桌布 —— 那些是立直/和了的立繪動畫蓋住了牌河。角色的皮膚色
+        「亮、不飽和」跟牌面的判斷條件一模一樣,於是動畫被讀成一排牌,真正的
+        牌反而被蓋掉。所以這道閘擋下來的多半不是框歪,是動畫中的幀 ——
+        兩種都是這一幀不能用,但原因要講對。
+        """
         frame = RiverFrameResult(
             index=0,
             seat="own",

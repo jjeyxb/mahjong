@@ -89,6 +89,10 @@ class HandRoiDialog(QDialog):
 
         self._message = QLabel("還沒框 —— 在上面的畫面裡拖一個框", self)
         self._message.setStyleSheet(MUTED)
+        # 判斷結果有兩行,而 QLabel 預設不換行 —— 長的那行會把對話框撐寬,
+        # 撐過螢幕就看不到了。使用者回報過「0.97 看得到,牌河那行沒看到」,
+        # 而那兩行是同一次 setText 寫進去的。
+        self._message.setWordWrap(True)
         layout.addWidget(self._message)
 
         self._tiles_row = QWidget(self)
