@@ -46,14 +46,18 @@ from mia.vision.tiles.classify import (
     MIN_BRIGHTNESS,
     MIN_MARGIN,
     MIN_SCORE,
+    Match,
     TemplateSet,
 )
 from mia.vision.tiles.river import (
     CONFIDENT,
     DEFAULT_CORNERS,
     SEATS,
+    River,
     classify_river_tile,
+    classify_sideways,
     face_size,
+    find_sideways,
     read_river,
 )
 
@@ -314,10 +318,12 @@ def evaluate_rivers(
     for position, seat in enumerate(SEATS):
         flat = DEFAULT_CORNERS[seat].rectify(image, table)
         river = read_river(flat)
-        matches = [
-            classify_river_tile(flat[river.cells[i].as_slice()], templates, size=size)
-            for i in river.filled
-        ]
+        # 立直的宣言牌橫躺著,它**本身**與同一列後面的每一張都對不上格線。
+        # 見 ``docs/cv_mjai.md`` §1.4:不處理的話那幾張從 96% 掉到 33%。
+        sideways = find_sideways(flat, templates, river=river)
+        if sideways is not None:
+            river = read_river(flat, sideways=sideways)
+        matches = [_read_cell(flat, river, i, templates, size) for i in river.filled]
         results.append(
             RiverFrameResult(
                 index=frame.index,
@@ -331,6 +337,31 @@ def evaluate_rivers(
             )
         )
     return results
+
+
+def _read_cell(
+    flat: np.ndarray,
+    river: River,
+    index: int,
+    templates: TemplateSet,
+    size: tuple[int, int],
+) -> Match:
+    """認一格,並且**替讀不到的格子說出「我不知道」**。
+
+    三種格子要分開處理:
+
+    * 橫放的宣言牌:要用旋轉模板問 —— 直放模板問的是錯的問題,實測正確率
+      0.0%、有信心 0 張。
+    * 被橫放牌推出四邊形的那一格:影像裡根本沒有它,見
+      :attr:`~mia.vision.tiles.river.River.clipped`。回一個分數 0 的
+      ``Match``,於是它會被統計成**棄權**而不是悄悄算成一次錯誤。
+    * 其他:照常。
+    """
+    if index == river.sideways:
+        return classify_sideways(flat, index, templates)
+    if index in river.clipped:
+        return Match(label="?", score=0.0, runner_up="?", runner_up_score=0.0)
+    return classify_river_tile(flat[river.cells[index].as_slice()], templates, size=size)
 
 
 @dataclass(slots=True)

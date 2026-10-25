@@ -32,6 +32,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import cv2
@@ -48,11 +49,15 @@ __all__ = [
     "FACE",
     "ROWS",
     "SEATS",
+    "SIDEWAYS_FACE",
+    "SIDEWAYS_SHIFT",
     "River",
     "RiverView",
     "classify_river_tile",
+    "classify_sideways",
     "face_coverage",
     "face_size",
+    "find_sideways",
     "read_river",
 ]
 
@@ -104,6 +109,64 @@ FACE = (0.72, 0.70)
 #:
 #: ⚠ 只在一份錄影上掃過。換一份素材要重掃一次再決定要不要改。
 CONFIDENT = (0.60, 0.10)
+
+#: 橫放的立直宣言牌比直放寬多少(攤平後的像素)。
+#:
+#: 宣言牌躺著放,量出來佔 110~115px 而直放是 85~88px(一格 90)。多出來的
+#: 寬度把**同一列**後面的每一張都往右推這麼多 —— 跨列不會推,因為下一列
+#: 從頭開始排。
+SIDEWAYS_SHIFT = 27
+
+#: 旋轉模板要贏直放模板多少,才算是候選。
+#:
+#: 這個數字單獨用是**沒用**的:實測正例最高 +0.122,而正常牌的尾巴衝到
+#: +0.270 —— 逐格設門檻一定夾不住。它只負責把候選縮到個位數,真正拍板的是
+#: :func:`find_sideways` 最後那一步「挪了之後有沒有變好」。
+#:
+#: 兩份錄影、4 張宣言牌、313 個候選的量測:
+#:
+#: ====================  ==========  ==========
+#: 候選規則              召回        假陽
+#: ====================  ==========  ==========
+#: 只看分數差 >= 0       100%        16%
+#: 加上「直放沒信心」    100%        6%
+#: **再加上挪了變好**    **94.6%**   **0%**
+#: ====================  ==========  ==========
+_SIDEWAYS_MARGIN = 0.06
+
+#: 比對橫放牌時取的窗寬,以一格為單位。
+#:
+#: 橫放的牌躺著,寬度超過一格 —— 只取一格會把牌面切掉一截,而被切掉的
+#: 那一截正好是旋轉模板要對上的部分。
+_SIDEWAYS_WINDOW = 1.4
+
+#: 橫放牌面佔一格的比例 ``(寬, 高)``。對應 :data:`FACE` 的直放版本。
+#:
+#: **這不是把 :data:`FACE` 的寬高交換。** 第一版就是那樣寫的(0.70 x 0.72),
+#: 而掃出來的最佳值是 1.22 x 0.49 —— 寬得多、矮得多。原因是躺下來之後透視
+#: 壓縮的軸也跟著換了,所以長寬比不是交換的關係(交換會給 1.29,實際是 2.49)。
+#:
+#: 代價差很大:四張宣言牌在交換尺寸下的分數是 0.53 附近,**全部過不了
+#: :data:`CONFIDENT` 的 0.60**;量出來的尺寸是 0.65~0.81,全部過得了。
+#:
+#: 掃描結果(兩份錄影、4 張宣言牌,各取三幀;單位是像素,一格 90x120):
+#:
+#: ================  ==========  ========
+#: 牌                最佳尺寸    分數
+#: ================  ==========  ========
+#: 自己 5m           114x55      0.807
+#: 下家 5p           110x59      0.733
+#: 對家 5m           106x59      0.794
+#: 對家 2m           102x59      0.731(認錯,見下)
+#: ================  ==========  ========
+#:
+#: ⚠ **最佳值跟著座位走** —— 離鏡頭越近越大(自己 114、對家 102)。這裡取的是
+#: 中間值 110x59,四家都堪用。要分家給的話得先有更多樣本:現在只有 4 張牌,
+#: 分家調就是對單一樣本過擬合。
+#:
+#: ⚠ 對家那張 2m 在**任何**尺寸下都認成 1m。那是已知的 2m→1m 混淆
+#: (靜默錯誤裡最大的一項),與旋轉無關。
+SIDEWAYS_FACE = (1.22, 0.49)
 
 #: 判定一格有牌的中位亮度門檻。牌面是象牙色、桌布是深藍,實測真牌 177~223、
 #: 桌布 50~62。用中位數而不是平均:取樣區若有一半是牌、一半是桌布,平均會
@@ -312,10 +375,19 @@ class River:
         cells: 每一格在**攤平後影像**上的矩形,由遠而近、由左而右。長度固定
             18 —— 空格也留著,因為「第幾格」要對得上捨牌順序。
         occupied: 每一格有沒有牌。
+        sideways: 哪一格是橫放的立直宣言牌,沒有就是 ``None``。格子的位置
+            已經把它算進去了 —— 這個欄位留著是為了讓上層說得出
+            「這一家立直了」,那是 ``Reach`` 事件的來源。
+        clipped: **知道有牌但讀不到**的格子。一列裡有橫放牌的時候,那一列的
+            物理寬度超過六格,於是最後一格落在攤平用的四邊形外面。這種格子
+            的 ``occupied`` 仍然是 ``True``(張數與連續性都要對),但
+            ``cells`` 裡的矩形是切掉的 —— 上層**必須棄權**,不要拿它去認牌。
     """
 
     cells: tuple[Rect, ...]
     occupied: tuple[bool, ...]
+    sideways: int | None = None
+    clipped: tuple[int, ...] = ()
 
     @property
     def count(self) -> int:
@@ -339,12 +411,18 @@ class River:
         return self.filled == tuple(range(self.count))
 
 
-def read_river(flat: np.ndarray, *, cell: tuple[int, int] = CELL) -> River:
+def read_river(
+    flat: np.ndarray, *, cell: tuple[int, int] = CELL, sideways: int | None = None
+) -> River:
     """在**攤平後**的影像上切 18 格,並判斷每一格有沒有牌。
 
     Args:
         flat: :meth:`RiverView.rectify` 的輸出。
         cell: 攤平時用的一格大小。
+        sideways: 哪一格是橫放的立直宣言牌(:func:`find_sideways` 的輸出)。
+            給了的話,**同一列**後面的格子整排往右挪 :data:`SIDEWAYS_SHIFT`。
+            不確定的時候給 ``None`` —— 挪錯比不挪糟,因為不挪只錯那一張,
+            挪錯會讓那一列後面全錯。
 
     Returns:
         每一格的位置與有無。**不判斷牌面是什麼** —— 那是
@@ -356,11 +434,241 @@ def read_river(flat: np.ndarray, *, cell: tuple[int, int] = CELL) -> River:
     width, height = cell
     cells: list[Rect] = []
     occupied: list[bool] = []
+    clipped: list[int] = []
     for index in range(COLUMNS * ROWS):
-        rect = Rect((index % COLUMNS) * width, (index // COLUMNS) * height, width, height)
+        column, row = index % COLUMNS, index // COLUMNS
+        shift = _shift_of(index, sideways)
+        rect = Rect(column * width + shift, row * height, width, height)
         cells.append(rect)
-        occupied.append(_occupied(flat, _face_of(rect, cell)))
-    return River(cells=tuple(cells), occupied=tuple(occupied))
+        if rect.x + rect.width <= flat.shape[1]:
+            occupied.append(_occupied(flat, _face_of(rect, cell)))
+            continue
+        # 挪出去了。**有無要用沒挪的位置判,不能判成空的。**
+        #
+        # 判成空的會讓那一列破一個洞,而洞會讓 :meth:`River.is_plausible`
+        # 把整家這一幀丟掉 —— 實測舊素材 10 次、新素材 5 次,全是立直之後。
+        # 那等於用「扔掉整家」換「宣言牌之後的正確率變好看」,而被扔掉的
+        # 其他五張本來是讀得到的。
+        here = Rect(column * width, row * height, width, height)
+        there = _occupied(flat, _face_of(here, cell))
+        occupied.append(there)
+        if there:
+            clipped.append(index)
+    return River(
+        cells=tuple(cells),
+        occupied=tuple(occupied),
+        sideways=sideways,
+        clipped=tuple(clipped),
+    )
+
+
+def _shift_of(index: int, sideways: int | None) -> int:
+    """這一格要不要讓開橫放牌多出來的寬度。
+
+    只有**同一列、在它後面**的格子要讓。下一列從頭排,不受影響 —— 這是
+    實測的:宣言牌把後面推了 27px,而推的範圍在換列的地方就斷了。
+    """
+    if sideways is None or index <= sideways:
+        return 0
+    return SIDEWAYS_SHIFT if index // COLUMNS == sideways // COLUMNS else 0
+
+
+def find_sideways(
+    flat: np.ndarray,
+    templates: TemplateSet,
+    *,
+    river: River | None = None,
+    cell: tuple[int, int] = CELL,
+) -> int | None:
+    """哪一格是橫放的立直宣言牌 —— 沒有就回 ``None``。
+
+    為什麼需要它
+    ------------
+    宣言牌橫放,佔的寬度多 27px,而格線是固定等寬的 —— 所以它**本身**認不出
+    來,而且同一列後面的每一張都偏。實測(兩份錄影):宣言牌那一格的正確率是
+    **0.0%**、有信心的張數是 **0**;宣言牌之後那幾張從 96% 掉到 33%。
+
+    怎麼判
+    ------
+    三道關卡,每一道都是因為前一道單獨不夠才加上去的:
+
+    1. **直放認不出來。** 宣言牌 221/221 格都過不了 :data:`CONFIDENT` ——
+       它真的沒有直放,所以直放模板本來就認不出它。而正常格子有六成多是
+       認得出來的,這一刀砍掉大半。靈敏度 100%,零代價。
+    2. **旋轉模板贏得比較多**(:data:`_SIDEWAYS_MARGIN`)。只縮候選,
+       不拍板 —— 單獨用的話假陽 6%。
+    3. **挪了之後認得出來的牌變多。** 這一關才是拍板的。前兩關的假陽裡
+       51/92 是**九筒** —— 九筒是 3x3 的圓點,轉九十度跟原來幾乎一樣,
+       所以「像不像轉過的」對它原則上無解。那就別問了,直接問我們真正在意
+       的事:假設它橫放、把後面挪開,那幾張有沒有變得認得出來。
+       真的橫放牌後面本來全偏著,挪完會對回來;九筒誤判後面本來是對的,
+       挪完會壞掉。實測 0/92 假陽通過這一關。
+
+    順便得到一個很乾淨的性質:宣言牌是當列最後一張的時候沒有東西可以驗,
+    於是回 ``None``。**而那時候它也還沒害到任何人** —— 它只錯自己那一張,
+    後面還沒有牌。這個偵測器只需要在有影響的時候正確,而剛好就在那時候
+    驗得出來。
+
+    Args:
+        flat: 攤平後的影像。
+        templates: 牌面模板集(直放的;旋轉版由 :meth:`TemplateSet.rotated` 來)。
+        river: 已經讀好的牌河,省一次重讀。**必須是沒挪過的**那一份。
+        cell: 攤平時用的一格大小。
+
+    Returns:
+        橫放那一格的索引,或 ``None``。拿它餵
+        :func:`read_river` 的 ``sideways``,並記得那一列最後一格可能因此
+        落在四邊形外面(見 :attr:`River.clipped`)。
+    """
+    if river is None:
+        river = read_river(flat, cell=cell)
+    width, height = cell
+    size = face_size(cell)
+    rotated_size = sideways_face_size(cell)
+    window = round(width * _SIDEWAYS_WINDOW)
+
+    best: tuple[float, int] | None = None
+    for index in river.filled:
+        column, row = index % COLUMNS, index // COLUMNS
+        upright = classify_river_tile(flat[river.cells[index].as_slice()], templates, size=size)
+        if upright.score >= CONFIDENT[0] and upright.margin >= CONFIDENT[1]:
+            continue
+        patch = flat[
+            row * height : (row + 1) * height,
+            column * width : min(column * width + window, flat.shape[1]),
+        ]
+        upright_score = _top_score(patch, templates, size)
+        rotated_score = _top_score(patch, templates.rotated(), rotated_size)
+        if upright_score is None or rotated_score is None:
+            continue
+        lead = rotated_score - upright_score
+        if lead >= _SIDEWAYS_MARGIN and (best is None or lead > best[0]):
+            best = (lead, index)
+
+    if best is None:
+        return None
+    return best[1] if _shift_helps(flat, river, best[1], templates, cell) else None
+
+
+def sideways_face_size(cell: tuple[int, int] = CELL) -> tuple[int, int]:
+    """橫放牌面在攤平圖上的像素大小。見 :data:`SIDEWAYS_FACE`。"""
+    return (round(cell[0] * SIDEWAYS_FACE[0]), round(cell[1] * SIDEWAYS_FACE[1]))
+
+
+def classify_sideways(
+    flat: np.ndarray, index: int, templates: TemplateSet, *, cell: tuple[int, int] = CELL
+) -> Match:
+    """認橫放的立直宣言牌是哪一張。
+
+    用的是逆時針轉過的模板(:meth:`TemplateSet.rotated`)與一個比一格更寬的
+    窗 —— 躺著的牌比一格寬,只取一格會把牌面切掉一截,而被切掉的正好是
+    要對上的部分。
+
+    為什麼要單獨一支:直放的 :func:`classify_river_tile` 對這一格的正確率是
+    **0.0%**、有信心的張數是 **0**(兩份錄影、28 格)。那不是門檻的問題 ——
+    它真的沒有直放,用直放模板問錯了問題。
+
+    Args:
+        flat: 攤平後的影像。
+        index: 橫放那一格的索引(:func:`find_sideways` 的輸出)。
+        templates: **直放的**模板集,旋轉在裡面做。
+        cell: 攤平時用的一格大小。
+
+    Returns:
+        與 :func:`classify_river_tile` 同樣的 ``Match``,但**永遠不會有信心**
+        —— 差距被歸零。見下。
+
+    Note:
+        **為什麼刻意讓它過不了門檻。**
+
+        :data:`SIDEWAYS_FACE` 量對之後,分數從 0.53 升到 0.65~0.81,於是它開始
+        **有信心地講錯話**:舊素材那張 2m 被認成 1m,22 格裡 10 格有信心、
+        靜默錯誤 100%。正確率從 0.0% 升到 54.5%,但換來的是有信心的錯誤 ——
+        那個交換在放銃分析裡是賠的(讀不到的牌當危險處理,成本遠低於把
+        危險牌說成別的牌)。
+
+        而且證據量差了三個數量級:直放那條路的門檻是在 1921 幀上掃出來的,
+        橫放這條路**總共只有 4 張不同的宣言牌**,其中一張在任何尺寸下都認錯。
+        四張牌不足以讓一個讀數有資格宣稱把握。
+
+        寫法沿用 :func:`classify_river_tile` 兩個尺度不一致時的做法:把次高分
+        設成與最高分相同,差距因此是 0。標籤與分數照樣留著 —— 診斷輸出看得到
+        「它以為是什麼」,而上層拿不到「可以採信」。
+    """
+    width, height = cell
+    column, row = index % COLUMNS, index // COLUMNS
+    patch = flat[
+        row * height : (row + 1) * height,
+        column * width : min(column * width + round(width * _SIDEWAYS_WINDOW), flat.shape[1]),
+    ]
+    best = classify(patch, templates.rotated(), size=sideways_face_size(cell))
+    return Match(
+        label=best.label,
+        score=best.score,
+        runner_up=best.runner_up,
+        runner_up_score=best.score,
+        brightness=best.brightness,
+    )
+
+
+def _top_score(
+    patch: np.ndarray, templates: TemplateSet, size: tuple[int, int]
+) -> float | None:
+    """整套模板裡最高的那個相關係數。模板比窗還大就回 ``None``。"""
+    top: float | None = None
+    for _, face in templates.scaled(size):
+        if face.shape[0] >= patch.shape[0] or face.shape[1] >= patch.shape[1]:
+            return None
+        _, score, _, _ = cv2.minMaxLoc(cv2.matchTemplate(patch, face, cv2.TM_CCOEFF_NORMED))
+        top = score if top is None else max(top, score)
+    return top
+
+
+def _confident_count(
+    flat: np.ndarray,
+    columns: Sequence[int],
+    row: int,
+    shift: int,
+    templates: TemplateSet,
+    cell: tuple[int, int],
+) -> int:
+    """這幾格裡有幾格認得出來(整排往右挪 ``shift``)。"""
+    width, height = cell
+    size = face_size(cell)
+    found = 0
+    for column in columns:
+        x = column * width + shift
+        if x < 0 or x + width > flat.shape[1]:
+            continue
+        match = classify_river_tile(
+            flat[row * height : (row + 1) * height, x : x + width], templates, size=size
+        )
+        if match.score >= CONFIDENT[0] and match.margin >= CONFIDENT[1]:
+            found += 1
+    return found
+
+
+def _shift_helps(
+    flat: np.ndarray,
+    river: River,
+    index: int,
+    templates: TemplateSet,
+    cell: tuple[int, int],
+) -> bool:
+    """把同一列後面的格子挪開之後,認得出來的牌有變多嗎。
+
+    見 :func:`find_sideways` 第三關。沒有後續可驗的時候回 ``False`` ——
+    寧可漏掉,因為那種情況下漏掉不會錯任何一張牌。
+    """
+    column, row = index % COLUMNS, index // COLUMNS
+    after = [
+        c for c in range(column + 1, COLUMNS) if river.occupied[row * COLUMNS + c]
+    ]
+    if not after:
+        return False
+    plain = _confident_count(flat, after, row, 0, templates, cell)
+    moved = _confident_count(flat, after, row, SIDEWAYS_SHIFT, templates, cell)
+    return moved > plain
 
 
 def _face_of(cell: Rect, size: tuple[int, int]) -> Rect:

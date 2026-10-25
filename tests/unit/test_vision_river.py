@@ -27,11 +27,16 @@ from mia.vision.tiles.river import (
     FACE,
     ROWS,
     SEATS,
+    SIDEWAYS_FACE,
+    SIDEWAYS_SHIFT,
     River,
     RiverView,
     classify_river_tile,
+    classify_sideways,
     face_size,
+    find_sideways,
     read_river,
+    sideways_face_size,
 )
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
@@ -351,3 +356,145 @@ class TestTwoScalesMustAgree:
         # 只要不拋錯、而且確實跑了兩次就夠 —— 第二個尺度若按 CELL 算,
         # 這裡會拿到一個比格子還大的模板而拿不到結果。
         assert classify_river_tile(cell, templates, size=half).label
+
+
+class TestTheSidewaysReachTile:
+    """立直的宣言牌橫躺著,而格線是固定等寬的。
+
+    素材那一幀剛好有一張:對家第 8 格的 ``5m``。另外三家沒有 —— 所以同一張
+    圖同時是正例與負例,而負例是這裡真正要守的東西(用寬度判斷的三次嘗試
+    全是被假陽殺掉的,不是被漏抓殺掉的)。
+    """
+
+    def _flat(self, image: np.ndarray, seat: str = "toimen") -> np.ndarray:
+        return DEFAULT_CORNERS[seat].rectify(image, TABLE)
+
+    def test_it_finds_the_one_sideways_tile_and_nothing_else(
+        self, table_image: np.ndarray, templates: TemplateSet
+    ) -> None:
+        found = {
+            seat: find_sideways(self._flat(table_image, seat), templates) for seat in SEATS
+        }
+        assert found == {"own": None, "shimocha": None, "toimen": 8, "kamicha": None}
+
+    def test_the_tile_itself_needs_the_rotated_templates(
+        self, table_image: np.ndarray, templates: TemplateSet
+    ) -> None:
+        """直放模板問錯了問題 —— 它沒有直放。
+
+        實測兩份錄影 28 格:直放的正確率 0.0%、有信心 0 張。
+        """
+        flat = self._flat(table_image)
+        river = read_river(flat)
+        upright = classify_river_tile(
+            flat[river.cells[8].as_slice()], templates, size=face_size()
+        )
+        rotated = classify_sideways(flat, 8, templates)
+        want = EXPECTED["toimen"].split()[8]
+        assert normalize_red(ms_to_mjai(upright.label)) != want
+        assert normalize_red(ms_to_mjai(rotated.label)) == want
+
+    def test_the_rotated_read_never_claims_confidence(
+        self, table_image: np.ndarray, templates: TemplateSet
+    ) -> None:
+        """認對了,但**刻意**不敢說有把握。
+
+        這不是因為分數不夠 —— 尺寸量對之後分數有 0.65~0.81,過得了門檻。
+        是因為它在那個狀態下開始有信心地講錯話:舊素材那張 2m 被認成 1m,
+        22 格裡 10 格有信心、靜默錯誤 100%。
+
+        而證據量差三個數量級:直放的門檻掃過 1921 幀,橫放總共只有 4 張
+        不同的宣言牌。四張牌不足以讓一個讀數有資格宣稱把握。
+
+        **要放寬這一條,先拿出更多宣言牌的樣本。** 不要因為分數看起來夠高
+        就把歸零那一行刪掉。
+        """
+        match = classify_sideways(self._flat(table_image), 8, templates)
+        assert match.score >= 0.60, "分數本身是夠的 —— 棄權是刻意的,不是分數不足"
+        assert match.margin == 0.0
+        assert not match.is_confident
+
+    def test_the_rotated_size_is_not_a_swap_of_the_upright_one(self) -> None:
+        """躺下來之後透視壓縮的軸也換了,長寬比不是交換的關係。
+
+        第一版就是寫成交換(0.70 x 0.72),四張宣言牌的分數全落在 0.53 附近,
+        **全部過不了 0.60**。量出來的是 1.22 x 0.49 —— 寬得多、矮得多。
+        """
+        swapped = (FACE[1], FACE[0])
+        assert swapped != SIDEWAYS_FACE
+        assert SIDEWAYS_FACE[0] / SIDEWAYS_FACE[1] > 2.0
+        assert sideways_face_size((90, 120)) == (110, 59)
+
+    def test_shifting_fixes_the_tile_after_it(
+        self, table_image: np.ndarray, templates: TemplateSet
+    ) -> None:
+        """宣言牌把同一列後面的牌往右推,不讓開就認錯。
+
+        第 9 格:不挪讀成 ``4s``,挪了讀成 ``1s``(答案)。
+        """
+        flat = self._flat(table_image)
+        want = EXPECTED["toimen"].split()[9]
+        size = face_size()
+        got = []
+        for sideways in (None, 8):
+            river = read_river(flat, sideways=sideways)
+            match = classify_river_tile(
+                flat[river.cells[9].as_slice()], templates, size=size
+            )
+            got.append(normalize_red(ms_to_mjai(match.label)))
+        assert got[0] != want
+        assert got[1] == want
+
+    def test_the_tile_pushed_out_abstains_instead_of_leaving_a_hole(
+        self, table_image: np.ndarray
+    ) -> None:
+        """被推出四邊形的那一格要說「讀不到」,不能說「沒牌」。
+
+        一列裡有橫放牌的時候,那一列的物理寬度超過六格 —— 最後一格真的在
+        攤平用的四邊形外面。說它沒牌會讓牌河破洞,而洞會讓
+        :meth:`River.is_plausible` 把**整家這一幀**丟掉:實測舊素材 10 次、
+        新素材 5 次,全在立直之後。那是用扔掉整家去換宣言牌之後的正確率。
+        """
+        river = read_river(self._flat(table_image), sideways=8)
+        assert river.clipped == (11,)
+        assert river.count == len(EXPECTED["toimen"].split())
+        assert river.is_plausible()
+
+    def test_the_shift_stays_inside_its_row(self, table_image: np.ndarray) -> None:
+        """只推同一列、在它後面的格子。下一列從頭排,不受影響。"""
+        plain = read_river(self._flat(table_image))
+        moved = read_river(self._flat(table_image), sideways=8)
+        shifts = [b.x - a.x for a, b in zip(plain.cells, moved.cells, strict=True)]
+        assert shifts == [0] * 9 + [SIDEWAYS_SHIFT] * 3 + [0] * 6
+
+    def test_a_river_without_a_sideways_tile_is_untouched(
+        self, table_image: np.ndarray
+    ) -> None:
+        """``sideways=None`` 要跟完全沒有這個功能之前一模一樣。"""
+        flat = self._flat(table_image, "own")
+        river = read_river(flat, sideways=None)
+        assert river.clipped == ()
+        assert river.sideways is None
+        assert [c.x for c in river.cells[:6]] == [i * CELL[0] for i in range(6)]
+
+
+class TestTheRotatedTemplates:
+    def test_they_turn_counterclockwise(self, templates: TemplateSet) -> None:
+        """方向是量出來的,不是猜的。
+
+        第一次比對只試了順時針,分數全是雜訊 —— 而我把那份雜訊當成「訊號
+        方向相反」讀了一輪。逆時針才是雀魂宣言牌躺的方向。
+        """
+        label = templates.labels[0]
+        upright = templates.scaled((40, 60))
+        rotated = templates.rotated().scaled((60, 40))
+        original = dict(upright)[label]
+        turned = dict(rotated)[label]
+        assert turned.shape[:2] == (40, 60)
+        # 逆時針轉回去要等於原圖(縮放是分別做的,所以比形狀與一兩個角落)。
+        back = cv2.rotate(turned, cv2.ROTATE_90_CLOCKWISE)
+        assert back.shape[:2] == original.shape[:2]
+
+    def test_the_rotation_is_cached(self, templates: TemplateSet) -> None:
+        """每一幀的每一格都會問一次 —— 37 張影像不該每次重轉。"""
+        assert templates.rotated() is templates.rotated()
