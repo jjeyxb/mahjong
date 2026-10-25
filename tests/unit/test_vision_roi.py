@@ -25,18 +25,30 @@ def make_calibration(table: Rect | None = None, image: Size | None = None) -> Ca
 
 class TestRoiNames:
     def test_names_are_derived_from_the_config_model(self) -> None:
-        assert roi_names() == ("own_hand",)
+        assert roi_names() == ("own_hand", "dora_indicators")
 
-    def test_scope_is_own_hand_only(self) -> None:
-        """牌河/副露/寶牌/HUD 改由封包提供,不該再出現在 CV 的 ROI 清單裡。
+    def test_every_roi_has_a_consumer(self) -> None:
+        """**不要有沒人用的 ROI。**
 
-        見 docs/decisions.md。這個測試存在的目的是:如果有人手癢把那些欄位
-        加回設定模型,會立刻被擋下來,而不是默默多出沒有消費者的 ROI。
+        這個測試原本寫的是「只能有 own_hand」,理由是牌河/副露/寶牌/HUD
+        都改由封包提供。2026-10 那個決定被**刻意推翻**了一半:目標改成
+        只看畫面產出 MJAI 事件流(見 docs/cv_mjai.md),於是寶牌面板回來了,
+        而且有真正的消費者(mia.vision.tiles.dora)。
+
+        但用意不變 —— 多一個沒有消費者的 ROI 會靜悄悄地存在,沒有任何症狀。
+        所以這裡改成列出**刻意不在**的那些,並寫清楚為什麼:
+
+        * ``*.river`` —— 牌河**不是矩形**。它是透視下的梯形(上家與下家的
+          甚至是斜的),用四個角 + 單應變換切格,見 DEFAULT_CORNERS。
+          放進這裡會讓人以為框一個矩形就能用。
+        * ``*.melds`` —— 副露的內容還沒做(cv_mjai.md §4 的第 6 步)。
+        * ``round_info`` —— 局數與莊家的 HUD,還沒做。接上之後純畫面那條路
+          才知道場風與自風(現在役牌只剩三元牌,方向是保守的)。
         """
         names = set(roi_names())
-        for gone in ("own.river", "own.melds", "kamicha.melds", "toimen.river",
-                     "shimocha.river", "dora_indicators", "round_info"):
-            assert gone not in names
+        for absent in ("own.river", "toimen.river", "own.melds", "kamicha.melds",
+                       "round_info"):
+            assert absent not in names
 
 
 class TestResolution:

@@ -152,6 +152,14 @@ class _Page(QWidget):
         self._rule.setVisible(True)
 
 
+#: 左邊導覽列的功能頁,依序。**頁數不等於功能數** —— 放銃分析有兩條路
+#: (封包與純畫面)但只有一頁:它們算的是同一件事、投到同一個格子,
+#: 各開一頁會變成兩頁長得一模一樣。頁是依「看到什麼」分的,開關依「哪條路」。
+#:
+#: 「設定」不在這裡 —— 它不是功能頁(沒有開關,設定列是空的)。
+PAGES = ("AI 建議", "向聽分析", "放銃分析")
+
+
 class PanelWindow(QMainWindow):
     """輔助資訊的側邊視窗。
 
@@ -242,9 +250,9 @@ class PanelWindow(QMainWindow):
         )
         self._stack = QStackedWidget(self)
 
-        self._advice_page = self._add_page("AI 建議", self._advice)
-        self._analysis_page = self._add_page("向聽分析", self._analysis)
-        self._danger_page = self._add_page("放銃分析", self._danger)
+        self._advice_page = self._add_page(PAGES[0], self._advice)
+        self._analysis_page = self._add_page(PAGES[1], self._analysis)
+        self._danger_page = self._add_page(PAGES[2], self._danger)
         self._settings_page = self._add_page("設定", self._build_settings())
         self._build_advice_settings()
         self._build_analysis_settings()
@@ -252,6 +260,10 @@ class PanelWindow(QMainWindow):
         self._add_switch(self._advice_page, features.ADVICE)
         self._add_switch(self._analysis_page, features.VISION)
         self._add_switch(self._danger_page, features.DANGER)
+        # 放銃分析有**兩條路**,同一頁兩個開關:封包那條準確,畫面那條
+        # 什麼都不必裝(Steam 版只有這條)。兩個算的是同一件事、投到同一個
+        # 格子,所以共用這一頁 —— 各開一頁會變成兩頁長得一模一樣。
+        self._add_switch(self._danger_page, features.TABLE)
 
         self._nav.currentRowChanged.connect(self._stack.setCurrentIndex)
         self._nav.setCurrentRow(0)
