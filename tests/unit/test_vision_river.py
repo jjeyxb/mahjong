@@ -322,7 +322,9 @@ class TestTwoScalesMustAgree:
         for index in river.filled:
             cell = flat[river.cells[index].as_slice()]
             checked = classify_river_tile(cell, templates, size=size)
-            plain = classify(cell, templates, size=size)
+            # 基準要用**同一組參數** —— 牌河是開 merge_red 的(赤五與普通五
+            # 在這裡等價)。拿沒開的去比,差的是次高分的挑法,不是覆核。
+            plain = classify(cell, templates, size=size, merge_red=True)
             if checked.runner_up_score != checked.score:
                 assert checked == plain
                 agreed += 1
