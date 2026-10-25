@@ -58,6 +58,7 @@ __all__ = [
     "face_coverage",
     "face_size",
     "find_sideways",
+    "is_face_up",
     "read_river",
 ]
 
@@ -704,7 +705,20 @@ def _occupied(image: np.ndarray, cell: Rect) -> bool:
     只看亮度的話牌背會過關,因為橘色跟象牙色一樣亮;而只看飽和度的話**白板**
     會被擋掉,因為它平躺著會染上桌子的藍。三樣東西要三個維度才分得開。
     """
-    patch = image[cell.as_slice()]
+    return is_face_up(image[cell.as_slice()])
+
+
+def is_face_up(patch: np.ndarray) -> bool:
+    """這一塊是一張**翻開的牌**嗎 —— 不是桌布,也不是牌背。
+
+    三樣東西要三個維度才分得開:只看亮度的話牌背會過關(橘色跟象牙色一樣亮),
+    只看飽和度的話**白板**會被擋掉(它平躺著會染上桌子的藍)。
+
+    牌河與寶牌面板共用這一支。兩邊問的是同一個問題 —— 寶牌槽裡不是翻開的
+    指示牌就是橘色的牌背,而那正是這裡擋掉的東西。門檻是在牌河上量的
+    (見 :data:`_OCCUPIED_MEDIAN`、:data:`_BACK_SATURATION`、:data:`_BACK_HUE`),
+    寶牌面板實測翻開的槽飽和度 37、牌背 169 —— 分得比牌河還開。
+    """
     if patch.size == 0:
         return False
     # 亮度用灰階而不是 HSV 的 V。V 是三通道的最大值,所以藍色桌布的 V

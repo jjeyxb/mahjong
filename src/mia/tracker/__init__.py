@@ -4,6 +4,16 @@
 中間這一層負責的就是那個轉換,而它不只是 diff —— 見 :mod:`mia.tracker.rivers`。
 """
 
+from mia.tracker.dora import DoraWatcher, NewDora
+from mia.tracker.kyoku import KyokuSignal, KyokuWatcher
 from mia.tracker.rivers import UNKNOWN, Discard, RiverWatcher
 
-__all__ = ["UNKNOWN", "Discard", "RiverWatcher"]
+__all__ = [
+    "UNKNOWN",
+    "Discard",
+    "DoraWatcher",
+    "KyokuSignal",
+    "KyokuWatcher",
+    "NewDora",
+    "RiverWatcher",
+]
