@@ -163,6 +163,7 @@ class TemplateSet:
         self._faces = dict(faces)
         self._cache: dict[tuple[int, int], list[tuple[str, np.ndarray]]] = {}
         self._brightness: dict[str, float] = {}
+        self._rotated: TemplateSet | None = None
 
     @classmethod
     def load(cls, skin: str = DEFAULT_SKIN, *, root: Path | None = None) -> TemplateSet:
@@ -206,6 +207,24 @@ class TemplateSet:
             ]
             self._cache[size] = cached
         return cached
+
+    def rotated(self) -> TemplateSet:
+        """整套模板逆時針轉九十度 —— 認橫放的立直宣言牌用。
+
+        只轉**逆時針**一個方向。實測雀魂的宣言牌一律朝左躺,所以另一個方向
+        的模板只會貢獻假陽 —— 而且曾經害我把量測看反過:第一次比對只試了
+        順時針,得到的分數全是雜訊,還被我當成「訊號方向相反」。
+
+        快取在實例上:這是 37 張影像的旋轉,而呼叫端是每一幀的每一格。
+        """
+        if self._rotated is None:
+            self._rotated = TemplateSet(
+                {
+                    label: cv2.rotate(face, cv2.ROTATE_90_COUNTERCLOCKWISE)
+                    for label, face in self._faces.items()
+                }
+            )
+        return self._rotated
 
     def brightness(self, label: str) -> float:
         """模板的中位灰階值。見 :data:`MIN_BRIGHTNESS`。
