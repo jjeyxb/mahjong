@@ -253,6 +253,7 @@ def classify(
     *,
     tile_height: int | None = None,
     size: tuple[int, int] | None = None,
+    merge_red: bool = False,
 ) -> Match:
     """判斷一張牌是什麼。
 
@@ -271,6 +272,17 @@ def classify(
             沒校好,但其實幾何是對的,而往幾何去修會越修越糟。
             給值時代表 ``tile`` 是一條含額外搜尋空間的直條,模板仍然依牌框
             大小縮放 —— 拿整條的高度去縮模板會把牌面拉長,那比搜不到還糟。
+        merge_red: 挑次高分時**跳過贏家自己的赤五版本**。
+
+            :attr:`Match.margin` 問的是「有沒有**別的牌**也一樣像」,而
+            ``0m`` 不是別的牌 —— 它跟 ``5m`` 在振聽與筋裡完全等價。實測
+            普通五與赤五的差距只有 0.084,所以牌河的門檻(0.10)會把每一張
+            五都判成「像兩張牌」而棄權。手牌那邊的 :data:`MIN_MARGIN` 取
+            0.04 正是為了容納這一對 —— 這個參數是同一件事的另一種做法,
+            而且不必為它放寬門檻。
+
+            **只在赤五與普通五無差別的地方開。** 和牌算符要知道紅不紅,
+            那裡不要開。
 
     Returns:
         最像的牌與診斷資訊。**永遠會回傳一個結果**,不會拋錯 —— 用
@@ -290,22 +302,39 @@ def classify(
             f"每邊至少要 {MIN_TEMPLATE_PX} 像素,且要留得下平移搜尋的餘裕"
         )
 
+    scored: list[tuple[str, float]] = []
     best = ("", -2.0)
-    second = ("", -2.0)
     best_at = (0, 0)
     for label, face in templates.scaled(size):
         # minMaxLoc 要的是位置,不只是分數 —— 亮度檢查得知道贏家對在哪裡,
         # 才切得出真正拿去比的那一塊。成本相對 matchTemplate 可以忽略。
         _, score, _, at = cv2.minMaxLoc(cv2.matchTemplate(tile, face, cv2.TM_CCOEFF_NORMED))
+        scored.append((label, score))
         if score > best[1]:
-            best, second, best_at = (label, score), best, (int(at[0]), int(at[1]))
-        elif score > second[1]:
-            second = (label, score)
+            best, best_at = (label, score), (int(at[0]), int(at[1]))
+
+    second = ("", -2.0)
+    for label, score in scored:
+        if label == best[0] or score <= second[1]:
+            continue
+        if merge_red and _same_tile(label, best[0]):
+            continue
+        second = (label, score)
 
     window = tile[best_at[1] : best_at[1] + size[1], best_at[0] : best_at[0] + size[0]]
     reference = templates.brightness(best[0])
     brightness = _median_grey(window) / reference if reference else 1.0
     return Match(best[0], best[1], second[0], second[1], brightness)
+
+
+def _same_tile(a: str, b: str) -> bool:
+    """兩個標籤是同一張牌嗎(只差在赤不赤)。
+
+    雀魂記法裡赤五是 ``0m``/``0p``/``0s``。這裡用純字串判斷而不是叫
+    :func:`~mia.mjai.tiles.normalize_red`,是為了不讓 vision 這層相依 mjai ——
+    兩層的方向是「畫面 → 牌名」,反過來相依會讓模板比對綁上規則模型。
+    """
+    return a.replace("0", "5") == b.replace("0", "5")
 
 
 def _median_grey(image: np.ndarray) -> float:

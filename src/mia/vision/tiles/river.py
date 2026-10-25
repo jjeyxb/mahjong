@@ -349,13 +349,15 @@ def classify_river_tile(
         不是分數不夠。
     """
     width, height = size if size is not None else face_size()
-    best = classify(cell, templates, size=(width, height))
+    # merge_red:牌河裡赤五與普通五完全等價(振聽、筋都看普通五),所以
+    # 「次高是自己的紅版本」不構成歧義。見 classify 的 merge_red 說明。
+    best = classify(cell, templates, size=(width, height), merge_red=True)
     # 用比例換算而不是直接乘 CELL —— 呼叫端給的 size 可能來自別的格子大小,
     # 那時候硬套 CELL 會讓兩個尺度的相對關係跑掉。
     check_height = round(height * CHECK_FACE_HEIGHT / FACE[1])
     if check_height == height:
         return best
-    other = classify(cell, templates, size=(width, check_height))
+    other = classify(cell, templates, size=(width, check_height), merge_red=True)
     if other.label == best.label:
         return best
     return Match(
