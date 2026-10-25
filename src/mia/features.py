@@ -9,7 +9,7 @@ UI 不該知道 live 的存在(它也要服務錄影重播),live 不該知道 Qt
 
 from __future__ import annotations
 
-__all__ = ["ADVICE", "DANGER", "NAMES", "VISION"]
+__all__ = ["ADVICE", "DANGER", "NAMES", "TABLE", "VISION"]
 
 #: 功能 1:螢幕擷取 → 手牌 → 向聽 / 進張。
 VISION = "vision"
@@ -24,5 +24,19 @@ ADVICE = "advice"
 #: 是兩件不同代價的事。
 DANGER = "danger"
 
+#: 功能 4:**畫面** → 桌面狀態 → 每張牌切出去的危險度。
+#:
+#: 與 :data:`DANGER` 算的是同一件事、用的是同一支 ``assess`` ——
+#: 差別只在資訊從哪裡來。封包那條路準確但要攔封包;這條路只看畫面,
+#: 什麼都不必裝,代價是約四成的牌讀不出來(讀不到的當危險處理)。
+#:
+#: 兩個不要同時開:它們會往同一個 slot 投危險度,互相覆蓋。
+TABLE = "table"
+
 #: 給人看的名字。狀態列與開關的標籤都取這裡,兩處不會寫得不一樣。
-NAMES = {VISION: "畫面辨識", ADVICE: "AI 建議", DANGER: "放銃分析"}
+NAMES = {
+    VISION: "畫面辨識",
+    ADVICE: "AI 建議",
+    DANGER: "放銃分析",
+    TABLE: "放銃分析(純畫面)",
+}

@@ -482,6 +482,7 @@ def find_sideways(
     *,
     river: River | None = None,
     cell: tuple[int, int] = CELL,
+    candidates: Sequence[int] | None = None,
 ) -> int | None:
     """哪一格是橫放的立直宣言牌 —— 沒有就回 ``None``。
 
@@ -517,6 +518,13 @@ def find_sideways(
         templates: 牌面模板集(直放的;旋轉版由 :meth:`TemplateSet.rotated` 來)。
         river: 已經讀好的牌河,省一次重讀。**必須是沒挪過的**那一份。
         cell: 攤平時用的一格大小。
+        candidates: 只檢查這幾格,``None`` 代表全部有牌的格子。
+
+            即時那條路用得到:每一格都問一次要約 460 毫秒(四家 1830),
+            而呼叫端通常已經知道哪幾格可疑 —— 宣言牌一定是**認不出來的**
+            那幾格之一(實測 221/221 都過不了 :data:`CONFIDENT`),而且
+            一定**不是當列最後一張**(最後一張沒有後續可驗,見第三關)。
+            把候選縮到那幾格,大部分的幀會直接回 ``None`` 而不花錢。
 
     Returns:
         橫放那一格的索引,或 ``None``。拿它餵
@@ -531,7 +539,10 @@ def find_sideways(
     window = round(width * _SIDEWAYS_WINDOW)
 
     best: tuple[float, int] | None = None
-    for index in river.filled:
+    wanted = river.filled if candidates is None else tuple(
+        k for k in candidates if k in river.filled
+    )
+    for index in wanted:
         column, row = index % COLUMNS, index // COLUMNS
         upright = classify_river_tile(flat[river.cells[index].as_slice()], templates, size=size)
         if upright.score >= CONFIDENT[0] and upright.margin >= CONFIDENT[1]:

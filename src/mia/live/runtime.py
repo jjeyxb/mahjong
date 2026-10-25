@@ -486,9 +486,12 @@ class LiveRuntime:
             elif key == features.ADVICE:
                 self._viewmodel.update_packet_hand(())
                 self._viewmodel.update_advices([])
-            elif key == features.DANGER:
+            elif key in (features.DANGER, features.TABLE):
                 # None 而不是空報告:「沒有這份資訊」與「算過了但沒有危險」
                 # 是兩件事,而後者會讓人以為現在很安全
+                #
+                # 兩條路共用這一個 slot —— 它們算的是同一件事,只是資訊
+                # 從封包還是從畫面來。所以關掉任何一條都該把它清掉。
                 self._viewmodel.update_dangers(None)
 
     def __enter__(self) -> LiveRuntime:

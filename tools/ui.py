@@ -420,6 +420,7 @@ def build_live_runtime(
     from mia.live.danger import DangerWorker
     from mia.live.runtime import Feature, Worker
     from mia.live.source import CaptureLauncher
+    from mia.live.table import TableLink, TableWorker
     from mia.vision.tiles.classify import DEFAULT_SKIN
 
     bus = UpdateBus()
@@ -481,6 +482,11 @@ def build_live_runtime(
         config = load_config()
         skin = args.skin or DEFAULT_SKIN
 
+        # 擷取那條路與牌桌那條路之間的轉接點。**在這裡造一次** ——
+        # 兩個功能各自開關,而每次開啟都會造一個新的 worker,
+        # 所以中間要一個不會被重建的東西。見 mia.live.table.TableLink。
+        link = TableLink()
+
         def make_vision() -> Worker:
             # platform 在**這裡**才從格子讀,不是在外面先取出來 —— 換版本靠的
             # 正是「關掉再開」(LiveRuntime.set_platform 會重啟畫面辨識),
@@ -493,9 +499,19 @@ def build_live_runtime(
                 platform=platform.value if platform else WEB,
                 hand_roi=hand_roi,
                 table_rect=table_rect,
+                sink=link,
             )
 
         feature_list.append(Feature(features.VISION, make_vision))
+
+        def make_table() -> Worker:
+            # 這條路**只看畫面** —— 不讀封包,所以 --no-packets 時它仍然在。
+            # 代價是約四成的牌讀不出來(讀不到的當危險處理,方向是保守的)。
+            worker = TableWorker(bus, config=config.roi, skin=skin, link=link)
+            link.attach(worker)
+            return worker
+
+        feature_list.append(Feature(features.TABLE, make_table))
 
     if not feature_list:
         raise SystemExit("--no-vision 與 --no-packets 同時給了,那就沒有東西可以顯示")

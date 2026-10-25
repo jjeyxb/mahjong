@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Sequence
+from typing import Protocol
 
 import numpy as np
 
@@ -44,6 +46,7 @@ from mia.capture.base import (
     CaptureBackend,
     CaptureError,
     CaptureFailedError,
+    Frame,
     WindowInfo,
     WindowNotFoundError,
 )
@@ -83,6 +86,18 @@ _MAX_UNSETTLED = 15
 
 
 
+class TableSink(Protocol):
+    """牌桌那條路要的東西。
+
+    定義在**這裡**而不是 :mod:`mia.live.table`:需要的人是這一邊,
+    而這一邊不該知道那一邊的存在(反過來 import 會繞一圈)。
+    """
+
+    def offer_frame(self, image: np.ndarray, calibration: Calibration) -> None: ...
+
+    def offer_hand(self, tiles: Sequence[str]) -> None: ...
+
+
 class VisionWorker(threading.Thread):
     """定速擷取遊戲視窗,認出自己的手牌,投進 :class:`~mia.live.bus.UpdateBus`。
 
@@ -111,6 +126,7 @@ class VisionWorker(threading.Thread):
         platform: str = WEB,
         hand_roi: HandRoiChoice | None = None,
         table_rect: TableRectChoice | None = None,
+        sink: TableSink | None = None,
     ) -> None:
         super().__init__(name="vision", daemon=True)
         #: 要找瀏覽器視窗還是原生客戶端。兩版同時開著時這是唯一分得開的判據
@@ -134,6 +150,7 @@ class VisionWorker(threading.Thread):
         self._stop = threading.Event()
         self.status = WorkerStatus("畫面")
 
+        self._sink = sink
         self._calibrator = StableCalibrator(
             config.calibration, canvas=canvas, manual=table_rect
         )
@@ -216,6 +233,11 @@ class VisionWorker(threading.Thread):
         # 每一幀都重讀這個格子,所以重框是立刻生效的,不必重啟執行緒。
         manual = self._crop_manual(frame.image)
         if manual is not None:
+            # **但牌桌那條路仍然需要牌桌矩形。** 手牌框與牌桌框是兩件事
+            # (見 TableRectChoice 的說明),框了手牌不代表不看牌河。
+            # 只在真的有人要的時候才算 —— 沒接牌桌那條路時這裡照舊整段跳過。
+            if self._sink is not None:
+                self._offer(frame)
             self._settle_and_read(*manual)
             return
 
@@ -231,10 +253,21 @@ class VisionWorker(threading.Thread):
                 self.status.say(f"牌桌校正中 {done}/{need}")
             return
 
+        if self._sink is not None:
+            self._sink.offer_frame(frame.image, calibration)
+
         cropped = self._crop(calibration, frame.image)
         if cropped is None:
             return
         self._settle_and_read(*cropped)
+
+    def _offer(self, frame: Frame) -> None:
+        """把畫面交給牌桌那條路。校正算不出來就算了 —— 那邊沒有牌桌矩形
+        就什麼都做不了,而那是個會自己好的狀況(使用者框一下就有了)。"""
+        assert self._sink is not None
+        calibration = self._calibrator.feed(frame)
+        if calibration is not None:
+            self._sink.offer_frame(frame.image, calibration)
 
     def _crop_manual(self, image: np.ndarray) -> tuple[np.ndarray, int] | None:
         """使用者框的那一塊。沒框過回 ``None``,呼叫端就走校正那條路。
@@ -370,6 +403,10 @@ class VisionWorker(threading.Thread):
                 confident=confident,
             )
         )
+        if self._sink is not None:
+            # 危險度要知道自己手上有什麼。**含剛摸的那張** —— 那張正是
+            # 使用者現在要決定切不切的牌。
+            self._sink.offer_hand([m.label for m in matches])
 
     def __repr__(self) -> str:
         return (

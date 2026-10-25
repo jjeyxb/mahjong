@@ -29,6 +29,7 @@ from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QPushButton
 
 from mia.calibration.canvas import PRESETS as CANVAS_PRESETS
+from mia.ui.panel.window import PAGES as _PAGES
 from mia.ui.panel.window import PanelWindow, present
 from mia.ui.widgets.tiles import (
     _PAD_FRACTION,
@@ -353,9 +354,15 @@ class TestPresent:
 class TestNavigation:
     """左側功能列。"""
 
-    def test_there_is_one_page_per_feature_plus_settings(self, panel) -> None:
+    def test_each_kind_of_output_gets_a_page(self, panel) -> None:
+        """**頁數不等於功能數。**
+
+        放銃分析有兩條路(封包與純畫面),但它們算的是同一件事、投到同一個
+        格子 —— 各開一頁會變成兩頁長得一模一樣。所以頁是依「看到什麼」分的,
+        開關才是依「哪條路」分的。
+        """
         _, window = panel
-        expected = len(features.NAMES) + 1
+        expected = len(_PAGES) + 1
         assert window._nav.count() == expected  # noqa: SLF001
         assert window._stack.count() == expected  # noqa: SLF001
 
@@ -367,13 +374,13 @@ class TestNavigation:
     def test_the_settings_strip_is_hidden_when_empty(self, panel) -> None:
         """設定頁的內容本身就是設定,頂端不該再留一條空白的橫線。"""
         _, window = panel
-        settings_page = window._stack.widget(len(features.NAMES))  # noqa: SLF001
+        settings_page = window._stack.widget(len(_PAGES))  # noqa: SLF001
         assert not shown(settings_page._settings)  # noqa: SLF001
 
     def test_every_feature_page_shows_its_strip(self, panel) -> None:
         """功能頁都有開關,所以設定列一定看得到。"""
         _, window = panel
-        for index in range(len(features.NAMES)):
+        for index in range(len(_PAGES)):
             page = window._stack.widget(index)  # noqa: SLF001
             assert shown(page._settings), f"第 {index} 頁的設定列不見了"  # noqa: SLF001
 
@@ -543,6 +550,7 @@ class TestFeatureSwitches:
         return board, window
 
     def test_every_feature_has_a_switch(self, wired) -> None:
+        """每個功能都要撥得到 —— 包括與別人共用同一頁的那些。"""
         _, window = wired
         assert set(window._switches) == set(features.NAMES)  # noqa: SLF001
 
