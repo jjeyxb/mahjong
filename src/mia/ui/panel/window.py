@@ -178,7 +178,7 @@ class PanelWindow(QMainWindow):
         platform: 遊戲版本選單要接到誰。``None``(重播、示範)時畫成停用
             —— 那些模式裡「現在玩的是哪一版」是錄的時候就定了的。
         hand_roi: 「框選手牌範圍」要接到誰。``None`` 時按鈕畫成停用。
-        table_rect: 「框選牌桌範圍」要接到誰。``None`` 時按鈕畫成停用。
+        table_rect: 「框選整個遊戲畫面」要接到誰。``None`` 時按鈕畫成停用。
         overlay: 要控制的 Overlay。設定頁上的四個勾選都作用在它身上;
             ``None`` 時那四個畫成停用。
 
@@ -256,6 +256,7 @@ class PanelWindow(QMainWindow):
         self._settings_page = self._add_page("設定", self._build_settings())
         self._build_advice_settings()
         self._build_analysis_settings()
+        self._build_danger_settings()
         # 開關最後加,才會排在設定列最右邊
         self._add_switch(self._advice_page, features.ADVICE)
         self._add_switch(self._analysis_page, features.VISION)
@@ -426,6 +427,9 @@ class PanelWindow(QMainWindow):
         **放在這一頁而不是設定頁。** 它只影響畫面辨識那條路,而且是對著
         這一頁的內容在調 —— 框完之後這一頁當場就會變。全域設定頁放的是
         「整個程式的前提」(玩哪一版、遊戲視窗多大),不是某一條路的校正。
+
+        「框選整個遊戲畫面」在**放銃分析**那一頁 —— 同一個理由:
+        靠它最深的是牌河與寶牌,見 :meth:`_build_danger_settings`。
         """
         self._hand_roi_button = QPushButton("框選手牌範圍", self._analysis_page)
         self._hand_roi_button.clicked.connect(self._on_pick_hand_roi)
@@ -445,9 +449,21 @@ class PanelWindow(QMainWindow):
         self._analysis_page.add_setting("", self._hand_roi_clear)
         self._sync_hand_roi_buttons()
 
-        self._table_rect_button = QPushButton("框選牌桌範圍", self._analysis_page)
+
+    def _build_danger_settings(self) -> None:
+        """「框選整個遊戲畫面」。
+
+        **放在這一頁,不是向聽分析那一頁。** 這個框是所有正規化座標的共同
+        原點,而**靠它最深的是這一頁**:四家牌河的四個角、寶牌面板的位置
+        全部相對它推導(見 mia.vision.tiles.river.DEFAULT_CORNERS)。
+        框歪 3% 的話牌河的格線整排跟著歪,而純畫面那條路就讀不到東西。
+
+        手牌那條路也用它,但手牌可以**直接框**(向聽分析那一頁的「框選手牌
+        範圍」),框了之後牌桌矩形對手牌就沒有影響了。牌河沒有這個退路。
+        """
+        self._table_rect_button = QPushButton("框選整個遊戲畫面", self._danger_page)
         self._table_rect_button.clicked.connect(self._on_pick_table_rect)
-        self._table_rect_clear = QPushButton("改回自動", self._analysis_page)
+        self._table_rect_clear = QPushButton("改回自動", self._danger_page)
         self._table_rect_clear.clicked.connect(self._on_clear_table_rect)
         if self._table_rect is None or not self._table_rect.can_pick_table_rect():
             for button in (self._table_rect_button, self._table_rect_clear):
@@ -455,13 +471,15 @@ class PanelWindow(QMainWindow):
                 button.setToolTip("這個模式沒有畫面可以框(重播、示範、--no-vision)")
         else:
             self._table_rect_button.setToolTip(
-                "在畫面上框出遊戲畫布。自動校正是從四邊剝除邊框,\n"
-                "而它錯的時候很安靜 —— 實測鎖在載入畫面上之後,\n"
-                "整場的手牌辨識從 97% 掉到 26%,沒有任何錯誤訊息。"
+                "框出整個遊戲畫面 —— 藍色牌桌連同左右兩側的 UI。\n"
+                "四家牌河與寶牌面板的位置都是相對它算的,所以純畫面的\n"
+                "放銃分析最吃這個框。\n"
+                "自動校正是從四邊剝除邊框,而它錯的時候很安靜 —— 實測鎖在\n"
+                "載入畫面上之後,整場的手牌辨識從 97% 掉到 26%,沒有任何錯誤訊息。"
             )
             self._table_rect_clear.setToolTip("不用框的,回去讓程式自己剝邊框")
-        self._analysis_page.add_setting("牌桌範圍", self._table_rect_button)
-        self._analysis_page.add_setting("", self._table_rect_clear)
+        self._danger_page.add_setting("遊戲畫面", self._table_rect_button)
+        self._danger_page.add_setting("", self._table_rect_clear)
         self._sync_table_rect_buttons()
 
     def _sync_hand_roi_buttons(self) -> None:
@@ -516,7 +534,7 @@ class PanelWindow(QMainWindow):
             return
         framed = picker.table_rect() is not None
         self._table_rect_clear.setEnabled(framed)
-        self._table_rect_button.setText("重新框選" if framed else "框選牌桌範圍")
+        self._table_rect_button.setText("重新框選" if framed else "框選整個遊戲畫面")
 
     def _on_pick_table_rect(self) -> None:
         """抓一張畫面,開框選對話框。
@@ -545,14 +563,14 @@ class PanelWindow(QMainWindow):
         if dialog.exec() == QDialog.DialogCode.Accepted and dialog.result_rect is not None:
             picker.set_table_rect(dialog.result_rect)
             self._sync_table_rect_buttons()
-            self._notice.setText("牌桌範圍已更新 —— 下一幀就會重新校正")
+            self._notice.setText("遊戲畫面範圍已更新 —— 下一幀就會重新校正")
 
     def _on_clear_table_rect(self) -> None:
         if self._table_rect is None:
             return
         self._table_rect.set_table_rect(None)
         self._sync_table_rect_buttons()
-        self._notice.setText("牌桌範圍改回自動剝除邊框")
+        self._notice.setText("遊戲畫面範圍改回自動剝除邊框")
 
     def _build_canvas_settings(self, page: QWidget, layout: QVBoxLayout) -> None:
         """遊戲視窗尺寸。

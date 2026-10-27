@@ -92,7 +92,7 @@ class HandRoiPicker(Protocol):
 
 
 class TableRectPicker(Protocol):
-    """能讓使用者自己框**牌桌範圍**的東西。
+    """能讓使用者自己框**整個遊戲畫面**的東西。
 
     與 :class:`HandRoiPicker` 是兩件事,不要混:
 
