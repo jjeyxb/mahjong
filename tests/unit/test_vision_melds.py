@@ -66,13 +66,22 @@ class TestItAbstainsRatherThanGuess:
 
 
 class TestTheMeasuredCorners:
-    def test_only_one_seat_has_been_measured(self) -> None:
-        """另外三家還沒量 —— 這個測試是**提醒**,量好了就改它。
+    def test_only_the_two_seats_with_samples_are_measured(self) -> None:
+        """四家只有兩家 —— 這個測試是**提醒**,量好了就改它。
 
-        自己那家還有一個沒解的問題:副露緊貼著自己的手牌,而手牌也是正面
-        朝上的,is_face_up 分不開。見 DEFAULT_VIEWS 的說明。
+        * 下家:素材 0 次鳴牌,搜不了,只能補素材。
+        * 自己:副露緊貼著**正面朝上**的手牌,is_face_up 分不開。
+          但那一家正好最不需要 —— 見 DEFAULT_VIEWS 的說明。
         """
-        assert set(DEFAULT_VIEWS) == {"kamicha"}
+        assert set(DEFAULT_VIEWS) == {"toimen", "kamicha"}
+
+    def test_own_is_deliberately_absent(self) -> None:
+        """不是忘了,是**量不出來而且不需要**。
+
+        放銃分析從不對自己算危險,所以自己的副露只餵「壁」,而少算壁是
+        保守的方向(remaining 偏高 → 不觸發排除 → 那張仍算危險)。
+        """
+        assert "own" not in DEFAULT_VIEWS
 
     def test_the_corners_stay_on_the_table(self) -> None:
         for name, view in DEFAULT_VIEWS.items():
