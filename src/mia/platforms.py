@@ -21,12 +21,14 @@ Steam    擷取遊戲視窗       **沒有** —— Unity 客戶端不經過瀏�
 
 **2026-10-25:Steam 版拿到放銃分析了。** 這一段原本寫著「Steam 版的事件流
 之後會有,接上之後這張表就會改」—— 現在改了。
-:data:`~mia.features.TABLE` 只看畫面:牌河、寶牌、立直、局的邊界全部從
-畫面讀,不碰封包(見 ``docs/cv_mjai.md``)。所以它在兩版上都能跑,而
-:data:`~mia.features.DANGER`(封包那條路)仍然只有網頁版有。
 
-兩條路算的是同一件事、用同一支 ``assess``,差別只在資訊從哪來 ——
-封包那條準確,畫面這條約四成的牌讀不出來(讀不到的當危險處理)。
+:data:`~mia.features.DANGER` 有兩條路,而**純畫面那條不碰封包**:牌河、
+寶牌、立直、局的邊界全部從螢幕讀(見 ``docs/cv_mjai.md``)。所以它在兩版上
+都能跑,只是 Steam 版上只有那一條。走哪條由
+:class:`~mia.features.DangerSourceChoice` 決定,使用者看到的是一個開關。
+
+AI 建議仍然只有網頁版有 —— 它要的是完整的事件流,而純畫面那條目前約四成
+的牌讀不出來。
 
 為什麼不用 enum
 ---------------
@@ -36,7 +38,7 @@ Steam    擷取遊戲視窗       **沒有** —— Unity 客戶端不經過瀏�
 
 from __future__ import annotations
 
-from mia.features import ADVICE, DANGER, TABLE, VISION
+from mia.features import ADVICE, DANGER, VISION
 
 __all__ = [
     "NAMES",
@@ -63,15 +65,15 @@ NAMES = {WEB: "網頁版", STEAM: "Steam 版"}
 
 #: 每一版撐得起哪些功能。見模組說明。
 SUPPORTED = {
-    WEB: (VISION, ADVICE, DANGER, TABLE),
-    STEAM: (VISION, TABLE),
+    WEB: (VISION, ADVICE, DANGER),
+    STEAM: (VISION, DANGER),
 }
 
 #: 功能在某一版上不能用的理由。**要寫給使用者看**,所以講的是「為什麼」
 #: 而不是「不支援」—— 後者會讓人以為是 MIA 還沒做,而去找設定裡的開關。
 _REASONS = {
-    STEAM: "Steam 版沒有封包來源(Unity 客戶端不經過瀏覽器)。"
-    "放銃分析改用「純畫面」那一個 —— 它不需要封包",
+    STEAM: "Steam 版沒有封包來源(Unity 客戶端不經過瀏覽器)—— "
+    "AI 建議要完整的事件流,目前只有網頁版給得起",
 }
 
 

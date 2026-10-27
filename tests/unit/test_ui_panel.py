@@ -20,7 +20,7 @@ import pytest
 from mia import features, platforms
 from mia.engine.base import Advice
 from mia.mjai import Dahai, Reach
-from mia.ui.viewmodel import ViewModel
+from mia.ui.viewmodel import ViewModel, ViewState
 
 pytest.importorskip("PySide6", reason="UI 測試需要 PySide6")
 
@@ -1197,14 +1197,18 @@ class TestPlatformPicker:
         assert picker.asked == [platforms.STEAM]
 
     def test_steam_disables_the_switches_it_cannot_feed(self, qtbot) -> None:
-        """使用者要看到的是「停用」,不是一個撥了會自己彈回去的開關。"""
+        """使用者要看到的是「停用」,不是一個撥了會自己彈回去的開關。
+
+        Steam 版沒有封包,所以 AI 建議停用。**放銃分析沒有停用** ——
+        它有兩條路,而純畫面那條不需要封包(2026-10-25 接上的)。
+        """
         window, _, _ = self._window(qtbot)
         combo = window._platform_picker  # noqa: SLF001
         combo.setCurrentIndex(list(platforms.PLATFORMS).index(platforms.STEAM))
         switches = window._switches  # noqa: SLF001
         assert switches[features.VISION].isEnabled()
+        assert switches[features.DANGER].isEnabled()
         assert not switches[features.ADVICE].isEnabled()
-        assert not switches[features.DANGER].isEnabled()
 
     def test_the_disabled_switch_says_why(self, qtbot) -> None:
         """「不支援」會讓人去找一個不存在的開關,所以要講為什麼。"""
@@ -1306,3 +1310,99 @@ class TestTableRectPicker:
         window = PanelWindow(ViewModel(), switchboard=FakeSwitchboard())
         qtbot.addWidget(window)
         assert not window._table_rect_button.isEnabled()  # noqa: SLF001
+
+
+class TestTheDangerPageSaysWhichPathIsRunning:
+    """「要靠封包才能知道別家打了什麼」曾經是寫死的一句話。
+
+    放銃分析後來多了圖像辨識那條路,於是使用者勾了「強制使用圖像辨識」之後,
+    畫面還在說要靠封包 —— 使用者回報過。寫死的來源說明在來源變多的那一天
+    一定會變成謊話。
+    """
+
+    def _tab(self, qtbot):
+        from mia.ui.widgets.danger import AnalysisDangerTab
+        from mia.ui.widgets.tiles import TileIcons
+
+        tab = AnalysisDangerTab(TileIcons())
+        qtbot.addWidget(tab)
+        return tab
+
+    def _note(self, tab) -> str:
+        return tab._source.text()  # noqa: SLF001
+
+    def test_the_screen_path_does_not_claim_to_need_packets(self, qtbot) -> None:
+        """要擋的是「**需要**封包」這個宣稱,不是「封包」這兩個字。
+
+        「會比封包那條路悲觀」是正確的比較,該留著 —— 那正是使用者需要
+        知道的事。
+        """
+        tab = self._tab(qtbot)
+        tab.update_from(ViewState(), enabled=True, source="圖像辨識")
+        note = self._note(tab)
+        assert "圖像辨識" in note
+        assert "要靠封包" not in note
+        assert "不讀封包" in note
+
+    def test_the_packet_path_says_so(self, qtbot) -> None:
+        tab = self._tab(qtbot)
+        tab.update_from(ViewState(), enabled=True, source="封包")
+        assert "封包" in self._note(tab)
+
+    def test_without_a_running_worker_it_claims_nothing(self, qtbot) -> None:
+        """還沒開始跑的時候不要講來源 —— 講了會是猜的。"""
+        tab = self._tab(qtbot)
+        tab.update_from(ViewState(), enabled=True, source=None)
+        note = self._note(tab)
+        assert "封包" not in note
+        assert "圖像辨識" not in note
+
+    def test_the_screen_path_warns_it_is_pessimistic(self, qtbot) -> None:
+        """讀不出來的牌一律當危險 —— 使用者要知道為什麼它比較悲觀。"""
+        tab = self._tab(qtbot)
+        tab.update_from(ViewState(), enabled=True, source="圖像辨識")
+        assert "危險" in self._note(tab)
+
+
+class TestOneSwitchCanTurnOnAnother:
+    """放銃分析走圖像辨識那條時要靠畫面辨識,runtime 會一併打開。
+
+    **那件事要看得見。** 只同步被撥的那一個開關的話,畫面辨識會停在暗的,
+    而底下其實已經在跑 —— 使用者說不上哪裡怪,但畫面在說謊。
+    """
+
+    class _Board:
+        """撥 A 會連帶撥 B 的開關台。"""
+
+        def __init__(self) -> None:
+            self.state: dict[str, bool] = {}
+
+        def available(self, key: str) -> bool:  # noqa: ARG002
+            return True
+
+        def is_enabled(self, key: str) -> bool:
+            return self.state.get(key, False)
+
+        def set_enabled(self, key: str, on: bool) -> None:
+            self.state[key] = on
+            if key == features.DANGER and on:
+                self.state[features.VISION] = True
+
+    def test_the_other_switch_lights_up_too(self, qtbot) -> None:
+        board = self._Board()
+        window = PanelWindow(ViewModel(), switchboard=board)
+        qtbot.addWidget(window)
+        window._switches[features.DANGER].click()  # noqa: SLF001
+        assert window._switches[features.VISION].isChecked()  # noqa: SLF001
+
+    def test_a_switch_that_failed_to_start_springs_back(self, qtbot) -> None:
+        """原本就有的行為不能弄丟:起不來的功能,開關要自己彈回去。"""
+
+        class _Stubborn(self._Board):
+            def set_enabled(self, key: str, on: bool) -> None:  # noqa: ARG002
+                self.state[key] = False
+
+        window = PanelWindow(ViewModel(), switchboard=_Stubborn())
+        qtbot.addWidget(window)
+        window._switches[features.ADVICE].click()  # noqa: SLF001
+        assert not window._switches[features.ADVICE].isChecked()  # noqa: SLF001

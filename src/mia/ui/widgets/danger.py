@@ -192,6 +192,22 @@ def _worst(danger: TileDanger) -> SeatDanger:
     return max(danger.seats, key=lambda s: (s.level, len(s.waits), s.threat, s.reach))
 
 
+def _waiting_note(source: str | None) -> str:
+    """還沒有資料時那一行說明。**講的是現在在用哪一條路。**
+
+    放銃分析有兩條路,而使用者沒得選(有封包就用封包)—— 所以畫面上要講
+    清楚現在跑的是哪一條,不然他改了設定也看不出有沒有生效。
+    """
+    if source is None:
+        return "開始一局之後就會算出每張牌切出去的危險度"
+    if source == "圖像辨識":
+        return (
+            "正在用圖像辨識看牌河 —— 不讀封包。"
+            "讀不出來的牌一律當成危險(方向是保守的),所以會比封包那條路悲觀。"
+        )
+    return f"正在用{source}追蹤別家打了什麼 —— 開始一局之後就會算出危險度"
+
+
 class AnalysisDangerTab(QWidget):
     """放銃分析分頁。"""
 
@@ -227,13 +243,28 @@ class AnalysisDangerTab(QWidget):
 
         layout.addStretch(1)
 
-    def update_from(self, state: ViewState, *, enabled: bool = True) -> None:
+    def update_from(
+        self, state: ViewState, *, enabled: bool = True, source: str | None = None
+    ) -> None:
+        """畫一次。
+
+        Args:
+            state: 目前的畫面狀態。
+            enabled: 這個功能的開關開著嗎。
+            source: 現在**真的在跑**的那條路叫什麼(「封包」/「圖像辨識」),
+                沒在跑就是 ``None``。
+
+                這一句原本寫死成「這一頁要靠封包才能知道別家打了什麼」,
+                而放銃分析後來多了圖像辨識那條路 —— 於是使用者勾了「強制
+                使用圖像辨識」之後,畫面還在說要靠封包。寫死的來源說明在
+                來源變多的那一天一定會變成謊話,所以改成問實際跑的是誰。
+        """
         report = state.dangers if enabled else None
         if not enabled:
             self._blank("未開啟", "用右上角的開關打開")
             return
         if report is None:
-            self._blank("等待對局…", "這一頁要靠封包才能知道別家打了什麼")
+            self._blank("等待對局…", _waiting_note(source))
             return
         self._show(report)
 

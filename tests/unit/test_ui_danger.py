@@ -50,10 +50,16 @@ def shown(widget) -> bool:
     return not widget.isHidden()
 
 
-def _apply(tab: AnalysisDangerTab, report, *, enabled: bool = True) -> None:
+def _apply(
+    tab: AnalysisDangerTab,
+    report,
+    *,
+    enabled: bool = True,
+    source: str | None = None,
+) -> None:
     model = ViewModel()
     model.update_dangers(report)
-    tab.update_from(model.state, enabled=enabled)
+    tab.update_from(model.state, enabled=enabled, source=source)
 
 
 class TestSeatNames:
@@ -83,10 +89,20 @@ class TestEmptyStates:
         assert "等待" in tab._headline.text()  # noqa: SLF001
         assert not any(shown(row) for row in tab._rows)  # noqa: SLF001
 
-    def test_it_says_it_needs_the_packets(self, tab) -> None:
-        """這一頁靠封包,CV 一張別家的牌都看不到 —— 使用者要知道為什麼空著。"""
-        _apply(tab, None)
+    def test_it_says_which_path_is_running(self, tab) -> None:
+        """空著的時候要講**現在在跑哪一條路**,不然使用者不知道為什麼空著。
+
+        原本這一句寫死成「這一頁要靠封包」—— 放銃分析後來多了圖像辨識那條
+        路,寫死的來源說明就變成了謊話。所以兩條路各驗一次。
+        """
+        _apply(tab, None, source="封包")
         assert "封包" in tab._source.text()  # noqa: SLF001
+
+    def test_the_screen_path_does_not_blame_the_packets(self, tab) -> None:
+        """跑圖像辨識時不能說要靠封包 —— 使用者勾了強制就是看到這一句才來問的。"""
+        _apply(tab, None, source="圖像辨識")
+        assert "圖像辨識" in tab._source.text()  # noqa: SLF001
+        assert "要靠封包" not in tab._source.text()  # noqa: SLF001
 
 
 class TestWhatItSays:

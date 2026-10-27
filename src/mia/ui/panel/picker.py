@@ -105,21 +105,38 @@ class DragPicker(QWidget):
 
     # -------------------------------------------------------------- 滑鼠
 
+    def _inside(self, event: QMouseEvent) -> QPoint:
+        """滑鼠位置,**夾在影像範圍內**。
+
+        不夾的話拖出邊界會得到一個比影像還大的框,而那個框一路傳下去會在
+        :class:`~mia.utils.geometry.NormRect` 炸掉(它拒絕超出容器的矩形)。
+        實測症狀是「訊息與牌面都畫好了,但確定按不下去」—— 例外從中間竄出去,
+        而最後那行啟用按鈕的程式沒跑到。
+
+        夾在這裡而不是只夾結果:使用者看到的框要與真正送下去的一樣,
+        不然他會對著一個不存在的框調整。
+        """
+        point = event.position().toPoint()
+        return QPoint(
+            max(0, min(point.x(), self.width() - 1)),
+            max(0, min(point.y(), self.height() - 1)),
+        )
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        self._start = event.position().toPoint()
+        self._start = self._inside(event)
         self._box = QRect(self._start, self._start)
         self.clear_derived()
         self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._start is not None:
-            self._box = QRect(self._start, event.position().toPoint())
+            self._box = QRect(self._start, self._inside(event))
             self.update()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if self._start is None:
             return
-        self._box = QRect(self._start, event.position().toPoint()).normalized()
+        self._box = QRect(self._start, self._inside(event)).normalized()
         self._start = None
         if self._box.width() < _MIN_DRAG or self._box.height() < _MIN_DRAG:
             # 點一下沒拖 —— 當成誤觸,不要把一個幾像素的框送下去

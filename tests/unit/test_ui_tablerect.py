@@ -19,6 +19,7 @@ from mia.ui.panel.tablerect import (
     SEAT_NAMES,
     TableRectDialog,
     _aspect_note,
+    _clamp,
     _confident,
     _coverage,
     _hand_roi,
@@ -408,3 +409,36 @@ class TestTheCoarseStageOnlyExcludes:
         一家,洞正是一張八筒。
         """
         assert "is_plausible" not in _body(_refine)
+
+
+class TestTheFrameStaysInsideTheImage:
+    """貼著邊緣框的時候,微調會把它推出去 —— 而推出去會**安靜地**壞掉。
+
+    實測回報:訊息寫著「認出 13 張暗手牌 + 摸的 5p,平均把握 0.97」、牌面也
+    畫出來了,但「確定」按不下去,沒有任何錯誤訊息。原因是 NormRect 拒絕
+    超出容器的矩形,而那個例外從 _check 中間竄出去,剛好在「畫好訊息」之後、
+    「啟用按鈕」之前。
+    """
+
+    def test_a_rect_touching_the_bottom_edge_survives_the_nudge(self) -> None:
+        # 使用者框到底,微調又加了兩個像素
+        clamped = _clamp(Rect(0, 174, 2536, 1436), 2536, 1608)
+        assert clamped.y + clamped.height <= 1608
+
+    def test_it_becomes_a_legal_normrect(self) -> None:
+        """真正的判準不是「夾過了」,是「換算得過去」。"""
+        width, height = 2536, 1608
+        clamped = _clamp(Rect(-3, 174, 2544, 1440), width, height)
+        rect = NormRect(
+            clamped.x / width,
+            clamped.y / height,
+            clamped.width / width,
+            clamped.height / height,
+        )
+        assert rect.x + rect.width <= 1.0 + 1e-9
+        assert rect.y + rect.height <= 1.0 + 1e-9
+
+    def test_a_rect_already_inside_is_untouched(self) -> None:
+        """沒超出的框不該被動到 —— 夾的目的是救邊界,不是改框。"""
+        inside = Rect(10, 20, 100, 200)
+        assert _clamp(inside, 2536, 1608) == inside

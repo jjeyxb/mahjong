@@ -60,6 +60,7 @@ from mia.ui.style import (
 )
 from mia.ui.switchboard import (
     CanvasPicker,
+    DangerSourcePicker,
     GameLauncher,
     HandRoiPicker,
     PlatformPicker,
@@ -179,6 +180,7 @@ class PanelWindow(QMainWindow):
             —— 那些模式裡「現在玩的是哪一版」是錄的時候就定了的。
         hand_roi: 「框選手牌範圍」要接到誰。``None`` 時按鈕畫成停用。
         table_rect: 「框選整個遊戲畫面」要接到誰。``None`` 時按鈕畫成停用。
+        danger_source: 「強制使用圖像辨識」要接到誰。``None`` 時勾選框畫成停用。
         overlay: 要控制的 Overlay。設定頁上的四個勾選都作用在它身上;
             ``None`` 時那四個畫成停用。
 
@@ -201,6 +203,7 @@ class PanelWindow(QMainWindow):
         platform: PlatformPicker | None = None,
         hand_roi: HandRoiPicker | None = None,
         table_rect: TableRectPicker | None = None,
+        danger_source: DangerSourcePicker | None = None,
         overlay: OverlayWindow | None = None,
     ) -> None:
         super().__init__()
@@ -221,6 +224,7 @@ class PanelWindow(QMainWindow):
         self._platform = platform
         self._hand_roi = hand_roi
         self._table_rect = table_rect
+        self._danger_source = danger_source
         self._overlay = overlay
         self._switches: dict[str, ToggleSwitch] = {}
         self._skin = skin
@@ -260,11 +264,10 @@ class PanelWindow(QMainWindow):
         # 開關最後加,才會排在設定列最右邊
         self._add_switch(self._advice_page, features.ADVICE)
         self._add_switch(self._analysis_page, features.VISION)
+        # 放銃分析有兩條路(封包與純畫面),但**只有一個開關** —— 走哪條
+        # 由程式自己選。見 mia.features.DangerSourceChoice:使用者要的是
+        # 「告訴我哪張牌危險」,不是「選一個資料來源」。
         self._add_switch(self._danger_page, features.DANGER)
-        # 放銃分析有**兩條路**,同一頁兩個開關:封包那條準確,畫面那條
-        # 什麼都不必裝(Steam 版只有這條)。兩個算的是同一件事、投到同一個
-        # 格子,所以共用這一頁 —— 各開一頁會變成兩頁長得一模一樣。
-        self._add_switch(self._danger_page, features.TABLE)
 
         self._nav.currentRowChanged.connect(self._stack.setCurrentIndex)
         self._nav.setCurrentRow(0)
@@ -655,6 +658,10 @@ class PanelWindow(QMainWindow):
         self._build_canvas_settings(page, layout)
 
         layout.addWidget(_rule(page))
+        layout.addWidget(_section("放銃分析", page))
+        self._build_danger_source_settings(page, layout)
+
+        layout.addWidget(_rule(page))
         layout.addWidget(_section("Overlay", page))
         self._build_overlay_settings(page, layout)
 
@@ -715,10 +722,13 @@ class PanelWindow(QMainWindow):
         self.apply(self._viewmodel.state)
 
     def _sync_switches(self) -> None:
-        """把三個開關的可按狀態與理由重新算一次。
+        """把每個開關的可按狀態、理由與**開關位置**重新算一次。
 
-        換版本之後必須做:Steam 版沒有封包,AI 建議與放銃分析整個沒有來源,
-        而 runtime 已經把它們關掉了 —— 開關若還撥在「開」,畫面就在說謊。
+        兩個時機都必須做:
+
+        * 換版本之後 —— Steam 版沒有封包,AI 建議整個沒有來源,而 runtime
+          已經把它關掉了。開關若還撥在「開」,畫面就在說謊。
+        * 撥任何一個開關之後 —— 一個功能可能帶動另一個(見 :meth:`_on_switch`)。
         """
         if self._switchboard is None:
             return
@@ -734,6 +744,34 @@ class PanelWindow(QMainWindow):
                 switch.set_initial(False)
             else:
                 switch.set_initial(self._switchboard.is_enabled(key))
+
+    def _build_danger_source_settings(self, page: QWidget, layout: QVBoxLayout) -> None:
+        """「強制使用圖像辨識」。
+
+        放銃分析有兩條路(封包與純畫面),而**平常不該讓使用者選** ——
+        他要的是「告訴我哪張牌危險」,不是「選一個資料來源」。有封包就用
+        封包,沒有就用畫面,程式自己知道。所以這裡只有一個勾選框,而且
+        預設不勾。
+
+        留著它是為了**比較**:同一個局面兩條路的答案擺在一起,差別一眼就
+        看得到 —— 寫論文與抓問題都用得上。
+        """
+        self._danger_vision_only = QCheckBox("強制使用圖像辨識", page)
+        self._danger_vision_only.setToolTip(
+            "平常不必勾 —— 有封包就自動用封包(準),沒有才用圖像辨識。\n"
+            "Steam 版本來就只有圖像辨識那條。\n"
+            "勾起來會重啟放銃分析,因為走哪條路是建構時決定的。"
+        )
+        picker = self._danger_source
+        if picker is None or not picker.can_pick_danger_source():
+            self._danger_vision_only.setEnabled(False)
+            self._danger_vision_only.setToolTip("這個模式只有一條路,沒有得選")
+        else:
+            # 先設初始值再接訊號 —— 反過來會把「上次記住的狀態」當成使用者
+            # 剛剛的操作,而那會白白重啟一次放銃分析。
+            self._danger_vision_only.setChecked(picker.danger_vision_only())
+            self._danger_vision_only.toggled.connect(picker.set_danger_vision_only)
+        layout.addWidget(self._danger_vision_only)
 
     def _build_overlay_settings(self, page: QWidget, layout: QVBoxLayout) -> None:
         """Overlay 的四個勾選。
@@ -815,14 +853,18 @@ class PanelWindow(QMainWindow):
     def _on_switch(self, key: str, on: bool) -> None:
         """使用者撥了開關。
 
-        撥回實際狀態而不是使用者要的狀態:開啟可能失敗(權重不見了、
-        找不到遊戲視窗),那時開關要自己彈回去,不能停在「開」而底下沒東西在跑。
+        撥完**每一個**開關都重算一次,不是只算被撥的那個。兩個理由:
+
+        * 開啟可能失敗(權重不見了、找不到遊戲視窗),那時開關要自己彈回去,
+          不能停在「開」而底下沒東西在跑。
+        * **一個開關可能帶動另一個。** 放銃分析走圖像辨識那條時要靠畫面辨識
+          (牌河的畫面與自己的手牌都來自它),runtime 會一併打開 —— 而那件事
+          應該**看得見**:畫面辨識的開關自己亮起來就說明了一切,不必再寫一句話
+          去解釋。只同步被撥的那一個的話,它會停在暗的,使用者只會覺得哪裡怪怪的。
         """
         assert self._switchboard is not None
         self._switchboard.set_enabled(key, on)
-        actual = self._switchboard.is_enabled(key)
-        if actual != on:
-            self._switches[key].set_initial(actual)
+        self._sync_switches()
         self.apply(self._viewmodel.state)
 
     def _on_start_game(self) -> None:
@@ -1004,7 +1046,17 @@ class PanelWindow(QMainWindow):
         self._sync_start_button()
         self._advice.update_from(state, enabled=self._is_on(features.ADVICE))
         self._analysis.update_from(state, enabled=self._is_on(features.VISION))
-        self._danger.update_from(state, enabled=self._is_on(features.DANGER))
+        self._danger.update_from(
+            state,
+            enabled=self._is_on(features.DANGER),
+            # 問**實際在跑的那個**,不是問設定 —— 沒有封包來源時本來就走
+            # 圖像辨識,使用者沒勾也一樣。
+            source=(
+                self._danger_source.danger_source_name()
+                if self._danger_source is not None
+                else None
+            ),
+        )
         self._notice.setText(self._status_text(state))
 
     def _is_on(self, key: str) -> bool:

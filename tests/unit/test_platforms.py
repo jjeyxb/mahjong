@@ -14,15 +14,19 @@ class TestWhatEachPlatformCanDo:
         for key in features.NAMES:
             assert platforms.supports(WEB, key), key
 
-    def test_steam_only_has_the_screen(self) -> None:
+    def test_steam_has_everything_that_does_not_need_packets(self) -> None:
         """Steam 版沒有封包 —— Unity 客戶端不經過瀏覽器。
 
         畫面那條路兩版共通:擷取的是「一個視窗」,不在乎那是瀏覽器還是
         原生程式。
+
+        **放銃分析 2026-10-25 起兩版都有**:它有兩條路,而純畫面那條只看
+        螢幕(見 mia.features.DangerSourceChoice)。AI 建議仍然只有網頁版
+        —— 它要完整的事件流,而純畫面那條目前約四成的牌讀不出來。
         """
         assert platforms.supports(STEAM, features.VISION)
+        assert platforms.supports(STEAM, features.DANGER)
         assert not platforms.supports(STEAM, features.ADVICE)
-        assert not platforms.supports(STEAM, features.DANGER)
 
     def test_an_unknown_platform_is_let_through(self) -> None:
         """認不得的版本一律放行。

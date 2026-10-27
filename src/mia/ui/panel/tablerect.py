@@ -142,13 +142,16 @@ class TableRectDialog(QDialog):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
 
+        # **QLabel 不吃 markdown。** 寫 `**粗體**` 的話畫面上就是兩個星號
+        # —— 使用者回報過。要粗體只能用 rich text,而那就得自己寫 <br>。
         hint = QLabel(
-            "框出**整個遊戲畫面** —— 藍色牌桌連同左右兩側的 UI,"
-            "**不要**含瀏覽器的分頁列與網址列。\n"
+            "框出<b>整個遊戲畫面</b> —— 藍色牌桌連同左右兩側的 UI,"
+            "<b>不要</b>含瀏覽器的分頁列與網址列。<br>"
             "拖完會把從這個框算出來的手牌範圍與四家牌河畫回畫面上,"
             "線沒落在牌上就是框歪了。",
             self,
         )
+        hint.setTextFormat(Qt.TextFormat.RichText)
         hint.setStyleSheet(CAPTION)
         layout.addWidget(hint)
 
@@ -229,7 +232,7 @@ class TableRectDialog(QDialog):
         QApplication.processEvents()
         if self._templates is None:
             self._templates = TemplateSet.load()
-        table = _refine(self._image, rough, self._templates)
+        table = _clamp(_refine(self._image, rough, self._templates), width, height)
         nudged = (
             table.x - rough.x,
             table.y - rough.y,
@@ -567,6 +570,25 @@ def _hand_roi(roi: RoiConfig, table: Rect, image: Size) -> Rect | None:
     """從框出來的牌桌矩形推導自己的手牌範圍。``own_hand`` 沒設定時回 ``None``。"""
     rois = RoiSet(roi, Calibration(table_rect=table, image_size=image, source="manual"))
     return rois["own_hand"].rect if "own_hand" in rois else None
+
+
+def _clamp(rect: Rect, width: int, height: int) -> Rect:
+    """把矩形夾回影像範圍內。
+
+    :func:`_refine` 會把框上下各挪最多兩個像素,而使用者的框常常本來就貼著
+    畫面邊緣 —— 挪完就超出去了。超出去的矩形換算成
+    :class:`~mia.utils.geometry.NormRect` 會**拋例外**,而那個例外從
+    :meth:`TableRectDialog._check` 中間竄出去,剛好在「訊息與牌面都畫好了」
+    之後、「啟用確定按鈕」之前。
+
+    實測回報:「認出 13 張暗手牌 + 摸的 5p,平均把握 0.97」正常顯示,
+    牌面也畫出來了,但確定按不下去,而且沒有任何錯誤訊息。
+
+    夾而不是拒絕:超出的量是個位數像素,那不是使用者框錯,是微調的副作用。
+    """
+    x = max(0, min(rect.x, width - 1))
+    y = max(0, min(rect.y, height - 1))
+    return Rect(x, y, min(rect.width, width - x), min(rect.height, height - y))
 
 
 def _river_quads(table: Rect) -> list[list[tuple[int, int]]]:
