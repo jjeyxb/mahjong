@@ -58,11 +58,104 @@ class TestCallsShortenTheRiver:
             Discard(position=0, index=2, pai="4m")
         ]
 
-    def test_a_call_at_the_end(self) -> None:
+    def test_a_call_at_the_end_waits_for_a_second_look(self) -> None:
+        """最後一張被鳴走**沒有位置上的證據** —— 前面每一格都還在原位。
+
+        而「有一格這次沒被偵測到」長得一模一樣。兩者在單一次觀察上無法區分,
+        所以先不動,看第二次。慢一輪(一秒)換掉一張假現物,划得來。
+        """
         watcher = RiverWatcher()
         watcher.observe(0, ["1m", "2m"])
         assert watcher.observe(0, ["1m"]) == []
+        assert (watcher.stats.calls, watcher.stats.deferred) == (0, 1)
+
+        assert watcher.observe(0, ["1m"]) == []
         assert watcher.stats.calls == 1
+        assert watcher.rivers[0] == ["1m"]
+
+
+class TestAShortReadIsNotACall:
+    """少讀到一格**不是**鳴牌。
+
+    這兩件事在資料上長得一樣,而猜錯的代價天差地遠:猜成鳴牌會把整排往前
+    挪一位,之後回來的那張看起來是新的 —— 於是多發一次捨牌,放銃分析多出
+    一張**假現物**(說「一定安全」的牌)。實測就是這樣漏的,見 _conflicts。
+    """
+
+    def test_an_unknown_first_cell_does_not_make_everything_shift(self) -> None:
+        """河的第一格是 ``?`` 的時候,「拿掉第一格」無條件對得上形狀。
+
+        這是實測踩到的那一個:``['?','4m','4p']`` 遇到只讀到兩格的那一幀。
+        """
+        watcher = RiverWatcher()
+        watcher.observe(0, [UNKNOWN, "4m", "4p"])
+        assert watcher.observe(0, [UNKNOWN, UNKNOWN]) == []
+        assert watcher.rivers[0] == [UNKNOWN, "4m", "4p"]
+        assert watcher.stats.deferred == 1
+
+    def test_the_tile_that_comes_back_is_not_a_new_discard(self) -> None:
+        """挪掉一位之後,回來的 ``4p`` 會被當成新的 —— 那就是假現物的來源。"""
+        watcher = RiverWatcher()
+        watcher.observe(0, [UNKNOWN, "4m", "4p"])
+        watcher.observe(0, [UNKNOWN, UNKNOWN])
+        assert watcher.observe(0, [UNKNOWN, UNKNOWN, "4p"]) == []
+        assert watcher.rivers[0] == [UNKNOWN, "4m", "4p"]
+
+    def test_a_shift_with_real_evidence_is_taken_at_once(self) -> None:
+        """同一格兩邊都確定而且不一樣 —— 那就是真的挪過了,不必等。"""
+        watcher = RiverWatcher()
+        watcher.observe(0, ["1m", "2m", "3m"])
+        assert watcher.observe(0, ["1m", "3m"]) == []
+        assert (watcher.stats.calls, watcher.stats.deferred) == (1, 0)
+
+    def test_coming_back_cancels_the_pending_shrink(self) -> None:
+        """變短了又長回來 → 本來就只是讀漏了,待定要清掉。
+
+        不清的話下一次任何一個變短的河都會被第二次確認規則直接採信。
+        """
+        watcher = RiverWatcher()
+        watcher.observe(0, [UNKNOWN, "4m", "4p"])
+        watcher.observe(0, [UNKNOWN, UNKNOWN])
+        watcher.observe(0, [UNKNOWN, "4m", "4p"])
+        assert watcher.observe(0, [UNKNOWN, UNKNOWN]) == []
+        assert watcher.rivers[0] == [UNKNOWN, "4m", "4p"]
+
+    def test_the_next_discard_is_what_proves_the_call(self) -> None:
+        """鳴牌最常見的樣子:拿走的是剛打出去那張,所以當下沒有位置證據。
+
+        證據要等他**又打了一張**:長度補回來而最後一格換人了。那一次既不是
+        前綴也不是少一張 —— 把上一次的假設套上去才說得通。
+
+        不接這一段的代價實測過:那一家從此每次觀察都進 ``confused``,
+        永遠對不回來,捨牌整段漏掉。
+        """
+        watcher = RiverWatcher()
+        watcher.observe(0, ["1m", "2m"])
+        assert watcher.observe(0, ["1m"]) == []  # 2m 被鳴走,先不動
+        assert watcher.observe(0, ["1m", "3m"]) == [
+            Discard(position=0, index=1, pai="3m")
+        ]
+        assert watcher.rivers[0] == ["1m", "3m"]
+        assert (watcher.stats.calls, watcher.stats.confused) == (1, 0)
+
+    def test_a_hypothesis_that_never_fits_is_not_forced(self) -> None:
+        """假設說不通就是說不通 —— 寧可記一次看不懂,也不要硬套。
+
+        猜錯的捨牌會污染整條事件流,少發一個只是延後。
+        """
+        watcher = RiverWatcher()
+        watcher.observe(0, ["1m", "2m"])
+        watcher.observe(0, ["1m"])
+        assert watcher.observe(0, ["9s", "9p", "9m"]) == []
+        assert watcher.stats.confused == 1
+        assert watcher.rivers[0] == ["1m", "2m"]
+
+    def test_a_new_kyoku_clears_the_pending_shrink(self) -> None:
+        watcher = RiverWatcher()
+        watcher.observe(0, ["1m", "2m"])
+        watcher.observe(0, ["1m"])
+        watcher.reset()
+        assert watcher._shrinking == [None] * 4  # noqa: SLF001
 
 
 class TestUnknownIsDeferredNotDropped:
