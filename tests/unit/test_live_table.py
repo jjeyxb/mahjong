@@ -154,3 +154,35 @@ class TestTheLink:
         link.attach(new)
         link.detach(old)
         assert link.attached
+
+
+class TestItSaysWhatItIsWaitingFor:
+    """**沒有一條路可以安靜地卡住。**
+
+    使用者回報:只打開放銃分析的話畫面一直停在「等待對局…」,而且完全
+    不出聲 —— 拿不到畫面就直接 return。撥了開關什麼都沒發生是最難查的
+    一種壞法,因為它跟「還沒輪到你」長得一模一樣。
+    """
+
+    def test_without_a_frame_it_says_so(self, templates: TemplateSet) -> None:
+        worker, _ = _worker(templates)
+        worker.tick()
+        assert "畫面辨識" in worker.status.read()
+
+    def test_without_a_hand_it_says_so(
+        self, image: np.ndarray, calibration: Calibration, templates: TemplateSet
+    ) -> None:
+        worker, _ = _worker(templates)
+        worker.offer_frame(image, calibration)
+        worker.tick()
+        assert "手牌" in worker.status.read()
+
+    def test_with_both_it_says_nothing(
+        self, image: np.ndarray, calibration: Calibration, templates: TemplateSet
+    ) -> None:
+        """好好運作的時候不要佔版面 —— 狀態列是給異常用的。"""
+        worker, _ = _worker(templates)
+        worker.offer_frame(image, calibration)
+        worker.offer_hand(["1m", "9p"])
+        worker.tick()
+        assert not worker.status.read()

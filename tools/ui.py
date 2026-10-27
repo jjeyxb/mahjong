@@ -42,6 +42,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from collections.abc import Callable
+
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
@@ -51,6 +53,7 @@ from mia.capture.base import Frame
 from mia.config.models import AppConfig
 from mia.engine import AIEngine, DummyEngine, EngineGroup
 from mia.engine.styles import StyleChoice, StyleProfile
+from mia.features import DangerSourceChoice
 from mia.live.runtime import LiveRuntime
 from mia.mjai import MjaiEvent
 from mia.mjai.handstate import HandTracker
@@ -327,6 +330,33 @@ class _RememberedTableRect:
         self._state.save()
 
 
+class _RememberedDangerSource:
+    """把「強制使用圖像辨識」轉給 runtime,順手記到磁碟。
+
+    與 :class:`_RememberedPlatform` 同一個模式。值得記住的理由也類似:
+    會去勾它的人是在**比較兩條路**,而那不是一次性的動作 —— 每次啟動都要
+    重勾的話,比較到一半重開程式就白做了。
+    """
+
+    def __init__(self, runtime: LiveRuntime, state: UiState) -> None:
+        self._runtime = runtime
+        self._state = state
+
+    def can_pick_danger_source(self) -> bool:
+        return self._runtime.can_pick_danger_source()
+
+    def danger_vision_only(self) -> bool:
+        return self._runtime.danger_vision_only()
+
+    def set_danger_vision_only(self, on: bool) -> None:
+        self._runtime.set_danger_vision_only(on)
+        self._state.danger_vision_only = self._runtime.danger_vision_only()
+        self._state.save()
+
+    def danger_source_name(self) -> str | None:
+        return self._runtime.danger_source_name()
+
+
 class _RememberedPlatform:
     """把版本的選擇轉給 runtime,順手記到磁碟。
 
@@ -404,6 +434,7 @@ def build_live_runtime(
     platform: PlatformChoice | None = None,
     hand_roi: HandRoiChoice | None = None,
     table_rect: TableRectChoice | None = None,
+    danger_source: DangerSourceChoice | None = None,
 ) -> LiveRuntime:
     """組出 runtime。**什麼都還沒開始** —— 瀏覽器等使用者按「開始遊戲」,
     三個功能等使用者撥開關。
@@ -423,9 +454,14 @@ def build_live_runtime(
     from mia.live.table import TableLink, TableWorker
     from mia.vision.tiles.classify import DEFAULT_SKIN
 
+    danger_source = danger_source if danger_source is not None else DangerSourceChoice()
     bus = UpdateBus()
     feature_list: list[Feature] = []
     capture: CaptureLauncher | None = None
+    #: 放銃分析那條路要的東西。兩邊都可能不存在(--no-packets / --no-vision),
+    #: 而它只要**其中一個**就跑得起來 —— 這正是它有兩種實作的意義。
+    packets_for_danger: Callable[[], Path] | None = None
+    screen_for_danger: TableLink | None = None
 
     if not args.no_packets:
         if args.tail:
@@ -470,13 +506,8 @@ def build_live_runtime(
             )
 
         feature_list.append(Feature(features.ADVICE, make_packets))
+        packets_for_danger = dump_path
 
-        def make_danger() -> Worker:
-            # 同樣 from_start=True,而且理由更硬:安全牌是整局累積出來的,
-            # 從中途接上會少掉前面所有的捨牌
-            return DangerWorker(bus, dump=dump_path(), from_start=True)
-
-        feature_list.append(Feature(features.DANGER, make_danger))
 
     if not args.no_vision:
         config = load_config()
@@ -503,15 +534,36 @@ def build_live_runtime(
             )
 
         feature_list.append(Feature(features.VISION, make_vision))
+        screen_for_danger = link
 
-        def make_table() -> Worker:
-            # 這條路**只看畫面** —— 不讀封包,所以 --no-packets 時它仍然在。
-            # 代價是約四成的牌讀不出來(讀不到的當危險處理,方向是保守的)。
-            worker = TableWorker(bus, config=config.roi, skin=skin, link=link)
-            link.attach(worker)
-            return worker
+    if packets_for_danger is not None or screen_for_danger is not None:
 
-        feature_list.append(Feature(features.TABLE, make_table))
+        def make_danger() -> Worker:
+            """放銃分析。**走哪條路在這裡決定,不是使用者選的。**
+
+            有封包就用封包(準),沒有就用畫面。使用者要的是「告訴我哪張牌
+            危險」,不是「選一個資料來源」—— 見 features.DangerSourceChoice。
+
+            設定頁上的「強制用純畫面」是例外,給開發與比較用:同一個局面
+            兩條路的答案擺在一起,差別一眼就看得到。
+
+            封包那條 from_start=True,理由很硬:安全牌是**整局累積**出來的,
+            從中途接上會少掉前面所有的捨牌,而少掉的方向是把安全牌說成
+            不安全(保守),不是反過來。
+            """
+            use_screen = screen_for_danger is not None and (
+                packets_for_danger is None or danger_source.vision_only
+            )
+            if use_screen:
+                assert screen_for_danger is not None
+                worker = TableWorker(bus, config=load_config().roi, skin=args.skin or DEFAULT_SKIN)
+                screen_for_danger.attach(worker)
+                return worker
+            assert packets_for_danger is not None
+            return DangerWorker(bus, dump=packets_for_danger(), from_start=True)
+
+        feature_list.append(Feature(features.DANGER, make_danger))
+
 
     if not feature_list:
         raise SystemExit("--no-vision 與 --no-packets 同時給了,那就沒有東西可以顯示")
@@ -524,6 +576,7 @@ def build_live_runtime(
         canvas=canvas,
         style=style,
         platform=platform,
+        danger_source=danger_source,
     )
 
 
@@ -745,6 +798,7 @@ def main(argv: list[str] | None = None) -> int:
     # 同理:上次框的牌桌矩形也要先備好。沒備的話第一次開畫面辨識會先去剝
     # 一次邊框,而使用者當初會去框正是因為那條路在他的環境下走不通。
     table_rect = TableRectChoice(ui_state.table_rect)
+    danger_source = DangerSourceChoice(ui_state.danger_vision_only)
     # 視窗比對條件要與擷取執行緒讀的是同一份 —— 兩邊找的必須是同一個視窗,
     # 否則使用者框的是 A、辨識跑的是 B。
     from mia.config.loader import load_config
@@ -762,6 +816,7 @@ def main(argv: list[str] | None = None) -> int:
             platform=platform,
             hand_roi=hand_roi,
             table_rect=table_rect,
+            danger_source=danger_source,
         )
         if args.live
         else None
@@ -797,6 +852,9 @@ def main(argv: list[str] | None = None) -> int:
             _RememberedTableRect(table_rect, ui_state, platform, app_config)
             if runtime is not None and not args.no_vision
             else None
+        ),
+        danger_source=(
+            _RememberedDangerSource(runtime, ui_state) if runtime is not None else None
         ),
         **options,  # type: ignore[arg-type]
     )

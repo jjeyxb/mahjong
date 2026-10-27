@@ -100,6 +100,9 @@ class TableWorker(threading.Thread):
         但那還沒做。
     """
 
+    #: 給人看的「這份危險度從哪來」。見 :data:`~mia.live.danger.DangerWorker.SOURCE`。
+    SOURCE = "圖像辨識"
+
     def __init__(
         self,
         bus: UpdateBus,
@@ -189,7 +192,15 @@ class TableWorker(threading.Thread):
             hand = self._hand
             self._frame = None
         if frame is None:
+            # **不要安靜地 return。** 使用者回報過:只打開放銃分析的話畫面
+            # 一直停在「等待對局…」,而這裡拿不到畫面就直接回去,沒有任何
+            # 訊息 —— 看起來就是撥了開關什麼都沒發生。
+            #
+            # 現在 LiveRuntime 會一併打開畫面辨識(見 _ensure_vision_for),
+            # 所以這句話只會在真的還沒送到第一幀時出現(找視窗、校正中)。
+            self.status.say("等畫面辨識把牌桌送過來")
             return
+
         image, calibration = frame
         self.reads += 1
         if self._rois is None or not self._rois.matches(calibration):
@@ -212,6 +223,13 @@ class TableWorker(threading.Thread):
             self._read_seat(position, flat, river)
 
         self._read_dora(image)
+        # **狀態寫在最後。** 寫在開頭的話會被這一輪後面的訊息蓋掉 ——
+        # 實測「等讀到自己的手牌」被局邊界的「新的一局」洗掉了,而那正是
+        # 使用者最需要看到前者的時候。狀態列要講的是這一輪**結束時**的狀態。
+        #
+        # 危險度是「我切這張會不會放銃」—— 沒有手牌就沒有問題可以回答。
+        # 牌河照常讀下去,等手牌來了才算得出來。
+        self.status.say("" if hand else "等讀到自己的手牌")
         self._publish(hand)
 
     # -------------------------------------------------------------------- 一家

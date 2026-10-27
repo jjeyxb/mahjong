@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "CanvasPicker",
+    "DangerSourcePicker",
     "GameLauncher",
     "HandRoiPicker",
     "PlatformPicker",
@@ -113,6 +114,27 @@ class TableRectPicker(Protocol):
     def grab_frame(self) -> Frame: ...
     def table_rect(self) -> NormRect | None: ...
     def set_table_rect(self, rect: NormRect | None) -> None: ...
+
+
+class DangerSourcePicker(Protocol):
+    """能決定放銃分析走哪一條路的東西。
+
+    放銃分析有兩條路(封包與圖像辨識),而**平常不該讓使用者選** —— 有封包就
+    用封包,沒有就用圖像辨識。這個 Protocol 存在是為了設定頁上那個
+    「強制使用圖像辨識」的選項,給開發與比較用。
+    見 :class:`~mia.features.DangerSourceChoice`。
+
+    :meth:`set_danger_vision_only` **會重啟放銃分析**(如果它開著)——
+    走哪條路是工作執行緒建構時決定的,換了沒有別的路。
+    """
+
+    def can_pick_danger_source(self) -> bool: ...
+    def danger_vision_only(self) -> bool: ...
+    def set_danger_vision_only(self, on: bool) -> None: ...
+
+    #: 現在**真的在跑**的那條路。與上面那個勾選不是同一件事:
+    #: 沒有封包來源時本來就走圖像辨識,使用者沒勾也一樣。
+    def danger_source_name(self) -> str | None: ...
 
 
 class CanvasPicker(Protocol):

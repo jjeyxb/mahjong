@@ -68,6 +68,9 @@ class UiState:
             其中一項)。設定檔改過之後這個名字可能已經不存在 —— 那時
             :class:`~mia.engine.styles.StyleChoice` 會退回第一個可用的,
             不報錯。
+        danger_vision_only: 強制讓放銃分析走**純畫面**那條,即使有封包。
+            預設 ``False`` —— 平常由程式自己選(有封包就用封包)。這個選項
+            是給開發與比較用的,見 :class:`~mia.features.DangerSourceChoice`。
         compare_style: 上次選的並排比較對象,``None`` 代表不比較。
             與 :attr:`style` 撞在一起或名字不存在時一律當成不比較 ——
             開著比較要多載一份 130MB 的權重,**所以對不上的時候寧可不開**。
@@ -80,6 +83,7 @@ class UiState:
     canvas_chosen: bool = False
     style: str | None = None
     compare_style: str | None = None
+    danger_vision_only: bool = False
     overlay_visible: bool = False
     overlay_expanded: bool = False
     overlay_danger: bool = False

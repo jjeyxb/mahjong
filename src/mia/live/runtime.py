@@ -38,7 +38,7 @@ from mia import features
 from mia.calibration.canvas import CanvasChoice
 from mia.engine.base import EngineError
 from mia.engine.styles import StyleChoice
-from mia.features import NAMES
+from mia.features import NAMES, DangerSourceChoice
 from mia.live.bus import Advices, CvHand, Dangers, PacketHand, UpdateBus, WorkerStatus
 from mia.live.source import CaptureLauncher
 from mia.platforms import WEB, PlatformChoice
@@ -46,6 +46,12 @@ from mia.ui.viewmodel import ViewModel
 from mia.utils.logging import logger
 
 __all__ = ["Feature", "LiveRuntime", "Worker"]
+
+#: :class:`~mia.live.table.TableWorker` 自報的來源名稱。寫在這裡而不是
+#: import 它:runtime 不該為了一個字串相依一個具體的 worker,而那個 worker
+#: 的建構又吃設定(``RoiConfig``)。對不上的後果只是少打開畫面辨識,
+#: 而那時使用者看到的是「一直停在等待對局」—— 所以有測試釘住這兩個字。
+_SCREEN_SOURCE = "圖像辨識"
 
 
 class Worker(Protocol):
@@ -156,6 +162,7 @@ class LiveRuntime:
         canvas: CanvasChoice | None = None,
         style: StyleChoice | None = None,
         platform: PlatformChoice | None = None,
+        danger_source: DangerSourceChoice | None = None,
     ) -> None:
         self._viewmodel = viewmodel
         self._bus = bus
@@ -164,6 +171,7 @@ class LiveRuntime:
         self._canvas = canvas
         self._style = style
         self._platform = platform if platform is not None else PlatformChoice()
+        self._danger_source = danger_source
         self._running = False
         #: 最近一次「功能起不來」的理由。見 :meth:`_enable`。
         self._failure: str | None = None
@@ -243,6 +251,39 @@ class LiveRuntime:
             if not self._platform.supports(key):
                 self.set_enabled(key, False)
         self._restart(features.VISION)
+        self.pump()
+
+    # ------------------------------------------------------- 放銃分析走哪條路
+
+    def can_pick_danger_source(self) -> bool:
+        """有沒有得選。沒有封包那條路的話就只有一條,選項沒有意義。"""
+        return self._danger_source is not None and self.available(features.DANGER)
+
+    def danger_vision_only(self) -> bool:
+        return self._danger_source is not None and self._danger_source.vision_only
+
+    def danger_source_name(self) -> str | None:
+        """現在**真的在跑**的那條路叫什麼。沒在跑就是 ``None``。
+
+        刻意問 worker 而不是問 :class:`~mia.features.DangerSourceChoice`:
+        那個格子是「使用者要求什麼」,而這裡要答的是「實際發生了什麼」。
+        兩者會不一樣 —— 沒有封包來源時本來就走圖像辨識,使用者沒勾也一樣。
+        而使用者改了設定想確認有沒有生效,看的正是後者。
+        """
+        feature = self._features.get(features.DANGER)
+        worker = feature.worker if feature is not None else None
+        return getattr(worker, "SOURCE", None) if worker is not None else None
+
+    def set_danger_vision_only(self, on: bool) -> None:
+        """改走哪一條路。**真的變了才重啟** —— 走哪條是建構時決定的。
+
+        與 :meth:`set_platform` 同一個形狀:這裡只負責「變了就重啟」,
+        「有沒有真的變」的判斷在 :class:`~mia.features.DangerSourceChoice` 裡。
+        """
+        if self._danger_source is None or not self._danger_source.set(on):
+            return
+        logger.info("放銃分析改走{}那條路", "純畫面" if on else "封包")
+        self._restart(features.DANGER)
         self.pump()
 
     def game_running(self) -> bool:
@@ -473,10 +514,45 @@ class LiveRuntime:
 
         if on:
             self._enable(feature)
+            self._ensure_vision_for(feature)
         else:
             feature.disable()
             self._clear_output(key)
         self.pump()
+
+    def _ensure_vision_for(self, feature: Feature) -> None:
+        """圖像辨識那條路的放銃分析**需要畫面辨識開著** —— 一起打開。
+
+        它要兩樣東西,兩樣都來自 :class:`~mia.live.vision.VisionWorker`:
+
+        * 牌河的畫面(那邊把每一幀丟過來,見 ``TableLink``)
+        * **自己的手牌** —— 危險度是「我切這張會不會放銃」,沒有手牌就沒有
+          問題可以回答
+
+        所以它不是獨立的功能,是畫面辨識的延伸。使用者回報:只打開放銃分析
+        的話畫面**一直停在「等待對局…」**,而且完全不出聲 —— 拿不到畫面就
+        直接 return,沒有任何訊息。
+
+        自動打開而不是停用開關:使用者要的是危險度,不是記帳。
+
+        **不另外寫一句話解釋。** 畫面辨識的開關自己亮起來就說明了一切,
+        而使用者多半已經在設定裡勾了「強制使用圖像辨識」—— 那時再跳一句
+        「已一併打開」只是在講他已經知道的事。原本那句話還塞進了
+        :attr:`_failure`(「功能起不來」用的格子),會黏在狀態列上不走。
+
+        封包那條路不需要這些,所以只在真的走圖像辨識時才做。問的是**實際
+        在跑的那個 worker**,不是設定 —— 沒有封包來源時本來就走圖像辨識。
+        """
+        if feature.key != features.DANGER:
+            return
+        if getattr(feature.worker, "SOURCE", None) != _SCREEN_SOURCE:
+            return
+        vision = self._features.get(features.VISION)
+        if vision is None or vision.enabled:
+            return
+        self._enable(vision)
+        if vision.enabled:
+            logger.info("{} 要靠畫面,一併打開了{}", feature.name, vision.name)
 
     def _clear_output(self, key: str) -> None:
         """把某個功能在 ViewState 上留下的東西清空。"""
@@ -486,12 +562,9 @@ class LiveRuntime:
             elif key == features.ADVICE:
                 self._viewmodel.update_packet_hand(())
                 self._viewmodel.update_advices([])
-            elif key in (features.DANGER, features.TABLE):
+            elif key == features.DANGER:
                 # None 而不是空報告:「沒有這份資訊」與「算過了但沒有危險」
                 # 是兩件事,而後者會讓人以為現在很安全
-                #
-                # 兩條路共用這一個 slot —— 它們算的是同一件事,只是資訊
-                # 從封包還是從畫面來。所以關掉任何一條都該把它清掉。
                 self._viewmodel.update_dangers(None)
 
     def __enter__(self) -> LiveRuntime:

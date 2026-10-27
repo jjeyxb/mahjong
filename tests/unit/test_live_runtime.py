@@ -1005,3 +1005,28 @@ class TestGamePlatform:
     def test_the_default_is_the_web_version(self, model, bus) -> None:
         """省略時當網頁版 —— 那是功能完整的那一個,也是既有行為。"""
         assert LiveRuntime(model, bus).platform() == WEB
+
+
+class TestTheScreenPathNeedsTheScreen:
+    """圖像辨識那條路的放銃分析要靠畫面辨識 —— 它不是獨立的功能。
+
+    兩樣東西都來自 VisionWorker:牌河的畫面,以及**自己的手牌**(危險度是
+    「我切這張會不會放銃」)。只打開放銃分析的話,使用者看到的是畫面一直
+    停在「等待對局…」。
+    """
+
+    def test_the_source_name_matches_the_worker(self) -> None:
+        """runtime 用字串比對來源,對不上的話就不會一併打開畫面辨識 ——
+        而那時的症狀又是「一直停在等待對局」,沒有任何錯誤訊息。
+        """
+        from mia.live.runtime import _SCREEN_SOURCE
+        from mia.live.table import TableWorker
+
+        assert _SCREEN_SOURCE == TableWorker.SOURCE
+
+    def test_the_packet_path_has_a_different_name(self) -> None:
+        """封包那條不需要畫面,所以兩個名字一定要分得開。"""
+        from mia.live.danger import DangerWorker
+        from mia.live.table import TableWorker
+
+        assert DangerWorker.SOURCE != TableWorker.SOURCE
