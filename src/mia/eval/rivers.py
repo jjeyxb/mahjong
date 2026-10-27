@@ -103,12 +103,23 @@ class RiverState:
             ``toimen``、``kamicha``,與 :data:`~mia.vision.tiles.river.SEATS`
             同序。存成視角而不是絕對座位,是因為畫面上的位置跟著視角走,
             而比對的是畫面。
+
+            這裡是 :attr:`~mia.mjai.table.Player.visible_river` ——
+            **畫面上還看得到的**那些。比對辨識結果要用這個。
+        full: 同序的 :attr:`~mia.mjai.table.Player.river` ——
+            **他打過的所有牌**,被鳴走的也算。
+
+            兩個都要存,因為它們回答不同的問題,而拿錯會得到一份看起來
+            很正常的假報告:比對格線要用 :attr:`rivers`(鳴走的牌畫面上
+            真的不在了),比對 :class:`~mia.mjai.table.TableTracker` 的狀態
+            要用這一個(振聽看的是「他打過」,鳴走了還是現物)。
         boundary: 這不是一個可以評分的狀態,是「從這裡開始畫面上沒有牌河」
             的界標。見 :data:`OFF_SCREEN`。
     """
 
     wall: float
     rivers: tuple[tuple[str, ...], ...]
+    full: tuple[tuple[str, ...], ...] = ()
     boundary: bool = False
 
 
@@ -172,13 +183,16 @@ def build_river_timeline(dump: Path | str) -> RiverTimeline:
                 continue
             if tracker.seat is None:
                 continue
-            rivers = tuple(
-                tuple(tracker.players[(tracker.seat + offset) % 4].visible_river)
-                for offset in range(4)
-            )
-            if timeline.states and timeline.states[-1].rivers == rivers:
-                continue  # 牌河沒變的事件不必記一個狀態
-            timeline.states.append(RiverState(frame.wall_clock, rivers))
+            seats = [tracker.players[(tracker.seat + offset) % 4] for offset in range(4)]
+            rivers = tuple(tuple(p.visible_river) for p in seats)
+            full = tuple(tuple(p.river) for p in seats)
+            last = timeline.states[-1] if timeline.states else None
+            # **兩個都要比過才算沒變。** 只比 rivers 的話,「打出去又立刻被
+            # 鳴走」那一瞬間看得見的河回到原樣,而 full 多了一張 —— 那個
+            # 狀態會被當成重複丟掉,於是那張牌在時間軸上永遠不存在。
+            if last is not None and (last.rivers, last.full) == (rivers, full):
+                continue
+            timeline.states.append(RiverState(frame.wall_clock, rivers, full))
 
     if timeline.states and not seen_wall:
         raise ValueError(f"{dump} 沒有 wall 欄位(舊格式),無法與畫面對齊。")
