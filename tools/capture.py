@@ -26,6 +26,25 @@
     .venv/bin/python tools/capture.py --max-minutes 5
 
 按 Ctrl-C 也會乾淨地收掉兩邊。
+
+牌譜:挑得到素材,但換來對齊的問題
+----------------------------------
+跟機器人打**錄不到想要的東西** —— 他們會不會槓、下家會不會鳴,那是運氣。
+實測整場 ``20261024-123746`` 九次鳴牌,下家 0 次、槓 0 次,於是下家的副露
+角點根本沒有樣本可以校正(見 ``vision/tiles/melds.py`` 的 ``DEFAULT_VIEWS``)。
+
+牌譜是**挑**的,而且雀魂的牌譜可以換視角 —— 同一場看四次就有四個視角,
+某個人鳴牌從他下家看就是上家鳴牌。「下家沒有樣本」這個問題直接消失。
+
+代價是**時間基準沒了**:整場紀錄是 ``fetchGameRecord`` 在一開始一次送來的,
+而畫面要幾分鐘才演完。即時對局那條路靠 ``wall`` 把每一幀配上那一刻的封包,
+牌譜沒有這個東西。所以 ``--replay`` 會:
+
+* 不等 ``end_game``(那個事件不會來),要你自己停;
+* 不跑對齊檢查(它必然回「0 個牌河狀態」,看起來像素材錄壞了)。
+
+**牌譜現在能校正角點,還不能量準確率。** 後者要另外做單調匹配 ——
+牌河張數在一局內只增不減,拿它把幀序列對上動作序列。
 """
 
 from __future__ import annotations
@@ -134,6 +153,10 @@ def main(argv: list[str] | None = None) -> int:
              "人訂的時限正是上次把素材錄壞的原因",
     )
     parser.add_argument(
+        "--replay", action="store_true",
+        help="錄的是**牌譜回放**,不是即時對局。見模組說明的「牌譜」那一段",
+    )
+    parser.add_argument(
         "--autoplay", choices=("tsumogiri", "mortal"), metavar="MODE",
         help="讓程式替你打完整局 —— **只在對電腦的房間用**。見 tools/autoplay.py",
     )
@@ -192,7 +215,9 @@ def main(argv: list[str] | None = None) -> int:
                 if limit is not None and now - started >= limit:
                     print("\n到了 --max-minutes 的時限,停。", flush=True)
                     return True
-                if now - last < _POLL:
+                if args.replay or now - last < _POLL:
+                    # 牌譜模式不輪詢封包。整場紀錄是 fetchGameRecord 一次送來的,
+                    # 不會有 end_game 這個事件 —— 輪詢只是白跑。
                     return False
                 last = now
                 if watcher.poll():
@@ -200,7 +225,14 @@ def main(argv: list[str] | None = None) -> int:
                     return True
                 return False
 
-            print("開始錄。打完整局就會自己停 —— 不用回來按。", flush=True)
+            if args.replay:
+                print(
+                    "牌譜模式:封包不會說「對局結束」,所以**要你自己停**"
+                    "(牌譜播完按 Ctrl-C,或用 --max-minutes)。",
+                    flush=True,
+                )
+            else:
+                print("開始錄。打完整局就會自己停 —— 不用回來按。", flush=True)
             with writer:
                 stats = record_session(
                     backend,
@@ -234,6 +266,18 @@ def main(argv: list[str] | None = None) -> int:
     print(f"畫面  : {stats.frames} 幀(存檔 {stats.stored}),{stats.duration:.0f} 秒")
     print(f"封包  : {dump}")
     print()
+    if args.replay:
+        # **不要跑對齊檢查。** 牌譜的封包沒有逐秒的時間軸,那個檢查必然回
+        # 「0 個牌河狀態」—— 看起來像素材錄壞了,其實是檢查問錯問題。
+        print("牌譜模式:不做封包對齊檢查。")
+        print("  整場紀錄是 fetchGameRecord 在一開始一次送來的,而畫面要幾")
+        print("  分鐘才演完 —— 兩邊沒有共通的時間基準,逐幀對分需要另外做")
+        print("  單調匹配(牌河張數在一局內只增不減)。見 docs/cv_mjai.md。")
+        print()
+        print("  所以這份素材現在能用來**校正角點**(只要幾張人工標的幀),")
+        print("  還不能用來量準確率。")
+        return 0
+
     print("素材好不好 —— 當場驗:")
     subprocess.run(
         [sys.executable, str(ROOT / "tools/eval_rivers.py"),
