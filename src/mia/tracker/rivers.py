@@ -63,6 +63,10 @@ class WatchStats:
         emitted: 發出幾個捨牌事件。
         resolved: 有幾個原本 :data:`UNKNOWN` 的事後被補上。
         calls: 判定為「被鳴走一張」的次數。
+        deferred: 「少了一張但沒有證據」而**先不動**的次數。
+            下一次看到同樣的河才會認定成鳴牌,見 :func:`_conflicts`。
+            偶爾出現是正常的(有一格這次沒被偵測到);一直增加代表
+            那一家的格線對不準。
         confused: 看不懂而整筆丟掉的次數。**這一欄要盯著** ——
             它變大代表辨識或對齊出了問題,而症狀不會出現在別的地方。
     """
@@ -71,6 +75,7 @@ class WatchStats:
     emitted: int = 0
     resolved: int = 0
     calls: int = 0
+    deferred: int = 0
     confused: int = 0
 
 
@@ -90,6 +95,10 @@ def _drop_one(known: Sequence[str], seen: Sequence[str]) -> int | None:
     """``seen`` 是 ``known`` 拿掉**一張**之後的樣子嗎,拿掉的是第幾張。
 
     鳴牌就長這樣:中間少一張,後面整排往前遞補。回 ``None`` 代表不是。
+
+    Note:
+        這只是**形狀**對不對,不是「真的被鳴走了」。未知當萬用字元,
+        所以形狀幾乎永遠對得上 —— 要不要相信它得再問 :func:`_conflicts`。
     """
     if len(seen) + 1 != len(known):
         return None
@@ -98,6 +107,25 @@ def _drop_one(known: Sequence[str], seen: Sequence[str]) -> int | None:
         if all(_fits(a, b) for a, b in zip(rest, seen, strict=True)):
             return cut
     return None
+
+
+def _conflicts(known: Sequence[str], seen: Sequence[str]) -> bool:
+    """同一個位置上,兩邊都確定而且不一樣 —— 河真的挪過了。
+
+    這是「少一張」唯一可信的證據。沒有它的時候,「少一張」與「有一格這次
+    沒被偵測到」**在資料上無法區分**,而兩者的代價天差地遠:
+
+    * 當成少一張 → 整排往前挪 → 位置從此全錯,而且之後每一張都會被
+      當成新捨牌。實測就是這樣多出一張假現物(見 ``RiverWatcher.observe``)。
+    * 當成讀漏了 → 這次不動,下次再說。牌不會跑掉。
+
+    所以沒有證據時不挪。與 ``KyokuWatcher`` 同一個道理:**要靠連續性,
+    不是靠一次觀察。**
+    """
+    return any(
+        a != UNKNOWN and b != UNKNOWN and a != b
+        for a, b in zip(known, seen, strict=False)
+    )
 
 
 @dataclass
@@ -118,10 +146,17 @@ class RiverWatcher:
 
     rivers: list[list[str]] = field(default_factory=lambda: [[] for _ in range(4)])
     stats: WatchStats = field(default_factory=WatchStats)
+    #: 上一次「少了一張但沒有證據」留下的假設,每家一個:
+    #: ``(如果真的少了那張,河會長這樣, 當時看到的河)``。
+    #: 下一次觀察就是這個假設的證據,見 :meth:`observe`。
+    _shrinking: list[tuple[tuple[str, ...], tuple[str, ...]] | None] = field(
+        default_factory=lambda: [None for _ in range(4)], repr=False
+    )
 
     def reset(self) -> None:
         """新的一局。四家的河都清空。"""
         self.rivers = [[] for _ in range(4)]
+        self._shrinking = [None for _ in range(4)]
 
     def observe(self, position: int, tiles: Sequence[str]) -> list[Discard]:
         """收一次觀察,回傳**新**的捨牌事件(可能是空的)。
@@ -140,26 +175,62 @@ class RiverWatcher:
         seen = list(tiles)
 
         if _is_prefix(known, seen):
-            self._fill(position, seen[: len(known)])
-            fresh = [
-                Discard(position=position, index=len(known) + offset, pai=pai)
-                for offset, pai in enumerate(seen[len(known) :])
-            ]
-            self.rivers[position] = [*self.rivers[position], *seen[len(known) :]]
-            self.stats.emitted += len(fresh)
-            return fresh
+            self._shrinking[position] = None
+            return self._advance(position, seen)
 
         cut = _drop_one(known, seen)
         if cut is not None:
-            # 被鳴走一張。**不發事件** —— 那張牌的 dahai 早就發過了,
-            # 它現在只是從畫面上移到別人的副露去。
-            self.stats.calls += 1
-            self.rivers[position] = [*known[:cut], *known[cut + 1 :]]
-            self._fill(position, seen)
+            # 形狀對了還不夠。**未知當萬用字元,所以形狀幾乎永遠對得上** ——
+            # 河的第一格是 ``?`` 的時候,「拿掉第一格」無條件成立。實測
+            # ``['?','4m','4p']`` 遇到只讀到兩格的那一幀就這樣被挪掉一位,
+            # 於是回來的 ``4p`` 看起來是新的,多發了一次,放銃分析因此
+            # 多出一張**假現物**。
+            shorter = tuple([*known[:cut], *known[cut + 1 :]])
+            pending = self._shrinking[position]
+            if _conflicts(known, seen) or (pending is not None and pending[1] == tuple(seen)):
+                self._shrinking[position] = None
+                # 被鳴走一張。**不發事件** —— 那張牌的 dahai 早就發過了,
+                # 它現在只是從畫面上移到別人的副露去。
+                self.stats.calls += 1
+                self.rivers[position] = list(shorter)
+                self._fill(position, seen)
+                return []
+            # 沒有證據就先不動,把「如果真的少了那張」記成一個假設。
+            # 牌不會跑掉,下一次觀察再說。
+            self._shrinking[position] = (shorter, tuple(seen))
+            self.stats.deferred += 1
             return []
 
+        # 形狀完全對不上。但**上一次那個假設可能正好解釋得通** ——
+        # 這是鳴牌最常見的樣子:拿走的一定是剛打出去那張,也就是河裡最後
+        # 一張,所以當下沒有任何位置證據(前面每一格都還在原位)。等到他
+        # 又打了一張,長度補回來而最後一格換人了 —— 這一次既不是前綴也不
+        # 是少一張,而假設套上去立刻說得通。
+        #
+        # 不接這一段的代價實測過:那一家從此每次觀察都進 ``confused``,
+        # 永遠對不回來(calls=0、confused=41),捨牌就這樣整段漏掉。
+        pending = self._shrinking[position]
+        if pending is not None and _is_prefix(list(pending[0]), seen):
+            self._shrinking[position] = None
+            self.stats.calls += 1
+            self.rivers[position] = list(pending[0])
+            return self._advance(position, seen)
+
+        self._shrinking[position] = None
         self.stats.confused += 1
         return []
+
+    def _advance(self, position: int, seen: Sequence[str]) -> list[Discard]:
+        """河只在尾端長長 —— 補上已知的那幾格,尾巴發成新的捨牌。"""
+        known = self.rivers[position]
+        self._fill(position, seen[: len(known)])
+        fresh = [
+            Discard(position=position, index=len(known) + offset, pai=pai)
+            for offset, pai in enumerate(seen[len(known) :])
+        ]
+        self.rivers[position] = [*self.rivers[position], *seen[len(known) :]]
+        self.stats.emitted += len(fresh)
+        return fresh
 
     def _fill(self, position: int, seen: Sequence[str]) -> None:
         """拿新的讀數補上原本未知的格子。
