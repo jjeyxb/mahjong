@@ -215,7 +215,13 @@ class ReplayReport:
             f"  觀察 {w.observations} 次 → 捨牌 {w.emitted} 個,"
             f"補上 {w.resolved},鳴牌 {w.calls}"
         )
-        lines.append(f"  **看不懂 {w.confused}**   先不動 {w.deferred}")
+        # 要看的是 confused - collapsed:換局在清桌、立繪蓋住牌河的時候
+        # 看不懂是**對的反應**,那些次數會把這一欄稀釋掉。
+        lines.append(
+            f"  **看不懂 {w.confused - w.collapsed}**"
+            f"(另有 {w.collapsed} 次是河整個空掉,換局/立繪)"
+            f"   先不動 {w.deferred}"
+        )
         if self.durations:
             ordered = sorted(self.durations)
             p95 = ordered[min(len(ordered) - 1, int(0.95 * len(ordered)))]
