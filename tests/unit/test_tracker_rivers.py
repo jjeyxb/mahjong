@@ -150,6 +150,24 @@ class TestAShortReadIsNotACall:
         assert watcher.stats.confused == 1
         assert watcher.rivers[0] == ["1m", "2m"]
 
+    def test_a_river_that_collapsed_is_counted_apart(self) -> None:
+        """換局在清桌、立繪蓋住整條河 —— 看不懂是**對的反應**。
+
+        這種次數會把 ``confused`` 稀釋掉,而那一欄是 tracker 唯一的診斷。
+        實測一整場 8 次看不懂,7 次是這種。所以要看的是 confused - collapsed。
+        """
+        watcher = RiverWatcher()
+        watcher.observe(0, ["1m", "2m", "3m", "4m", "5m", "6m"])
+        assert watcher.observe(0, []) == []
+        assert (watcher.stats.confused, watcher.stats.collapsed) == (1, 1)
+
+    def test_a_real_misalignment_is_not_counted_as_a_collapse(self) -> None:
+        """河還在、只是對不上 —— 那才是值得查的那一種。"""
+        watcher = RiverWatcher()
+        watcher.observe(0, ["1m", "2m", "3m"])
+        assert watcher.observe(0, ["9s", "9p", "9m", "8m"]) == []
+        assert (watcher.stats.confused, watcher.stats.collapsed) == (1, 0)
+
     def test_a_new_kyoku_clears_the_pending_shrink(self) -> None:
         watcher = RiverWatcher()
         watcher.observe(0, ["1m", "2m"])

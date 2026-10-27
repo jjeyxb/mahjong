@@ -36,6 +36,10 @@ __all__ = ["UNKNOWN", "Discard", "RiverWatcher", "WatchStats"]
 #: 它參與位置的對齊,只是內容待定。
 UNKNOWN = "?"
 
+#: 「河幾乎空了」的門檻(格數)。不是 0 —— 清桌的動畫中間常常還剩一兩格
+#: 讀得到,實測換局前後看到過 1 格與 3 格。
+_COLLAPSED = 3
+
 
 @dataclass(frozen=True, slots=True)
 class Discard:
@@ -69,6 +73,16 @@ class WatchStats:
             那一家的格線對不準。
         confused: 看不懂而整筆丟掉的次數。**這一欄要盯著** ——
             它變大代表辨識或對齊出了問題,而症狀不會出現在別的地方。
+        collapsed: :attr:`confused` 之中「河幾乎整個空掉」的那幾次。
+
+            這一欄是為了讓 :attr:`confused` 還能當診斷用。換局在清桌、
+            立直與和了的立繪蓋住牌河的時候,河會從十幾張變成零 ——
+            看不懂是**對的反應**,而那些次數會把 :attr:`confused` 稀釋掉。
+            實測一整場 8 次看不懂,7 次是這種(換局前後),剩下 1 次是
+            自己那家被遮住而其他三家都滿的 —— 兩者都不是缺陷,但前者
+            完全可預期,後者值得查。
+
+            所以要看的是 ``confused - collapsed``。
     """
 
     observations: int = 0
@@ -77,6 +91,7 @@ class WatchStats:
     calls: int = 0
     deferred: int = 0
     confused: int = 0
+    collapsed: int = 0
 
 
 def _fits(known: str, seen: str) -> bool:
@@ -218,6 +233,10 @@ class RiverWatcher:
 
         self._shrinking[position] = None
         self.stats.confused += 1
+        # 河從十幾張變成零 —— 那是換局在清桌,或是立繪蓋住了整條河。
+        # 看不懂是對的,但這種次數要分開記,不然 confused 當不了診斷。
+        if len(seen) <= _COLLAPSED and len(known) > _COLLAPSED:
+            self.stats.collapsed += 1
         return []
 
     def _advance(self, position: int, seen: Sequence[str]) -> list[Discard]:
