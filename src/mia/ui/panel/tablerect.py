@@ -1,4 +1,4 @@
-"""「框選牌桌範圍」對話框。
+"""「框選整個遊戲畫面」對話框。
 
 為什麼需要手動框
 ----------------
@@ -110,7 +110,7 @@ _MIN_RIVER_CONFIDENT = 0.65
 
 
 class TableRectDialog(QDialog):
-    """框一次牌桌範圍。
+    """框一次整個遊戲畫面。
 
     Args:
         frame: 剛抓到的遊戲畫面。
@@ -131,7 +131,7 @@ class TableRectDialog(QDialog):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("框選牌桌範圍")
+        self.setWindowTitle("框選整個遊戲畫面")
         self._image = frame.image
         self._roi = roi
         self._templates: TemplateSet | None = None
@@ -143,7 +143,7 @@ class TableRectDialog(QDialog):
         layout.setSpacing(10)
 
         hint = QLabel(
-            "框出遊戲畫布 —— 藍色牌桌連同左右兩側的 UI,"
+            "框出**整個遊戲畫面** —— 藍色牌桌連同左右兩側的 UI,"
             "**不要**含瀏覽器的分頁列與網址列。\n"
             "拖完會把從這個框算出來的手牌範圍與四家牌河畫回畫面上,"
             "線沒落在牌上就是框歪了。",

@@ -1244,7 +1244,10 @@ class FakeTableRectPicker:
 
 
 class TestTableRectPicker:
-    """向聽分析頁上的「框選牌桌範圍」。
+    """**放銃分析頁**上的「框選整個遊戲畫面」。
+
+    搬過來的理由:這個框是所有正規化座標的共同原點,而靠它最深的是牌河與
+    寶牌(純畫面那條路全靠它們)。手牌可以直接框,牌河沒有這個退路。
 
     自動校正是從四邊剝除邊框,而它**錯的時候很安靜** —— 實測鎖在載入畫面上
     之後,整場的手牌辨識從 97% 掉到 26%,全程沒有任何錯誤訊息。
@@ -1255,13 +1258,24 @@ class TestTableRectPicker:
         qtbot.addWidget(window)
         return window
 
-    def test_it_lives_on_the_analysis_page(self, qtbot) -> None:
-        """與「框選手牌範圍」並排 —— 兩個都是對著這一頁的內容在調的校正,
-        而且框完這一頁當場就會變。設定頁放的是「整個程式的前提」。
+    def test_it_lives_on_the_danger_page(self, qtbot) -> None:
+        """**靠這個框最深的是牌河與寶牌**,所以它在放銃分析那一頁。
+
+        四家牌河的四個角與寶牌面板的位置全部相對它推導,框歪 3% 格線就
+        整排歪,而純畫面那條路就讀不到東西。手牌有退路(向聽分析那一頁
+        可以直接框手牌範圍,框了之後這個框對手牌就沒有影響),牌河沒有。
+
+        原本在向聽分析頁 —— 那是牌河 CV 還沒重啟之前的擺法。
         """
         window = self._window(qtbot, FakeTableRectPicker())
+        on_danger = window._danger_page.findChildren(QPushButton)  # noqa: SLF001
+        assert window._table_rect_button in on_danger  # noqa: SLF001
+
+    def test_it_is_not_on_the_analysis_page_any_more(self, qtbot) -> None:
+        """搬家要搬乾淨 —— 兩頁各有一顆長得一樣的按鈕最難察覺。"""
+        window = self._window(qtbot, FakeTableRectPicker())
         on_analysis = window._analysis_page.findChildren(QPushButton)  # noqa: SLF001
-        assert window._table_rect_button in on_analysis  # noqa: SLF001
+        assert window._table_rect_button not in on_analysis  # noqa: SLF001
 
     def test_clear_is_disabled_until_something_is_framed(self, qtbot) -> None:
         """沒框過的時候「改回自動」沒有意義 —— 按了什麼都不會發生,
@@ -1281,7 +1295,7 @@ class TestTableRectPicker:
         window = self._window(qtbot, picker)
         window._on_clear_table_rect()  # noqa: SLF001
         assert picker.calls == [None]
-        assert window._table_rect_button.text() == "框選牌桌範圍"  # noqa: SLF001
+        assert window._table_rect_button.text() == "框選整個遊戲畫面"  # noqa: SLF001
 
     def test_modes_without_a_screen_disable_it(self, qtbot) -> None:
         """重播、示範、--no-vision 都沒有畫面可以框。"""
