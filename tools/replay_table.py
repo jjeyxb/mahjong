@@ -12,6 +12,17 @@
 先跑 ``--dry-run``:那一步不辨識,幾秒就知道兩份檔案對不對得上、
 照這個節奏會醒幾輪。
 
+``--sequence``:答案改用單調對齊
+--------------------------------
+預設的答案是 ``stable_at``:狀態維持 ``--settle`` 秒以上才評分。那會**跳過**
+出牌快的那幾輪與局尾最後一張 —— 而那裡有它量不到的錯(``docs/cv_mjai.md``
+§3.4)。牌譜素材則根本沒有時間,只能用這個::
+
+    python tools/replay_table.py <session> <dump> --sequence data/reads.pkl
+
+第一次會先把整場每一張影像讀一遍(多行程,幾分鐘)存到那個檔案,之後重用。
+檔案裡帶著辨識設定的指紋,角點或門檻改過就自動重讀。
+
 這份報告最該看哪一欄
 --------------------
 **「假現物」。** 其他每一欄錯了都還有症狀:棄權會被當成危險(保守),
@@ -28,6 +39,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import pickle
 import sys
 import time
 from pathlib import Path
@@ -38,11 +51,76 @@ from mia.config.loader import load_config
 from mia.eval.align import SETTLE
 from mia.eval.material import parse_table_rect, require_one_calibration
 from mia.eval.replay import replay, schedule
-from mia.eval.rivers import build_river_timeline
+from mia.eval.rivers import RiverFrameResult, build_river_timeline, read_rivers
+from mia.eval.sequence import align_session, fingerprint
 from mia.recorder import SessionReader
 from mia.utils.geometry import Rect
 from mia.utils.logging import setup_logging
-from mia.vision.tiles.classify import DEFAULT_SKIN
+from mia.vision.tiles.classify import DEFAULT_SKIN, TemplateSet
+
+_READER: tuple[SessionReader, TemplateSet, Rect, dict[int, object]] | None = None
+
+
+def _reader_setup(session_dir: Path, table: Rect, skin: str) -> None:
+    global _READER
+    import cv2
+
+    cv2.setNumThreads(1)
+    session = SessionReader(session_dir)
+    _READER = (
+        session,
+        TemplateSet.load(skin),
+        table,
+        {r.index: r for r in session.manifest.frames},
+    )
+
+
+def _reader_work(indices: list[int]) -> list[tuple[int, list[RiverFrameResult]]]:
+    assert _READER is not None, "工人沒有經過 _reader_setup"
+    session, templates, table, by_index = _READER
+    return [
+        (i, read_rivers(session.load_image(by_index[i]), i, templates, table))  # type: ignore[arg-type]
+        for i in indices
+    ]
+
+
+def _reads(
+    args: argparse.Namespace, session: SessionReader, table: Rect, skin: str
+) -> dict[int, list[RiverFrameResult]]:
+    """整場每一張寫過檔的影像讀一次。存檔重用,但**指紋對不上就重讀**。"""
+    path: Path = args.sequence
+    want = fingerprint(table, skin)
+    if path.exists():
+        with path.open("rb") as handle:
+            saved = pickle.load(handle)
+        if saved.get("fingerprint") == want and saved.get("session") == str(args.session):
+            print(f"讀取結果:沿用 {path}(指紋 {want})")
+            return saved["reads"]
+        print(f"讀取結果:{path} 是別的設定或別的錄影讀的,重讀")
+
+    from concurrent.futures import ProcessPoolExecutor
+
+    changed = [r.index for r in session.manifest.frames if r.changed]
+    chunks = [changed[i : i + 24] for i in range(0, len(changed), 24)]
+    reads: dict[int, list[RiverFrameResult]] = {}
+    started = time.monotonic()
+    with ProcessPoolExecutor(
+        max_workers=os.process_cpu_count() or 1,
+        initializer=_reader_setup,
+        initargs=(args.session, table, skin),
+    ) as pool:
+        for block in pool.map(_reader_work, chunks):
+            reads.update(block)
+            print(
+                f"\r  讀取 {len(reads)}/{len(changed)} 張  {time.monotonic() - started:.0f}s ",
+                end="",
+                flush=True,
+            )
+    print()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as handle:
+        pickle.dump({"fingerprint": want, "session": str(args.session), "reads": reads}, handle)
+    return reads
 
 
 def _table_rect(session: SessionReader, args: argparse.Namespace) -> Rect:
@@ -86,6 +164,13 @@ def main(argv: list[str] | None = None) -> int:
         metavar="X,Y,寬,高",
         help="手動指定牌桌矩形(0~1 的比例),蓋過錄製時存的。見 tools/frame_table.py",
     )
+    parser.add_argument(
+        "--sequence",
+        type=Path,
+        default=None,
+        metavar="檔案",
+        help="答案改用單調對齊(牌譜素材必須)。整場讀取結果存在這個檔案重用",
+    )
     parser.add_argument("--log-level", default="WARNING")
     args = parser.parse_args(argv)
     setup_logging(level=args.log_level)
@@ -101,9 +186,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         print("\n節奏 → 會醒幾輪 / 其中幾輪手上沒有新畫面")
         for value in (0.5, 1.0, 2.0):
-            ticks = list(schedule(session, interval=value))
-            starved = sum(1 for t in ticks if t.record is None)
-            print(f"  {value:.1f}s  {len(ticks):5d} 輪,沒畫面 {starved}")
+            plan = list(schedule(session, interval=value))
+            starved = sum(1 for t in plan if t.record is None)
+            print(f"  {value:.1f}s  {len(plan):5d} 輪,沒畫面 {starved}")
         return 0
 
     ticks = len(list(schedule(session, interval=args.interval)))
@@ -112,6 +197,12 @@ def main(argv: list[str] | None = None) -> int:
     if not ticks:
         print("\n一輪都排不出來 —— 這份錄影是空的?")
         return 1
+    skin = args.skin or DEFAULT_SKIN
+    answers = None
+    if args.sequence is not None:
+        answers = align_session(session, timeline, _reads(args, session, table, skin))
+        print(f"單調對齊:{len(answers)} / {len(session.manifest.frames)} 幀有答案")
+
     print(f"\n節奏 {args.interval:.1f}s,共 {ticks} 輪,單行程,開始…")
 
     started = time.monotonic()
@@ -132,10 +223,11 @@ def main(argv: list[str] | None = None) -> int:
         table,
         config=load_config().roi,
         interval=args.interval,
-        skin=args.skin or DEFAULT_SKIN,
+        skin=skin,
         settle=settle,
         limit=args.limit,
         on_tick=tick,
+        answers=answers,
     )
     print("\n")
     print(report.summary())
