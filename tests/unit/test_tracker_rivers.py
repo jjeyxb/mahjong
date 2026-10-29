@@ -22,9 +22,11 @@ class TestItTurnsGrowthIntoDiscards:
         assert watcher.observe(0, ["1m"]) == []
 
     def test_two_tiles_at_once_come_out_in_order(self) -> None:
-        """掉幀或動畫遮擋之後,河可能一次多兩張。河是有序的,照序補發。"""
+        """掉幀或動畫遮擋之後,河可能一次多兩張。河是有序的,照序補發 ——
+        但要等下一次觀察確認過,見 :class:`TestAFlashIsNotADiscard`。"""
         watcher = RiverWatcher()
         watcher.observe(0, ["1m"])
+        assert watcher.observe(0, ["1m", "2m", "3m"]) == []
         assert watcher.observe(0, ["1m", "2m", "3m"]) == [
             Discard(position=0, index=1, pai="2m"),
             Discard(position=0, index=2, pai="3m"),
@@ -34,6 +36,38 @@ class TestItTurnsGrowthIntoDiscards:
         watcher = RiverWatcher()
         watcher.observe(0, ["1m"])
         assert watcher.observe(1, ["9p"]) == [Discard(position=1, index=0, pai="9p")]
+
+
+class TestAFlashIsNotADiscard:
+    """和了 / 立直的過場動畫有一道白光橫過牌河,空格被讀成**有信心的白**。
+
+    發出去就是一張假現物,而且收不回來。重播校正素材,42 輪的假現物全部是
+    這樣來的。那幾幀一次多了好幾格,正常的出牌一次只多一張。
+    """
+
+    def test_a_flash_that_disappears_emits_nothing(self) -> None:
+        watcher = RiverWatcher()
+        watcher.observe(0, ["1m", "2m"])
+        assert watcher.observe(0, ["1m", "2m", "P", "P", "P"]) == []
+        assert watcher.observe(0, ["1m", "2m"]) == []
+        assert watcher.rivers[0] == ["1m", "2m"]
+
+    def test_one_new_tile_is_not_delayed(self) -> None:
+        watcher = RiverWatcher()
+        watcher.observe(0, ["1m", "2m"])
+        assert watcher.observe(0, ["1m", "2m", "P"]) == [Discard(position=0, index=2, pai="P")]
+
+    def test_a_confirmed_jump_may_keep_growing(self) -> None:
+        """確認的那一次河又多了一張 —— 還是同一條河,一起發。"""
+        watcher = RiverWatcher()
+        watcher.observe(0, ["1m"])
+        watcher.observe(0, ["1m", "2m", "3m"])
+        assert [d.pai for d in watcher.observe(0, ["1m", "2m", "3m", "4m"])] == ["2m", "3m", "4m"]
+
+    def test_starting_from_an_empty_river_is_not_delayed(self) -> None:
+        """開局中途接上,一開始就看到滿河。"""
+        watcher = RiverWatcher()
+        assert len(watcher.observe(0, ["1m", "2m", "3m"])) == 3
 
 
 class TestCallsShortenTheRiver:

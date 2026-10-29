@@ -14,7 +14,8 @@
    牌還在桌上,下一幀可能就讀到了。所以 :data:`UNKNOWN` 要當萬用字元用,
    而且事件發出去之後還能被後來的觀察補上。
 3. **一幀之間可能發生不只一件事。** 掉幀、動畫遮擋,回來的時候河已經多了
-   兩張。順序是確定的(河是有序的),所以照序補發就好。
+   兩張。順序是確定的(河是有序的),所以照序補發就好 —— 但要等**下一次
+   觀察**確認過才發,見 :data:`_JUMP`。
 
 什麼時候**不要**發事件
 ----------------------
@@ -39,6 +40,22 @@ UNKNOWN = "?"
 #: 「河幾乎空了」的門檻(格數)。不是 0 —— 清桌的動畫中間常常還剩一兩格
 #: 讀得到,實測換局前後看到過 1 格與 3 格。
 _COLLAPSED = 3
+
+#: 一次觀察裡河長了幾張以上,就先不發、等下一次觀察確認。
+#:
+#: 和了 / 立直的過場動畫有一道白光橫過牌河:空格被看成有牌,而空白的牌面
+#: 模板剛好對上白光 —— 讀成**有信心的白**。發出去就是一張假現物,而且永遠
+#: 留著(動畫結束後河變短,那是「被鳴走」,不會收回已經發過的打牌)。
+#: 重播校正素材,42 輪的假現物**全部**是這樣來的白。
+#:
+#: 那幾幀一次多了 2 / 3 / 5 / 7 格,從來沒有只多 1 格;而一家一秒內正常只會
+#: 多一張。所以只多一張照舊立刻發,不加任何延遲;一次多兩張以上(掉幀)
+#: 延後一輪,下一次還看得到同樣的河才發。白光只停留一瞬間。
+#:
+#: **從空河長出來的不延後** —— 那是開局中途接上,一開始就看到滿河。白光出現
+#: 在和了與立直,那時河裡已經有牌;漏掉的只有「第一巡就立直、別家的河還是
+#: 空的」那一種。
+_JUMP = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,11 +184,16 @@ class RiverWatcher:
     _shrinking: list[tuple[tuple[str, ...], tuple[str, ...]] | None] = field(
         default_factory=lambda: [None for _ in range(4)], repr=False
     )
+    #: 上一次「一口氣長了好幾張」而先不發的那條河,每家一個。見 :data:`_JUMP`。
+    _growing: list[tuple[str, ...] | None] = field(
+        default_factory=lambda: [None for _ in range(4)], repr=False
+    )
 
     def reset(self) -> None:
         """新的一局。四家的河都清空。"""
         self.rivers = [[] for _ in range(4)]
         self._shrinking = [None for _ in range(4)]
+        self._growing = [None for _ in range(4)]
 
     def observe(self, position: int, tiles: Sequence[str]) -> list[Discard]:
         """收一次觀察,回傳**新**的捨牌事件(可能是空的)。
@@ -191,7 +213,21 @@ class RiverWatcher:
 
         if _is_prefix(known, seen):
             self._shrinking[position] = None
+            jumped = self._growing[position]
+            self._growing[position] = None
+            if (
+                known
+                and len(seen) - len(known) >= _JUMP
+                and not (jumped is not None and _is_prefix(jumped, seen))
+            ):
+                # 一口氣長了好幾張,而上一次沒看過 —— 可能是過場的白光。
+                # 先不發,下一次還在才算。
+                self._growing[position] = tuple(seen)
+                self.stats.deferred += 1
+                return []
             return self._advance(position, seen)
+
+        self._growing[position] = None
 
         cut = _drop_one(known, seen)
         if cut is not None:

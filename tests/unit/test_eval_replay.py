@@ -91,6 +91,13 @@ class TestTheGrid:
         _grade_grid(score, ["5mr"], ["5m"])
         assert (score.right, score.wrong) == (1, 0)
 
+    def test_a_red_five_read_as_red_is_not_a_misread_either(self) -> None:
+        """反過來也一樣:模板偶爾給出赤五(``5sr``)而答案是普通五。重播校正
+        素材時這樣被記了 99 次「錯」,全部是同一張牌,沒有一次是真的錯。"""
+        score = SeatScore()
+        _grade_grid(score, ["5s"], ["5sr"])
+        assert (score.right, score.wrong) == (1, 0)
+
     def test_a_missing_cell_is_counted_short(self) -> None:
         score = SeatScore()
         _grade_grid(score, ["1m", "2p", "3s"], ["1m"])
