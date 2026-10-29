@@ -48,6 +48,7 @@ __all__ = [
     "DEFAULT_CORNERS",
     "FACE",
     "ROWS",
+    "SEARCH_ABOVE",
     "SEARCH_BELOW",
     "SEATS",
     "SIDEWAYS_FACE",
@@ -104,6 +105,21 @@ FACE = (0.71, 0.77)
 #: 攤平圖因此比三列高一截(:meth:`RiverView.rectify`)。平面往下自然延伸,
 #: 不需要另外處理邊界。
 SEARCH_BELOW = 30
+
+#: 認牌時搜尋窗往格子**上方**多看幾像素。
+#:
+#: 第三列的牌面頂端貼著格子上緣(落點 0),差個幾像素就跑到格子上面去。窗只
+#: 往下長的話,模板滑不上去,牌面頂端被切掉,而「二」被切掉上面那一橫就是
+#: 「一」—— 校正素材下家第三列有一張二萬,在 49 張不重複影像裡**每一次**都
+#: 有信心地讀成一萬(對手的河,所以是假現物)。往上看 8 像素之後同一格
+#: 讀成二萬、分數 0.84。
+#:
+#: 曾經以為是第三列的牌面比較矮,把第三列的模板壓到 80 —— 錯誤是不見了,
+#: 但那只是讓它從「有信心的一萬」變成「沒信心的一萬」,棄權而已。
+#:
+#: 它也讓第三列不再對角點敏感:角點稍微一動,第三列的落點就會變成負的。
+#: 上一列的牌在一整格(120 像素)之外,模板對不到它。
+SEARCH_ABOVE = 8
 
 #: 「這一格有沒有牌」看的那一塊,佔一格的比例。與 :data:`FACE` 分開的理由
 #: 見那裡。數值就是 :data:`FACE` 改之前的值,有無判斷的所有量測都建立在它上面。
@@ -312,13 +328,24 @@ class RiverView:
 #:    的,把步長調小救不了。所以從「原位 + 沿兩個格軸各平移 ±1 格」共九個
 #:    起點各跑一次 —— 上家正是靠 ``(-1, 0)`` 那個起點才對上的。
 #:
-#: ⚠ **只在一個畫布尺寸上驗過。** 角點是相對牌桌矩形的比例,理論上跟著縮放,
-#: 但沒有第二個尺寸的素材可以證實。
+#: 2026-10-30 重搜(對家除外):改用**兩份素材的多幀真值**(各約 60 幀,
+#: 加一批河排到第三列的幀),目標是兩份的「有信心且對 − 20 x 有信心卻錯 −
+#: 5 x 張數不對」總和。原本的角點是在 110639 一幀上搜的,而 110639 的畫布是
+#: 1.7685 不是 16:9,新素材上上家第六欄因此整場 0 次有信心(503 次棄權)。
+#: 重搜之後兩份素材都進步,見 ``docs/cv_mjai.md`` §3.6。
+#:
+#: **對家刻意不動。** 對家搜出來的角點讓第一、二列從 72% / 56% 升到 91% / 65%,
+#: 但它改變了攤平後的水平比例,橫放的宣言牌對不上旋轉模板 —— 對封包真值,
+#: 對家的立直從 268 次命中變成 0 次。漏掉立直等於把危險牌當安全,正確率
+#: 換不回來。要動對家,得先讓宣言牌的比對不依賴比例。
+#:
+#: ⚠ **只在一種長寬比上驗過。** 角點是相對牌桌矩形的比例,理論上跟著縮放;
+#: 但雀魂在不同長寬比下排版不同(``20260801-112437`` 是 1.83,整份讀不出來)。
 DEFAULT_CORNERS: dict[str, RiverView] = {
-    "own": RiverView(((0.3998, 0.4839), (0.5907, 0.4839), (0.5978, 0.7021), (0.3927, 0.6895))),
-    "shimocha": RiverView(((0.5883, 0.4944), (0.5777, 0.2678), (0.7125, 0.2657), (0.7386, 0.4902))),
+    "own": RiverView(((0.3978, 0.4839), (0.5907, 0.4859), (0.5998, 0.7021), (0.3887, 0.6975))),
+    "shimocha": RiverView(((0.5883, 0.4964), (0.5777, 0.2678), (0.7125, 0.2657), (0.7346, 0.4922))),
     "toimen": RiverView(((0.5836, 0.2720), (0.4073, 0.2804), (0.4144, 0.1350), (0.5777, 0.1392))),
-    "kamicha": RiverView(((0.4160, 0.2667), (0.4077, 0.4960), (0.2468, 0.5002), (0.2847, 0.2667))),
+    "kamicha": RiverView(((0.4160, 0.2667), (0.4077, 0.4920), (0.2488, 0.5002), (0.2847, 0.2667))),
 }
 
 
@@ -332,12 +359,14 @@ def _below(cell: tuple[int, int]) -> int:
 
 
 def search_window(flat: np.ndarray, rect: Rect, cell: tuple[int, int] = CELL) -> np.ndarray:
-    """認一格牌要看的那一塊:格子本身,再往下延伸 :data:`SEARCH_BELOW`。
+    """認一格牌要看的那一塊:格子本身,往下延伸 :data:`SEARCH_BELOW`、
+    往上延伸 :data:`SEARCH_ABOVE`(到影像頂端為止)。
 
     **認牌一律從這裡取,不要自己切 ``flat[rect.as_slice()]``。** 切格子本身的話
     第一列的牌面底部在窗外,模板滑不到正確的位置 —— 那正是二萬讀成一萬的原因。
     """
-    return flat[rect.y : rect.y + rect.height + _below(cell), rect.x : rect.x + rect.width]
+    top = max(rect.y - round(SEARCH_ABOVE * cell[1] / CELL[1]), 0)
+    return flat[top : rect.y + rect.height + _below(cell), rect.x : rect.x + rect.width]
 
 
 #: 覆核用的第二個模板高度,以一格的高度為單位。即 96 像素。
@@ -587,26 +616,20 @@ def find_sideways(
     """
     if river is None:
         river = read_river(flat, cell=cell)
-    width, height = cell
     size = face_size(cell)
     rotated_size = sideways_face_size(cell)
-    window = round(width * _SIDEWAYS_WINDOW)
 
     best: tuple[float, int] | None = None
     wanted = (
         river.filled if candidates is None else tuple(k for k in candidates if k in river.filled)
     )
     for index in wanted:
-        column, row = index % COLUMNS, index // COLUMNS
         upright = classify_river_tile(
             search_window(flat, river.cells[index], cell), templates, size=size
         )
         if upright.score >= CONFIDENT[0] and upright.margin >= CONFIDENT[1]:
             continue
-        patch = flat[
-            row * height : (row + 1) * height,
-            column * width : min(column * width + window, flat.shape[1]),
-        ]
+        patch = _sideways_patch(flat, index, cell)
         upright_score = _top_score(patch, templates, size)
         rotated_score = _top_score(patch, templates.rotated(), rotated_size)
         if upright_score is None or rotated_score is None:
@@ -618,6 +641,20 @@ def find_sideways(
     if best is None:
         return None
     return best[1] if _shift_helps(flat, river, best[1], templates, cell) else None
+
+
+def _sideways_patch(flat: np.ndarray, index: int, cell: tuple[int, int]) -> np.ndarray:
+    """比對橫放牌的那一塊:往右寬到 :data:`_SIDEWAYS_WINDOW` 格,上下與
+    :func:`search_window` 一樣延伸。
+
+    理由與 :data:`SEARCH_ABOVE` 相同:第三列的宣言牌一樣會被切頂。兩份素材
+    對封包真值逐幀比過,換成這個窗之後立直偵測的命中、漏判、誤判**完全不變**。
+    """
+    width, height = cell
+    column, row = index % COLUMNS, index // COLUMNS
+    x = column * width
+    rect = Rect(x, row * height, min(round(width * _SIDEWAYS_WINDOW), flat.shape[1] - x), height)
+    return search_window(flat, rect, cell)
 
 
 def sideways_face_size(cell: tuple[int, int] = CELL) -> tuple[int, int]:
@@ -665,12 +702,7 @@ def classify_sideways(
         設成與最高分相同,差距因此是 0。標籤與分數照樣留著 —— 診斷輸出看得到
         「它以為是什麼」,而上層拿不到「可以採信」。
     """
-    width, height = cell
-    column, row = index % COLUMNS, index // COLUMNS
-    patch = flat[
-        row * height : (row + 1) * height,
-        column * width : min(column * width + round(width * _SIDEWAYS_WINDOW), flat.shape[1]),
-    ]
+    patch = _sideways_patch(flat, index, cell)
     best = classify(patch, templates.rotated(), size=sideways_face_size(cell))
     return Match(
         label=best.label,
