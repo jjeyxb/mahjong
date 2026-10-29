@@ -59,7 +59,6 @@ from mia.vision.tiles.river import (
     SEATS,
     classify_river_tile,
     face_coverage,
-    face_size,
     read_river,
 )
 
@@ -85,6 +84,22 @@ SEAT_NAMES = {"own": "自己", "shimocha": "下家", "toimen": "對家", "kamich
 #: 一局剛開始時四家加起來只有兩三張,那時的「有信心比例」是兩三個樣本的事,
 #: 報出來只會誤導。寧可說「牌河還太空」也不要給一個會晃的數字。
 _MIN_RIVER_TILES = 8
+
+#: 校正用的探針:模板大小 ``(寬, 高)``,而且**只看格子本身**、不往下延伸。
+#:
+#: 刻意**不**用認牌那一套(:data:`~mia.vision.tiles.river.FACE` +
+#: :func:`~mia.vision.tiles.river.search_window`)。兩件事要的東西相反:
+#:
+#: * 認牌要「框偏一點也讀得對」—— 搜尋窗往下延伸,模板自己找落點。
+#: * 校正要「框偏一點就看得出來」。
+#:
+#: 實測同一幀(``tests/fixtures/table_full.jpg``),用認牌那一套打分,上緣偏
+#: 0 / +0.2% / +0.5% 的有信心比例是 75% / 78% / 72%,**平的** —— 偏 0.5% 的框
+#: 會被放行,而那個框上每張牌的正確率是 90.8%,正確的框是 98.0%(1921 幀抽
+#: 500 幀,多出來的是棄權不是錯誤)。舊的探針對同樣的偏移是 83% / 74% / 63%。
+#:
+#: 校正找到的框,認牌那一套在上面也是最好的,所以兩邊不衝突。
+_PROBE_SIZE = (65, 84)
 
 #: 牌河的「有信心比例」低於這個就是框歪了。
 #:
@@ -306,7 +321,7 @@ class TableRectDialog(QDialog):
         """
         if self._templates is None:
             self._templates = TemplateSet.load()
-        size = face_size()
+        size = _PROBE_SIZE
         counts: list[int] = []
         holes: list[str] = []
         confident = total = 0
@@ -540,7 +555,7 @@ def _confident(image: np.ndarray, table: Rect, templates: TemplateSet) -> int:
     同樣是 1.8%、最佳點完全相同。雜訊不是來自門檻的量化,是對齊真的
     改變了哪些牌讀得對。
     """
-    size = face_size()
+    size = _PROBE_SIZE
     total = 0
     for seat in SEATS:
         flat = DEFAULT_CORNERS[seat].rectify(image, table)

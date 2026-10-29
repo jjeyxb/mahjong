@@ -26,6 +26,7 @@ from mia.vision.tiles.river import (
     DEFAULT_CORNERS,
     FACE,
     ROWS,
+    SEARCH_BELOW,
     SEATS,
     SIDEWAYS_FACE,
     SIDEWAYS_SHIFT,
@@ -36,6 +37,7 @@ from mia.vision.tiles.river import (
     face_size,
     find_sideways,
     read_river,
+    search_window,
     sideways_face_size,
 )
 
@@ -84,7 +86,7 @@ def _read(image: np.ndarray, seat: str, templates: TemplateSet) -> list[str]:
     size = face_size()
     out = []
     for index in river.filled:
-        match = classify_river_tile(flat[river.cells[index].as_slice()], templates, size=size)
+        match = classify_river_tile(search_window(flat, river.cells[index]), templates, size=size)
         out.append(normalize_red(ms_to_mjai(match.label)))
     return out
 
@@ -97,8 +99,9 @@ class TestRiverView:
         assert quad.tolist() == [[10, 20], [110, 20], [110, 220], [10, 220]]
 
     def test_rectify_produces_the_canonical_grid(self, table_image: np.ndarray) -> None:
+        """三列,再往下多一截給認牌的搜尋窗。格子的位置不變。"""
         flat = DEFAULT_CORNERS["own"].rectify(table_image, TABLE)
-        assert flat.shape[:2] == (ROWS * CELL[1], COLUMNS * CELL[0])
+        assert flat.shape[:2] == (ROWS * CELL[1] + SEARCH_BELOW, COLUMNS * CELL[0])
 
     @pytest.mark.parametrize("seat", SEATS)
     def test_every_seat_has_corners(self, seat: str) -> None:
@@ -143,7 +146,10 @@ class TestAgainstThePackets:
 
     @pytest.mark.parametrize(
         ("seat", "floor"),
-        [("own", 13), ("shimocha", 16), ("toimen", 13), ("kamicha", 14)],
+        # 2026-10-29 模板改成 64x92 + 往下搜尋之後重量:15/15/15/15。
+        # 下家從 17 掉到 15 —— 第三列兩格變成棄權(不是讀錯),見
+        # ``test_the_perfect_seat_is_now_own``。其他三家持平或上升。
+        [("own", 14), ("shimocha", 14), ("toimen", 14), ("kamicha", 14)],
     )
     def test_each_seat_reads_mostly_right(
         self, seat: str, floor: int, table_image: np.ndarray, templates: TemplateSet
@@ -169,9 +175,18 @@ class TestAgainstThePackets:
             total += len(truth)
         assert right / total >= 0.90, f"{right}/{total}"
 
-    def test_shimocha_is_perfect(self, table_image: np.ndarray, templates: TemplateSet) -> None:
-        """有一家是 17/17 全對 —— 證明這個方法的上限不是「差不多」。"""
-        assert _read(table_image, "shimocha", templates) == EXPECTED["shimocha"].split()
+    def test_the_perfect_seat_is_now_own(
+        self, table_image: np.ndarray, templates: TemplateSet
+    ) -> None:
+        """有一家全對 —— 證明這個方法的上限不是「差不多」。
+
+        原本全對的是下家(17/17),自己是 14/15,錯的那張是 ``2m`` 讀成 ``1m``
+        而且**有信心**。模板改成正確的高度之後(``FACE`` 的說明)自己變成
+        15/15,下家第三列兩格的分數變低、變成棄權 —— 第三列的牌面落點與
+        高度跟前兩列不同,新尺寸是照前兩列量的。整張圖原始正確數持平
+        (60/65),有信心的錯 1 → 0。
+        """
+        assert _read(table_image, "own", templates) == EXPECTED["own"].split()
 
     def test_confident_reads_are_rarely_wrong(
         self, table_image: np.ndarray, templates: TemplateSet
@@ -193,7 +208,7 @@ class TestAgainstThePackets:
                 if position >= len(truth):
                     continue
                 match = classify_river_tile(
-                    flat[river.cells[index].as_slice()], templates, size=size
+                    search_window(flat, river.cells[index]), templates, size=size
                 )
                 if match.is_confident and normalize_red(ms_to_mjai(match.label)) != truth[position]:
                     silent += 1
@@ -320,7 +335,7 @@ class TestTwoScalesMustAgree:
         size = face_size()
         agreed = 0
         for index in river.filled:
-            cell = flat[river.cells[index].as_slice()]
+            cell = search_window(flat, river.cells[index])
             checked = classify_river_tile(cell, templates, size=size)
             # 基準要用**同一組參數** —— 牌河是開 merge_red 的(赤五與普通五
             # 在這裡等價)。拿沒開的去比,差的是次高分的挑法,不是覆核。
@@ -338,7 +353,7 @@ class TestTwoScalesMustAgree:
         river = read_river(flat)
         size = face_size()
         for index in river.filled:
-            cell = flat[river.cells[index].as_slice()]
+            cell = search_window(flat, river.cells[index])
             checked = classify_river_tile(cell, templates, size=size)
             if checked.runner_up_score == checked.score:
                 assert checked.margin == 0.0
@@ -353,7 +368,7 @@ class TestTwoScalesMustAgree:
         沒在運作」—— 那不會有任何錯誤訊息。
         """
         flat = DEFAULT_CORNERS["own"].rectify(table_image, TABLE)
-        cell = flat[read_river(flat).cells[0].as_slice()]
+        cell = search_window(flat, read_river(flat).cells[0])
         half = (face_size()[0] // 2, face_size()[1] // 2)
         # 只要不拋錯、而且確實跑了兩次就夠 —— 第二個尺度若按 CELL 算,
         # 這裡會拿到一個比格子還大的模板而拿不到結果。
@@ -389,7 +404,7 @@ class TestTheSidewaysReachTile:
         flat = self._flat(table_image)
         river = read_river(flat)
         upright = classify_river_tile(
-            flat[river.cells[8].as_slice()], templates, size=face_size()
+            search_window(flat, river.cells[8]), templates, size=face_size()
         )
         rotated = classify_sideways(flat, 8, templates)
         want = EXPECTED["toimen"].split()[8]
@@ -441,7 +456,7 @@ class TestTheSidewaysReachTile:
         for sideways in (None, 8):
             river = read_river(flat, sideways=sideways)
             match = classify_river_tile(
-                flat[river.cells[9].as_slice()], templates, size=size
+                search_window(flat, river.cells[9]), templates, size=size
             )
             got.append(normalize_red(ms_to_mjai(match.label)))
         assert got[0] != want

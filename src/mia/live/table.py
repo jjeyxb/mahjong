@@ -69,6 +69,7 @@ from mia.vision.tiles.river import (
     face_size,
     find_sideways,
     read_river,
+    search_window,
 )
 
 __all__ = ["TableLink", "TableWorker"]
@@ -260,7 +261,7 @@ class TableWorker(threading.Thread):
                 known.append(UNKNOWN)
                 continue
             match = classify_river_tile(
-                flat[river.cells[cell].as_slice()], self._templates, size=size
+                search_window(flat, river.cells[cell]), self._templates, size=size
             )
             confident = (
                 match.score >= CONFIDENT[0]
