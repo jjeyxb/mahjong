@@ -48,6 +48,7 @@ __all__ = [
     "DEFAULT_CORNERS",
     "FACE",
     "ROWS",
+    "SEARCH_BELOW",
     "SEATS",
     "SIDEWAYS_FACE",
     "SIDEWAYS_SHIFT",
@@ -60,6 +61,7 @@ __all__ = [
     "find_sideways",
     "is_face_up",
     "read_river",
+    "search_window",
 ]
 
 #: 牌河的格數。雀魂固定 6 格一排、三排。
@@ -76,10 +78,36 @@ SEATS = ("own", "shimocha", "toimen", "kamicha")
 #: 對得上,不是還原物理尺寸 —— 模板本身就是斜著畫的貼圖,不是正投影。
 CELL = (90, 120)
 
-#: 牌面佔一格的比例 ``(寬, 高)``。手牌是 0.84,牌河小得多 —— 一格裡除了牌面
-#: 還含著牌縫與相鄰牌的邊緣。套錯會讓模板大一圈,分數整片掉下來,
-#: 而症狀看起來像幾何沒校好。
-FACE = (0.72, 0.70)
+#: 認牌用的模板,佔一格的比例 ``(寬, 高)``。即 64 x 92 像素。
+#:
+#: 原本是 0.72 x 0.70(65 x 84),那是「整體最佳」掃出來的 —— 但掃描時搜尋
+#: 範圍就是格子本身,而牌面在格子裡**比格子低**:第一列的牌面頂端在格子
+#: 下方約 30 像素處,真正的高度約 92,加起來超出格子。高的模板塞不下,
+#: 掃描只好選一個塞得下的矮模板。被壓扁 9% 的模板讓「二」的兩橫間距對不上,
+#: 一萬那一橫反而落在中間 —— 二萬在一份素材上**一次都沒認對過**,13.5%
+#: 有信心地讀成一萬(``docs/cv_mjai.md`` §3.5)。
+#:
+#: 改成正確的高度,同時讓搜尋往下延伸(:data:`SEARCH_BELOW`)。兩份素材上
+#: 量到的最佳尺寸一致(寬 64,高 92;對家 97~102),而**正確率與靜默錯誤
+#: 同時改善** —— 不是門檻上的交換,是原本的幾何設定就錯了。
+#:
+#: ⚠ 只決定**模板**的大小。「這一格有沒有牌」看的是 :data:`_OCCUPANCY_FACE`,
+#: 刻意不跟著動:張數判斷沒有問題,改它只會冒險。
+FACE = (0.71, 0.77)
+
+#: 認牌時搜尋窗往格子**下方**多看幾像素(以 :data:`CELL` 的高度為準)。
+#:
+#: 見 :data:`FACE`。牌面在格子裡的落點每一列不同(第一列約 30、第二列約 12、
+#: 第三列 0),所以不能把格線整個往下挪 —— 那會讓第三列反過來被切掉。
+#: 窗往下長,讓模板自己找落點,那正是 :func:`cv2.matchTemplate` 的工作。
+#:
+#: 攤平圖因此比三列高一截(:meth:`RiverView.rectify`)。平面往下自然延伸,
+#: 不需要另外處理邊界。
+SEARCH_BELOW = 30
+
+#: 「這一格有沒有牌」看的那一塊,佔一格的比例。與 :data:`FACE` 分開的理由
+#: 見那裡。數值就是 :data:`FACE` 改之前的值,有無判斷的所有量測都建立在它上面。
+_OCCUPANCY_FACE = (0.72, 0.70)
 
 #: 牌河自己的信心門檻 ``(最低分數, 最小差距)``。
 #:
@@ -255,7 +283,9 @@ class RiverView:
             cell: 攤平後一格的大小。
 
         Returns:
-            ``(3 * cell高, 6 * cell寬)`` 的 BGR 影像,牌面是正的。
+            ``(3 * cell高 + 下方延伸, 6 * cell寬)`` 的 BGR 影像,牌面是正的。
+            比三列高一截,是給認牌的搜尋窗往下看用的(:data:`SEARCH_BELOW`)。
+            格子的位置不變,第三列以下只是平面的延伸。
         """
         width, height = cell
         target = np.array(
@@ -263,7 +293,8 @@ class RiverView:
             dtype=np.float32,
         )
         matrix = cv2.getPerspectiveTransform(self.quad(table), target)
-        return cv2.warpPerspective(image, matrix, (COLUMNS * width, ROWS * height))
+        below = _below(cell)
+        return cv2.warpPerspective(image, matrix, (COLUMNS * width, ROWS * height + below))
 
 
 #: 四家的角點。
@@ -296,7 +327,30 @@ def face_size(cell: tuple[int, int] = CELL) -> tuple[int, int]:
     return round(FACE[0] * cell[0]), round(FACE[1] * cell[1])
 
 
-#: 覆核用的第二個模板高度,以一格的高度為單位。
+def _below(cell: tuple[int, int]) -> int:
+    return round(SEARCH_BELOW * cell[1] / CELL[1])
+
+
+def search_window(flat: np.ndarray, rect: Rect, cell: tuple[int, int] = CELL) -> np.ndarray:
+    """認一格牌要看的那一塊:格子本身,再往下延伸 :data:`SEARCH_BELOW`。
+
+    **認牌一律從這裡取,不要自己切 ``flat[rect.as_slice()]``。** 切格子本身的話
+    第一列的牌面底部在窗外,模板滑不到正確的位置 —— 那正是二萬讀成一萬的原因。
+    """
+    return flat[rect.y : rect.y + rect.height + _below(cell), rect.x : rect.x + rect.width]
+
+
+#: 覆核用的第二個模板高度,以一格的高度為單位。即 96 像素。
+#:
+#: 2026-10-29 改成 0.803:主模板從 0.70 改成 0.77(見 :data:`FACE`),覆核維持
+#: 原本 0.73 / 0.70 的**比例**(92 → 96)。維持比例而不是取整數 0.80,是因為
+#: 覆核高度由 :func:`classify_river_tile` 依呼叫端給的 ``size`` 按比例推 ——
+#: 校正的探針(``ui/panel/tablerect.py``)刻意用舊的 84 高,比例不變它才會
+#: 跟以前一模一樣(84 → 88)。實測覆核 96 與單一尺度在兩份素材上結果
+#: 相同 —— 主模板的高度對了之後,第二個尺度不再擋下任何東西。留著是因為
+#: 它不花正確率,而它當初擋的那一類錯(尺度給錯人)換一份素材可能又出現。
+#:
+#: 以下是改之前的紀錄。
 #:
 #: 為什麼要第二個尺度
 #: ------------------
@@ -326,7 +380,7 @@ def face_size(cell: tuple[int, int] = CELL) -> tuple[int, int]:
 #: 取「一致 0.73」:靜默錯誤降到不到三分之一,只多花 0.93 個百分點的棄權。
 #: 「取高分」那一列每張牌最漂亮、棄權也最低,但**靜默錯誤只降一半** ——
 #: 牌河沒人會去核對,那一欄才是該看的。見 :data:`CONFIDENT` 的同一個理由。
-CHECK_FACE_HEIGHT = 0.73
+CHECK_FACE_HEIGHT = 0.77 * 0.73 / 0.70
 
 
 def classify_river_tile(
@@ -539,12 +593,14 @@ def find_sideways(
     window = round(width * _SIDEWAYS_WINDOW)
 
     best: tuple[float, int] | None = None
-    wanted = river.filled if candidates is None else tuple(
-        k for k in candidates if k in river.filled
+    wanted = (
+        river.filled if candidates is None else tuple(k for k in candidates if k in river.filled)
     )
     for index in wanted:
         column, row = index % COLUMNS, index // COLUMNS
-        upright = classify_river_tile(flat[river.cells[index].as_slice()], templates, size=size)
+        upright = classify_river_tile(
+            search_window(flat, river.cells[index], cell), templates, size=size
+        )
         if upright.score >= CONFIDENT[0] and upright.margin >= CONFIDENT[1]:
             continue
         patch = flat[
@@ -625,9 +681,7 @@ def classify_sideways(
     )
 
 
-def _top_score(
-    patch: np.ndarray, templates: TemplateSet, size: tuple[int, int]
-) -> float | None:
+def _top_score(patch: np.ndarray, templates: TemplateSet, size: tuple[int, int]) -> float | None:
     """整套模板裡最高的那個相關係數。模板比窗還大就回 ``None``。"""
     top: float | None = None
     for _, face in templates.scaled(size):
@@ -655,7 +709,7 @@ def _confident_count(
         if x < 0 or x + width > flat.shape[1]:
             continue
         match = classify_river_tile(
-            flat[row * height : (row + 1) * height, x : x + width], templates, size=size
+            search_window(flat, Rect(x, row * height, width, height), cell), templates, size=size
         )
         if match.score >= CONFIDENT[0] and match.margin >= CONFIDENT[1]:
             found += 1
@@ -688,7 +742,7 @@ def _shift_helps(
 def _face_of(cell: Rect, size: tuple[int, int]) -> Rect:
     """格子正中央、牌面該在的那一塊。
 
-    **有無判斷只能看這裡,不能看整格。** 一格比一張牌大一圈(:data:`FACE`
+    **有無判斷只能看這裡,不能看整格。** 一格比一張牌大一圈(:data:`_OCCUPANCY_FACE`
     是 0.72 x 0.70,也就是牌面只佔一格的一半),所以一格裡裝著一張牌時,
     另外一半是桌布 —— 整格取中位數會落在牌與桌布之間。
 
@@ -696,7 +750,8 @@ def _face_of(cell: Rect, size: tuple[int, int]) -> Rect:
     110 —— 判成空的。症狀是「每局開頭的幀全部被拒絕」,而 own 的採用率
     因此只有一半。
     """
-    face_width, face_height = face_size(size)
+    face_width = round(_OCCUPANCY_FACE[0] * size[0])
+    face_height = round(_OCCUPANCY_FACE[1] * size[1])
     return Rect(
         cell.x + (cell.width - face_width) // 2,
         cell.y + (cell.height - face_height) // 2,

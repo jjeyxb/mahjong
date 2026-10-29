@@ -59,6 +59,7 @@ from mia.vision.tiles.river import (
     face_size,
     find_sideways,
     read_river,
+    search_window,
 )
 
 __all__ = [
@@ -393,7 +394,7 @@ def _read_cell(
         return classify_sideways(flat, index, templates)
     if index in river.clipped:
         return Match(label="?", score=0.0, runner_up="?", runner_up_score=0.0)
-    return classify_river_tile(flat[river.cells[index].as_slice()], templates, size=size)
+    return classify_river_tile(search_window(flat, river.cells[index]), templates, size=size)
 
 
 @dataclass(slots=True)
