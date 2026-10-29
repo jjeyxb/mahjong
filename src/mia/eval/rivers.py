@@ -28,7 +28,7 @@ from __future__ import annotations
 import bisect
 from collections import Counter
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -72,6 +72,7 @@ __all__ = [
     "align_rivers",
     "build_river_timeline",
     "evaluate_rivers",
+    "read_rivers",
     "summarize_rivers",
 ]
 
@@ -327,9 +328,26 @@ def evaluate_rivers(
         templates: 牌面模板集。
         table: 牌桌矩形。
     """
+    return [
+        replace(result, truth=frame.truth.rivers[position])
+        for position, result in enumerate(read_rivers(image, frame.index, templates, table))
+    ]
+
+
+def read_rivers(
+    image: np.ndarray, index: int, templates: TemplateSet, table: Rect
+) -> list[RiverFrameResult]:
+    """只讀,不配答案。:attr:`RiverFrameResult.truth` 留空。
+
+    與 :func:`evaluate_rivers` 分開,是因為**答案可能還不知道**:牌譜素材
+    沒有時間基準,要先把整場讀完才對得出哪一幀是哪個狀態
+    (見 :mod:`mia.eval.sequence`)。讀一次、之後用 :func:`dataclasses.replace`
+    換上答案,也讓兩種對齊方式可以拿**同一批讀取結果**來比 —— 差異只會
+    來自對齊本身。
+    """
     size = face_size()
     results = []
-    for position, seat in enumerate(SEATS):
+    for seat in SEATS:
         flat = DEFAULT_CORNERS[seat].rectify(image, table)
         river = read_river(flat)
         # 立直的宣言牌橫躺著,它**本身**與同一列後面的每一張都對不上格線。
@@ -340,9 +358,9 @@ def evaluate_rivers(
         matches = [_read_cell(flat, river, i, templates, size) for i in river.filled]
         results.append(
             RiverFrameResult(
-                index=frame.index,
+                index=index,
                 seat=seat,
-                truth=frame.truth.rivers[position],
+                truth=(),
                 predicted=tuple(normalize_red(ms_to_mjai(m.label)) for m in matches),
                 scores=tuple(m.score for m in matches),
                 margins=tuple(m.margin for m in matches),
