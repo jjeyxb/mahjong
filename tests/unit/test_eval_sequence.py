@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from mia.eval.rivers import RiverFrameResult, RiverState
 from mia.eval.sequence import (
@@ -180,3 +181,31 @@ class TestInterior:
 
     def test_zero_keeps_everything(self) -> None:
         assert interior(np.array([0, 1]), 0).all()
+
+
+class TestFingerprint:
+    """快取的讀取結果靠指紋判斷還能不能用。漏掉一個會改變讀法的參數,
+    過期的讀取就會冒充現在這套辨識的結果,而報告看起來完全正常。"""
+
+    def test_it_changes_with_the_search_window(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import mia.vision.tiles.river as river
+        from mia.eval.sequence import fingerprint
+        from mia.utils.geometry import Rect
+
+        table = Rect(0, 174, 2560, 1440)
+        before = fingerprint(table, "default")
+        monkeypatch.setattr(river, "SEARCH_ABOVE", river.SEARCH_ABOVE + 1)
+        assert fingerprint(table, "default") != before
+
+    def test_it_changes_with_the_corners(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import mia.vision.tiles.river as river
+        from mia.eval.sequence import fingerprint
+        from mia.utils.geometry import Rect
+
+        table = Rect(0, 174, 2560, 1440)
+        before = fingerprint(table, "default")
+        corners = dict(river.DEFAULT_CORNERS)
+        own = corners["own"].corners
+        corners["own"] = river.RiverView(((own[0][0] + 0.001, own[0][1]), *own[1:]))
+        monkeypatch.setattr(river, "DEFAULT_CORNERS", corners)
+        assert fingerprint(table, "default") != before
