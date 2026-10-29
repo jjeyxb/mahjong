@@ -12,7 +12,9 @@ import numpy as np
 from mia.eval.rivers import RiverFrameResult, RiverState
 from mia.eval.sequence import (
     COUNT_WEIGHT,
+    UNREAD_WEIGHT,
     Observation,
+    _steps,
     align_monotone,
     cost_matrix,
     interior,
@@ -81,10 +83,62 @@ class TestCost:
         assert cost[0, 0] == 1
 
     def test_an_unreadable_seat_costs_nothing_against_any_state(self) -> None:
+        """開局的空桌除外 —— 見 :class:`TestBetweenKyokus`。"""
         cost = cost_matrix(
-            [seen(None, None, None, None)], [state("", "", "", ""), state("1m", "2m", "", "")]
+            [seen(None, None, None, None)], [state("9p", "", "", ""), state("1m", "2m", "", "")]
         )
         assert cost.tolist() == [[0, 0]]
+
+
+BOUNDARY = RiverState(0.0, (), boundary=True)
+
+
+class TestBetweenKyokus:
+    """結算面板蓋住的那幾家讀成「0 張而且連續」—— 與新局的空桌一模一樣。
+    第一版把結算畫面配進了下一局,tracker 還握著上一局的河,於是每一張
+    都被算成假現物。"""
+
+    def test_a_boundary_costs_like_an_empty_table_but_ignores_unreadable_seats(self) -> None:
+        cost = cost_matrix([seen("1m 2m", None, "", None)], [BOUNDARY])
+        assert cost[0, 0] == 2 * COUNT_WEIGHT
+
+    def test_an_opening_table_wants_all_four_seats_readable(self) -> None:
+        cost = cost_matrix([seen("", None, "", None)], [state("", "", "", "")])
+        assert cost[0, 0] == 2 * UNREAD_WEIGHT
+
+    def test_the_penalty_is_only_for_the_opening_table(self) -> None:
+        cost = cost_matrix([seen("1m", None, "", None)], [state("1m", "", "", "")])
+        assert cost[0, 0] == 0
+
+    def test_a_half_covered_table_stays_in_the_boundary(self) -> None:
+        states = [state("1m 2m", "3m", "4m", "5m"), BOUNDARY, state("", "", "", "")]
+        frames = [
+            seen("1m 2m", "3m", "4m", "5m"),
+            seen("", None, "", None),  # 結算面板蓋住了兩家
+            seen("", "", "", ""),  # 新局的空桌,四家都讀得到
+        ]
+        assert align_monotone(cost_matrix(frames, states)).tolist() == [0, 1, 2]
+
+    def test_a_fully_empty_table_still_opens_the_next_kyoku(self) -> None:
+        states = [BOUNDARY, state("", "", "", "")]
+        assert align_monotone(cost_matrix([seen("", "", "", "")], states)).tolist() == [1]
+
+
+class TestSteps:
+    def test_it_starts_with_a_boundary_for_the_lobby(self) -> None:
+        from mia.eval.rivers import RiverTimeline
+
+        steps = _steps(RiverTimeline(states=[state("", "", "", "")]).freeze())
+        assert [s.boundary for s in steps] == [True, False]
+
+    def test_back_to_back_boundaries_merge(self) -> None:
+        """``hora`` 接著 ``end_kyoku``,對畫面是同一段「沒有牌河」。"""
+        from mia.eval.rivers import RiverTimeline
+
+        timeline = RiverTimeline(
+            states=[state("1m", "", "", ""), BOUNDARY, BOUNDARY, state("", "", "", "")]
+        )
+        assert [s.boundary for s in _steps(timeline)] == [True, False, True, False]
 
 
 class TestAlign:

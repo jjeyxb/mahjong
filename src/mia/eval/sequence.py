@@ -23,33 +23,61 @@
 張數佔大頭是刻意的:一局之內每一個 ``dahai`` 正好讓某一家多一張,所以
 四家的張數組合幾乎就唯一決定了狀態;牌面只在張數打平時幫忙分辨。
 
-⚠ 這個對齊會偏袒 CV
---------------------
-對齊是用 CV 自己的讀取決定的。狀態交界處,讀短一張的那一幀會被配到
-**前一個**狀態 —— 而在那個狀態下它看起來是對的。即時素材的 ``stable_at``
-用「演完了沒」跳過交界,這裡沒有時間可以用,所以改成**丟掉每一段頭尾
-幾幀**(:func:`interior`)。
+局與局之間
+----------
+封包裡的局邊界(和了、流局、結算)也是序列裡的一步,而那段時間畫面上
+**沒有可以評分的牌河** —— 結算面板蓋住、立繪蓋住。配到那裡的幀不給答案。
 
-這個偏差有多大不是用猜的:即時素材兩種對齊都做得出來,拿同一批讀取結果
-各評一次,差多少就是偏多少。見 ``docs/cv_mjai.md`` §3.4。
+第一版沒有這一步,結果結算畫面被配到**下一局的空桌**:面板蓋住的那幾家
+讀成 0 張而且連續,與空桌完全吻合。tracker 這時候正確地還握著上一局的河,
+於是每一張都被算成假現物(一場 555 張)。
+
+分得開靠的是 :class:`~mia.tracker.kyoku.KyokuWatcher` 早就在用的那條規則
+(``docs/cv_mjai.md`` §4.1):**新局的空桌是四家都 0 張而且都讀得到**。
+所以:
+
+* 邊界的代價等於「四家都空」,但讀不到的家不扣分 —— 面板蓋住什麼都可以。
+* 一局開頭那個四家都空的狀態,每有一家讀不到就加罰 :data:`UNREAD_WEIGHT`。
+
+只讀到一部分是空的,邊界比較便宜;四家都讀成空的,兩者打平,平手往後配
+進新局 —— 與 ``KyokuWatcher`` 宣告新局的時機一致。
+
+會不會偏袒 CV
+-------------
+擔心過:對齊是用 CV 自己的讀取決定的,交界處讀短一張的幀可能被配到前一個
+狀態而「看起來是對的」。所以寫了 :func:`interior`(丟掉每段頭尾幾幀)。
+
+實測沒有發生。即時素材兩種對齊都做得出來,拿同一批讀取結果比:真時間
+有答案的 1160 幀,這裡配到的狀態**全部相同**(含鳴走的牌)。張數佔代價
+大頭,單一幀讀錯推不動整條路徑。``interior`` 留著,但不是主要的防線。
+
+它反而看得**更多**:``stable_at`` 會跳過狀態不到 1 秒的幀(出牌快、局尾),
+這裡不會 —— 而那裡有舊評分量不到的真錯誤。見 ``docs/cv_mjai.md`` §3.4。
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import hashlib
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
 
-from mia.eval.rivers import RiverFrameResult, RiverState
+from mia.eval.rivers import RiverFrameResult, RiverState, RiverTimeline
+from mia.recorder.session import SessionReader
 from mia.tracker import UNKNOWN
+from mia.utils.geometry import Rect
+from mia.vision.tiles import river as _river
 from mia.vision.tiles.river import CONFIDENT, SEATS
 
 __all__ = [
     "COUNT_WEIGHT",
+    "UNREAD_WEIGHT",
     "Observation",
     "align_monotone",
+    "align_session",
     "cost_matrix",
+    "fingerprint",
     "interior",
     "observe",
 ]
@@ -60,6 +88,15 @@ __all__ = [
 #: 是九成以上,而有信心卻認錯是 0.19%。真的出現張數不符,幾乎都是配錯了
 #: 狀態。
 COUNT_WEIGHT = 2.0
+
+#: 一局開頭的空桌,每有一家讀不到的加罰。見模組說明的「局與局之間」。
+#:
+#: 等於 :data:`COUNT_WEIGHT`:讀不到的那一家可能藏著任何張數,當成「至少一張」
+#: 來罰,就足以讓只讀到部分空桌的幀留在邊界。
+UNREAD_WEIGHT = COUNT_WEIGHT
+
+#: 邊界狀態在代價計算裡長的樣子:四家都空。
+_EMPTY = ((), (), (), ())
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,15 +149,18 @@ def _seat_cost(seen: tuple[str, ...], truth: tuple[str, ...]) -> float:
 def cost_matrix(observations: Sequence[Observation], states: Sequence[RiverState]) -> np.ndarray:
     """``(幀數, 狀態數)`` 的代價表。
 
+    ``states`` 可以含邊界(``boundary=True``),見模組說明的「局與局之間」。
+
     逐格算是幀數 × 狀態數 × 四家,幾百萬次比對。但相鄰狀態之間只有一家
     在變,所以每一家**不同的河**其實很少 —— 先對每一家各自去重,算一張
     小表再查,快兩個數量級。
     """
     total = np.zeros((len(observations), len(states)), dtype=np.float64)
+    rivers = [_EMPTY if s.boundary else s.rivers for s in states]
     for position in range(len(SEATS)):
         truths: dict[tuple[str, ...], int] = {}
         state_ids = np.array(
-            [truths.setdefault(s.rivers[position], len(truths)) for s in states], dtype=np.intp
+            [truths.setdefault(r[position], len(truths)) for r in rivers], dtype=np.intp
         )
         seens: dict[tuple[str, ...], int] = {}
         frame_ids = np.full(len(observations), -1, dtype=np.intp)
@@ -135,6 +175,16 @@ def cost_matrix(observations: Sequence[Observation], states: Sequence[RiverState
         )
         rows = frame_ids >= 0
         total[rows] += table[frame_ids[rows]][:, state_ids]
+
+    # 一局開頭的空桌要四家都讀得到才算數。見模組說明的「局與局之間」。
+    opening = np.array(
+        [not s.boundary and all(len(r) == 0 for r in s.rivers) for s in states], dtype=bool
+    )
+    if opening.any():
+        unread = np.array(
+            [sum(r is None for r in o.rivers) for o in observations], dtype=np.float64
+        )
+        total[:, opening] += UNREAD_WEIGHT * unread[:, None]
     return total
 
 
@@ -150,7 +200,7 @@ def align_monotone(cost: np.ndarray) -> np.ndarray:
     frames, states = cost.shape
     if frames == 0 or states == 0:
         return np.zeros(frames, dtype=np.intp)
-    best = np.empty_like(cost)
+    best = np.empty(cost.shape, dtype=np.float32)
     best[0] = cost[0]
     for t in range(1, frames):
         best[t] = cost[t] + np.minimum.accumulate(best[t - 1])
@@ -184,3 +234,77 @@ def interior(path: np.ndarray, edge: int) -> np.ndarray:
         keep[start : min(end, start + edge)] = False
         keep[max(start, end - edge) : end] = False
     return keep
+
+
+def align_session(
+    session: SessionReader,
+    timeline: RiverTimeline,
+    reads: Mapping[int, Sequence[RiverFrameResult]],
+) -> dict[int, RiverState]:
+    """整份錄影的每一幀配一個狀態。取代 ``stable_at`` 的那一份答案。
+
+    Args:
+        session: 錄影。
+        timeline: 封包建出來的狀態序列。**只用順序,不用 wall** —— 牌譜素材
+            的 wall 全部一樣。
+        reads: 每一張**有寫檔的**幀(``changed``)的讀取結果,以幀序號為鍵。
+            沒有變化的幀畫面與前一張相同,沿用寫出那張影像的幀。
+
+    Returns:
+        幀序號 → 狀態。兩種幀不在裡面:
+
+        * 四家都讀不了的 —— 那一幀沒有任何證據,路徑落在哪裡只是平手時
+          往後配的結果,拿它當答案等於自己編一個。
+        * 配到局邊界的 —— 那段時間畫面上沒有牌河。
+
+    Note:
+        對齊在**全部幀**上做,不只有變化的那些。有變化的幀幾乎全是動畫
+        中途(錄影只在畫面變化時存檔),只拿它們對齊等於只用最不可信的
+        那一段;靜止的幀在這裡就是「這個狀態持續了多久」的權重。
+    """
+    source: dict[str, int] = {}
+    for record in session.manifest.frames:
+        if record.changed:
+            source[record.image] = record.index
+    records = [r for r in session.manifest.frames if source.get(r.image) in reads]
+    observations = [observe(reads[source[r.image]]) for r in records]
+    states = _steps(timeline)
+    path = align_monotone(cost_matrix(observations, states))
+    return {
+        record.index: states[k]
+        for record, k, observation in zip(records, path, observations, strict=True)
+        if observation.informative and not states[k].boundary
+    }
+
+
+def _steps(timeline: RiverTimeline) -> list[RiverState]:
+    """對齊用的狀態序列:開頭補一個邊界(開局前的大廳),連續的邊界併成一個。
+
+    和了之後封包連著送 ``hora``、``end_kyoku``,對畫面來說是同一段「沒有牌河」,
+    拆成兩步只會讓平手時多一個往後配的落點。
+    """
+    steps = [RiverState(0.0, (), boundary=True)]
+    for state in timeline.states:
+        if state.boundary and steps[-1].boundary:
+            continue
+        steps.append(state)
+    return steps
+
+
+def fingerprint(table: Rect, skin: str) -> str:
+    """讀取結果的指紋。快取的讀取要跟它一起存,對不上就重讀。
+
+    牌河怎麼讀由這些決定:四家角點、格子大小、牌面比例、覆核的第二個高度、
+    信心門檻、皮膚、牌桌矩形。任何一個改了,舊的讀取結果就**不是現在這套
+    辨識的結果** —— 而拿它評分的報告看起來完全正常。角點正是會被調的那一個。
+    """
+    parts = (
+        repr(sorted((k, v.corners) for k, v in _river.DEFAULT_CORNERS.items())),
+        repr(_river.CELL),
+        repr(_river.FACE),
+        repr(_river.CHECK_FACE_HEIGHT),
+        repr(_river.CONFIDENT),
+        skin,
+        repr((table.x, table.y, table.width, table.height)),
+    )
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()[:16]

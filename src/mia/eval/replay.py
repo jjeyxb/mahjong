@@ -38,13 +38,13 @@ from __future__ import annotations
 
 import time
 from collections import Counter
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from statistics import median
 
 from mia.config.models import RoiConfig
 from mia.eval.align import SETTLE
-from mia.eval.rivers import RiverTimeline
+from mia.eval.rivers import RiverState, RiverTimeline
 from mia.live.bus import UpdateBus
 from mia.live.table import TableWorker
 from mia.mjai.tiles import normalize_red
@@ -153,6 +153,7 @@ class ReplayReport:
     kyokus: int = 0
     posts: int = 0
     watch: WatchStats = field(default_factory=WatchStats)
+    yardstick: str = "真時間"
 
     @property
     def overrun(self) -> int:
@@ -175,7 +176,8 @@ class ReplayReport:
         total = self.totals()
         lines = [
             f"醒了 {self.ticks} 輪,其中 {self.starved} 輪手上沒有新畫面",
-            f"可評分 {self.scored} 輪({self.unstable} 輪答案不穩定,跳過)",
+            f"可評分 {self.scored} 輪({self.unstable} 輪沒有答案,跳過)"
+            f"  答案來自{self.yardstick}",
             "",
             "每一輪的格線(位置 × 牌面)",
         ]
@@ -289,6 +291,7 @@ def replay(
     settle: float = SETTLE,
     limit: int = 0,
     on_tick: object = None,
+    answers: Mapping[int, RiverState] | None = None,
 ) -> ReplayReport:
     """把整份錄影餵過 :class:`~mia.live.table.TableWorker`,逐輪對分。
 
@@ -303,6 +306,13 @@ def replay(
             實際跑的時候躲不掉 —— 只是不拿來對分。
         limit: 最多跑幾輪,0 表示全部。
         on_tick: 每輪叫一次的進度回呼,收 ``(已完成, 總數)``。
+        answers: 幀序號 → 標準答案,給了就**取代** ``stable_at``。
+            見 :func:`~mia.eval.sequence.align_session`。
+
+            兩個理由要它:牌譜素材沒有時間,``stable_at`` 什麼都答不出來;
+            而即時素材上 ``stable_at`` 會跳過「狀態不到 ``settle`` 秒」的那幾輪
+            —— 出牌快的時候、局尾最後一張 —— 那裡正好有它量不到的錯
+            (``docs/cv_mjai.md`` §3.4)。
 
     Note:
         **worker 的執行緒不啟動**,直接叫 :meth:`~mia.live.table.TableWorker.tick`。
@@ -322,7 +332,7 @@ def replay(
         table_rect=table, image_size=session.image_size, source="manual"
     )
 
-    report = ReplayReport(interval=interval)
+    report = ReplayReport(interval=interval, yardstick="單調對齊" if answers else "真時間")
     ticks = list(schedule(session, interval=interval))
     if limit:
         ticks = ticks[:limit]
@@ -364,7 +374,10 @@ def replay(
         for indicator in current[len(seen_dora) :]:
             report.doras.append(f"{indicator}@{done}")
         seen_dora = current
-        truth = timeline.stable_at(tick.wall, settle)
+        if answers is None:
+            truth = timeline.stable_at(tick.wall, settle)
+        else:
+            truth = answers.get(tick.record.index) if tick.record is not None else None
         if truth is None:
             report.unstable += 1
         else:
