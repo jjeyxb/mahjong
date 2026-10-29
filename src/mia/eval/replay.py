@@ -250,7 +250,7 @@ def _grade_grid(score: SeatScore, truth: Sequence[str], known: Sequence[str]) ->
         got = known[index]
         if got == UNKNOWN:
             score.abstained += 1
-        elif got == normalize_red(want):
+        elif normalize_red(got) == normalize_red(want):
             score.right += 1
         else:
             score.wrong += 1

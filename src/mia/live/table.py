@@ -82,6 +82,10 @@ _INTERVAL = 1.0
 _DORA_ROI = "dora_indicators"
 
 
+#: 白(雀魂記法 ``5z`` 經 :func:`ms_to_mjai` 之後)。見 ``_read_seat``。
+_HAKU = "P"
+
+
 class TableWorker(threading.Thread):
     """只看畫面,追蹤整桌狀態,把每張牌的危險度投進郵箱。
 
@@ -136,6 +140,8 @@ class TableWorker(threading.Thread):
         self._kyoku = KyokuWatcher()
         self._known: list[list[str]] = [[] for _ in SEATS]
         self._sideways: list[int | None] = [None for _ in SEATS]
+        # 每家「上一輪讀成白、還沒收下」的那一格。見 _read_seat。
+        self._haku: list[int | None] = [None for _ in SEATS]
         self._last: tuple | None = None
 
         self.status = WorkerStatus("牌桌")
@@ -241,6 +247,10 @@ class TableWorker(threading.Thread):
         known = self._known[position]
         filled = river.filled
         if len(filled) == len(known):
+            # 沒有新格子,不必重認 —— 但觀察照樣交出去:一口氣長了好幾張的
+            # 河要靠**下一次**觀察確認才會發事件(過場動畫的白光,見
+            # ``mia.tracker.rivers._JUMP``)。
+            self._emit(position, known)
             return
         if len(filled) < len(known):
             # 被鳴走了一張 —— 後面整排往前遞補,快取整個失效。
@@ -256,6 +266,8 @@ class TableWorker(threading.Thread):
 
         size = face_size()
         fresh = [k for k in filled if k >= len(known)] if len(known) else list(filled)
+        # 整條重認(剛接上、鳴牌或立直之後)不必防白光:那不是白光掃過的時機。
+        incremental = bool(known)
         for cell in fresh:
             if cell in river.clipped:
                 known.append(UNKNOWN)
@@ -268,8 +280,22 @@ class TableWorker(threading.Thread):
                 and match.margin >= CONFIDENT[1]
                 and match.brightness >= MIN_BRIGHTNESS
             )
-            known.append(ms_to_mjai(match.label) if confident else UNKNOWN)
+            pai = ms_to_mjai(match.label) if confident else UNKNOWN
+            if incremental and pai == _HAKU and self._haku[position] != cell:
+                # 白要看兩次才收。和了 / 立直的過場有一道白光橫過牌河,空白的
+                # 牌面模板對上白光,讀成**有信心的白** —— 而這裡每一格只認一次,
+                # 收下就永遠留著,變成一張假現物。重播校正素材:真的一索在白光
+                # 掃過的那一刻打出來,被讀成白,上家因此 30 輪都有一張假現物。
+                # 這一輪先停在這一格,下一輪重認;真的白只是晚一輪。
+                self._haku[position] = cell
+                break
+            self._haku[position] = None
+            known.append(pai)
 
+        self._emit(position, known)
+
+    def _emit(self, position: int, known: list[str]) -> None:
+        """把這一家看得見的河交給 :class:`RiverWatcher`,新的捨牌送進 tracker。"""
         for discard in self._rivers.observe(position, known):
             if discard.pai != UNKNOWN:
                 self._table.handle(Dahai(actor=position, pai=discard.pai, tsumogiri=False))
@@ -330,6 +356,7 @@ class TableWorker(threading.Thread):
         self._dora.reset()
         self._known = [[] for _ in SEATS]
         self._sideways = [None for _ in SEATS]
+        self._haku = [None for _ in SEATS]
         self._last = None
 
     def _publish(self, hand: Sequence[str]) -> None:
