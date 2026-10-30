@@ -276,6 +276,10 @@ def occupied_length(
         if filled:
             end, miss = x + 1, 0
             continue
+        if end == 0 and x < cell[0]:
+            # 還沒碰到第一張牌。角點不會剛好壓在第一張牌的邊上(自己那家實測
+            # 起點外多了 14 px 桌布),開頭讓一格,否則一開始就當成結尾。
+            continue
         miss += 1
         if miss > _GAP:
             break
