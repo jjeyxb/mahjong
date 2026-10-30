@@ -69,6 +69,20 @@ class TestAFlashIsNotADiscard:
         watcher = RiverWatcher()
         assert len(watcher.observe(0, ["1m", "2m", "3m"])) == 3
 
+    def test_a_full_river_that_cannot_be_read_is_not_a_river(self) -> None:
+        """開局前的白色介面:連續 18 格、只認得出 1 格,而那一格是白。
+
+        延後確認擋不住 —— 中間幾輪整家不連續、沒有觀察,前後兩次看到的
+        是同一個介面。
+        """
+        watcher = RiverWatcher()
+        screen = [UNKNOWN] * 10 + ["P"] + [UNKNOWN] * 7
+        assert watcher.observe(0, screen) == []
+        assert watcher.observe(0, screen) == []
+        assert watcher.rivers[0] == []
+        # 真的牌河出現時照常收。
+        assert [d.pai for d in watcher.observe(0, ["9p"])] == ["9p"]
+
 
 class TestCallsShortenTheRiver:
     """鳴牌會把中間那張拿走,後面整排往前遞補。

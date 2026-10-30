@@ -353,10 +353,11 @@ def read_rivers(
         river = read_river(flat)
         # 立直的宣言牌橫躺著,它**本身**與同一列後面的每一張都對不上格線。
         # 見 ``docs/cv_mjai.md`` §1.4:不處理的話那幾張從 96% 掉到 33%。
-        sideways = find_sideways(flat, templates, river=river)
+        scale = DEFAULT_CORNERS[seat].sideways_scale
+        sideways = find_sideways(flat, templates, river=river, scale=scale)
         if sideways is not None:
-            river = read_river(flat, sideways=sideways)
-        matches = [_read_cell(flat, river, i, templates, size) for i in river.filled]
+            river = read_river(flat, sideways=sideways, scale=scale)
+        matches = [_read_cell(flat, river, i, templates, size, scale) for i in river.filled]
         results.append(
             RiverFrameResult(
                 index=index,
@@ -378,6 +379,7 @@ def _read_cell(
     index: int,
     templates: TemplateSet,
     size: tuple[int, int],
+    scale: float = 1.0,
 ) -> Match:
     """認一格,並且**替讀不到的格子說出「我不知道」**。
 
@@ -391,7 +393,7 @@ def _read_cell(
     * 其他:照常。
     """
     if index == river.sideways:
-        return classify_sideways(flat, index, templates)
+        return classify_sideways(flat, index, templates, scale=scale)
     if index in river.clipped:
         return Match(label="?", score=0.0, runner_up="?", runner_up_score=0.0)
     return classify_river_tile(search_window(flat, river.cells[index]), templates, size=size)

@@ -276,11 +276,15 @@ class RiverView:
         corners: 四個角 ``((x, y), ...)``,順序是**遠左、遠右、近右、近左**。
             順序就是方向 —— 換順序等於轉 90 度,所以它不只是「四個點」,
             是「四個有編號的點」。
+        sideways_scale: 橫放的宣言牌在**這一家**攤平圖上的寬度,相對
+            :data:`SIDEWAYS_FACE` / :data:`SIDEWAYS_SHIFT` 的倍數。角點決定攤平後
+            的水平比例,而橫放牌的尺寸是照舊角點量的 —— 換了角點就要跟著換。
     """
 
     corners: tuple[
         tuple[float, float], tuple[float, float], tuple[float, float], tuple[float, float]
     ]
+    sideways_scale: float = 1.0
 
     def quad(self, table: Rect) -> np.ndarray:
         """換算成擷取影像上的像素四邊形。"""
@@ -335,17 +339,29 @@ class RiverView:
 #: 1.7685 不是 16:9,新素材上上家第六欄因此整場 0 次有信心(503 次棄權)。
 #: 重搜之後兩份素材都進步,見 ``docs/cv_mjai.md`` §3.6。
 #:
-#: **對家刻意不動。** 對家搜出來的角點讓第一、二列從 72% / 56% 升到 91% / 65%,
-#: 但它改變了攤平後的水平比例,橫放的宣言牌對不上旋轉模板 —— 對封包真值,
-#: 對家的立直從 268 次命中變成 0 次。漏掉立直等於把危險牌當安全,正確率
-#: 換不回來。要動對家,得先讓宣言牌的比對不依賴比例。
+#: **對家晚了一天(2026-10-31)。** 重搜的角點改變了攤平後的水平比例,橫放的
+#: 宣言牌對不上照舊比例量的旋轉模板 —— 對家立直一度從 296 次命中變成 0 次。
+#: 所以先讓宣言牌的尺寸跟著角點走(:attr:`RiverView.sideways_scale`),再搜:
+#: 對家用 0.9(0.85 ~ 0.95 結果完全相同,取中間)。兩份素材全部幀對封包真值:
+#:
+#: ==========  ===============  ===========  ========================
+#: 素材        有信心且對       有信心卻錯   三列
+#: ==========  ===============  ===========  ========================
+#: 110639      11111 → 12104    25 → 14      80.8/65.1/78.9 → 83.3/70.7/79.2
+#: 123746      4293 → 4711      18 → 8       80.0/63.9 → 89.0/68.0
+#: ==========  ===============  ===========  ========================
+#:
+#: 立直宣言牌 297 命中 / 14 漏 / 0 誤報(舊角點 296 / 15 / 0)。
 #:
 #: ⚠ **只在一種長寬比上驗過。** 角點是相對牌桌矩形的比例,理論上跟著縮放;
 #: 但雀魂在不同長寬比下排版不同(``20260801-112437`` 是 1.83,整份讀不出來)。
 DEFAULT_CORNERS: dict[str, RiverView] = {
     "own": RiverView(((0.3978, 0.4839), (0.5907, 0.4859), (0.5998, 0.7021), (0.3887, 0.6975))),
     "shimocha": RiverView(((0.5883, 0.4964), (0.5777, 0.2678), (0.7125, 0.2657), (0.7346, 0.4922))),
-    "toimen": RiverView(((0.5836, 0.2720), (0.4073, 0.2804), (0.4144, 0.1350), (0.5777, 0.1392))),
+    "toimen": RiverView(
+        ((0.5866, 0.2720), (0.4088, 0.2699), (0.4174, 0.1350), (0.5747, 0.1422)),
+        sideways_scale=0.9,
+    ),
     "kamicha": RiverView(((0.4160, 0.2667), (0.4077, 0.4920), (0.2488, 0.5002), (0.2847, 0.2667))),
 }
 
@@ -499,7 +515,11 @@ class River:
 
 
 def read_river(
-    flat: np.ndarray, *, cell: tuple[int, int] = CELL, sideways: int | None = None
+    flat: np.ndarray,
+    *,
+    cell: tuple[int, int] = CELL,
+    sideways: int | None = None,
+    scale: float = 1.0,
 ) -> River:
     """在**攤平後**的影像上切 18 格,並判斷每一格有沒有牌。
 
@@ -510,6 +530,7 @@ def read_river(
             給了的話,**同一列**後面的格子整排往右挪 :data:`SIDEWAYS_SHIFT`。
             不確定的時候給 ``None`` —— 挪錯比不挪糟,因為不挪只錯那一張,
             挪錯會讓那一列後面全錯。
+        scale: 這一家的 :attr:`RiverView.sideways_scale`。
 
     Returns:
         每一格的位置與有無。**不判斷牌面是什麼** —— 那是
@@ -524,7 +545,7 @@ def read_river(
     clipped: list[int] = []
     for index in range(COLUMNS * ROWS):
         column, row = index % COLUMNS, index // COLUMNS
-        shift = _shift_of(index, sideways)
+        shift = _shift_of(index, sideways, scale)
         rect = Rect(column * width + shift, row * height, width, height)
         cells.append(rect)
         if rect.x + rect.width <= flat.shape[1]:
@@ -549,7 +570,7 @@ def read_river(
     )
 
 
-def _shift_of(index: int, sideways: int | None) -> int:
+def _shift_of(index: int, sideways: int | None, scale: float = 1.0) -> int:
     """這一格要不要讓開橫放牌多出來的寬度。
 
     只有**同一列、在它後面**的格子要讓。下一列從頭排,不受影響 —— 這是
@@ -557,7 +578,12 @@ def _shift_of(index: int, sideways: int | None) -> int:
     """
     if sideways is None or index <= sideways:
         return 0
-    return SIDEWAYS_SHIFT if index // COLUMNS == sideways // COLUMNS else 0
+    return sideways_shift(scale) if index // COLUMNS == sideways // COLUMNS else 0
+
+
+def sideways_shift(scale: float = 1.0) -> int:
+    """橫放牌把同一列後面推開多少像素。見 :data:`SIDEWAYS_SHIFT`。"""
+    return round(SIDEWAYS_SHIFT * scale)
 
 
 def find_sideways(
@@ -567,6 +593,7 @@ def find_sideways(
     river: River | None = None,
     cell: tuple[int, int] = CELL,
     candidates: Sequence[int] | None = None,
+    scale: float = 1.0,
 ) -> int | None:
     """哪一格是橫放的立直宣言牌 —— 沒有就回 ``None``。
 
@@ -609,6 +636,7 @@ def find_sideways(
             那幾格之一(實測 221/221 都過不了 :data:`CONFIDENT`),而且
             一定**不是當列最後一張**(最後一張沒有後續可驗,見第三關)。
             把候選縮到那幾格,大部分的幀會直接回 ``None`` 而不花錢。
+        scale: 這一家的 :attr:`RiverView.sideways_scale`。
 
     Returns:
         橫放那一格的索引,或 ``None``。拿它餵
@@ -618,7 +646,7 @@ def find_sideways(
     if river is None:
         river = read_river(flat, cell=cell)
     size = face_size(cell)
-    rotated_size = sideways_face_size(cell)
+    rotated_size = sideways_face_size(cell, scale)
 
     best: tuple[float, int] | None = None
     wanted = (
@@ -641,7 +669,7 @@ def find_sideways(
 
     if best is None:
         return None
-    return best[1] if _shift_helps(flat, river, best[1], templates, cell) else None
+    return best[1] if _shift_helps(flat, river, best[1], templates, cell, scale) else None
 
 
 def _sideways_patch(flat: np.ndarray, index: int, cell: tuple[int, int]) -> np.ndarray:
@@ -658,13 +686,21 @@ def _sideways_patch(flat: np.ndarray, index: int, cell: tuple[int, int]) -> np.n
     return search_window(flat, rect, cell)
 
 
-def sideways_face_size(cell: tuple[int, int] = CELL) -> tuple[int, int]:
-    """橫放牌面在攤平圖上的像素大小。見 :data:`SIDEWAYS_FACE`。"""
-    return (round(cell[0] * SIDEWAYS_FACE[0]), round(cell[1] * SIDEWAYS_FACE[1]))
+def sideways_face_size(cell: tuple[int, int] = CELL, scale: float = 1.0) -> tuple[int, int]:
+    """橫放牌面在攤平圖上的像素大小。見 :data:`SIDEWAYS_FACE`。
+
+    ``scale`` 只縮寬度:角點換了改變的是攤平後的水平比例。
+    """
+    return (round(cell[0] * SIDEWAYS_FACE[0] * scale), round(cell[1] * SIDEWAYS_FACE[1]))
 
 
 def classify_sideways(
-    flat: np.ndarray, index: int, templates: TemplateSet, *, cell: tuple[int, int] = CELL
+    flat: np.ndarray,
+    index: int,
+    templates: TemplateSet,
+    *,
+    cell: tuple[int, int] = CELL,
+    scale: float = 1.0,
 ) -> Match:
     """認橫放的立直宣言牌是哪一張。
 
@@ -681,6 +717,7 @@ def classify_sideways(
         index: 橫放那一格的索引(:func:`find_sideways` 的輸出)。
         templates: **直放的**模板集,旋轉在裡面做。
         cell: 攤平時用的一格大小。
+        scale: 這一家的 :attr:`RiverView.sideways_scale`。
 
     Returns:
         與 :func:`classify_river_tile` 同樣的 ``Match``,但**永遠不會有信心**
@@ -704,7 +741,7 @@ def classify_sideways(
         「它以為是什麼」,而上層拿不到「可以採信」。
     """
     patch = _sideways_patch(flat, index, cell)
-    best = classify(patch, templates.rotated(), size=sideways_face_size(cell))
+    best = classify(patch, templates.rotated(), size=sideways_face_size(cell, scale))
     return Match(
         label=best.label,
         score=best.score,
@@ -755,6 +792,7 @@ def _shift_helps(
     index: int,
     templates: TemplateSet,
     cell: tuple[int, int],
+    scale: float = 1.0,
 ) -> bool:
     """把同一列後面的格子挪開之後,認得出來的牌有變多嗎。
 
@@ -768,7 +806,7 @@ def _shift_helps(
     if not after:
         return False
     plain = _confident_count(flat, after, row, 0, templates, cell)
-    moved = _confident_count(flat, after, row, SIDEWAYS_SHIFT, templates, cell)
+    moved = _confident_count(flat, after, row, sideways_shift(scale), templates, cell)
     return moved > plain
 
 

@@ -294,12 +294,12 @@ def _steps(timeline: RiverTimeline) -> list[RiverState]:
 def fingerprint(table: Rect, skin: str) -> str:
     """讀取結果的指紋。快取的讀取要跟它一起存,對不上就重讀。
 
-    牌河怎麼讀由這些決定:四家角點、格子大小、牌面比例、搜尋窗上下延伸多少、
+    牌河怎麼讀由這些決定:四家角點(含橫放牌的尺度)、格子大小、牌面比例、搜尋窗上下延伸多少、
     覆核的第二個高度、信心門檻、皮膚、牌桌矩形。任何一個改了,舊的讀取結果就**不是現在這套
     辨識的結果** —— 而拿它評分的報告看起來完全正常。角點正是會被調的那一個。
     """
     parts = (
-        repr(sorted((k, v.corners) for k, v in _river.DEFAULT_CORNERS.items())),
+        repr(sorted((k, v.corners, v.sideways_scale) for k, v in _river.DEFAULT_CORNERS.items())),
         repr(_river.CELL),
         repr(_river.FACE),
         repr((_river.SEARCH_ABOVE, _river.SEARCH_BELOW)),
