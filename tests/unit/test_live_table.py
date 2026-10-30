@@ -88,11 +88,16 @@ class TestTheWholeChain:
     def test_seeing_the_same_frame_twice_posts_once(
         self, image: np.ndarray, calibration: Calibration, templates: TemplateSet
     ) -> None:
-        """牌河沒變就不該再投 —— 投了會讓 UI 每秒重畫一次一模一樣的東西。"""
+        """牌河沒變就不該再投 —— 投了會讓 UI 每秒重畫一次一模一樣的東西。
+
+        先讀兩次:這張圖上有副露,而副露要連兩次讀到同樣的長度才採信
+        (``mia.tracker.melds``),第二次才算定。之後同一張圖就不該再投。
+        """
         worker, bus = _worker(templates)
         worker.offer_hand(["1m", "9p", "5z"])
-        worker.offer_frame(image, calibration)
-        worker.tick()
+        for _ in range(2):
+            worker.offer_frame(image, calibration)
+            worker.tick()
         bus.drain()
         worker.offer_frame(image, calibration)
         worker.tick()
