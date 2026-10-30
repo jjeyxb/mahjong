@@ -20,6 +20,7 @@ from mia.live.bus import Dangers, UpdateBus
 from mia.live.table import TableLink, TableWorker, _PendingFaces
 from mia.utils.geometry import Rect, Size
 from mia.vision.tiles.classify import TemplateSet
+from mia.vision.tiles.melds import MeldFaces
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
@@ -140,8 +141,8 @@ class TestTheWholeChain:
         worker, _ = _worker(templates)
         old = worker._table  # noqa: SLF001
         old.players[1].melds.append(("?", "?", "?"))
-        done: Future[tuple[str, ...]] = Future()
-        done.set_result(("C", "C", "C"))
+        done: Future[MeldFaces] = Future()
+        done.set_result(MeldFaces(frozenset({"7z"})))
         worker._pending_faces.append(_PendingFaces(old, 1, 0, done))  # noqa: SLF001
         worker._new_kyoku()  # noqa: SLF001
         worker._collect_meld_faces()  # noqa: SLF001
