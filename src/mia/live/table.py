@@ -302,7 +302,8 @@ class TableWorker(threading.Thread):
         if sideways is None:
             sideways = self._look_for_sideways(position, flat, river, known)
         if sideways is not None:
-            river = read_river(flat, sideways=sideways)
+            scale = DEFAULT_CORNERS[SEATS[position]].sideways_scale
+            river = read_river(flat, sideways=sideways, scale=scale)
             filled = river.filled
 
         size = face_size()
@@ -360,7 +361,13 @@ class TableWorker(threading.Thread):
         ]
         if not candidates:
             return None
-        found = find_sideways(flat, self._templates, river=river, candidates=candidates)
+        found = find_sideways(
+            flat,
+            self._templates,
+            river=river,
+            candidates=candidates,
+            scale=DEFAULT_CORNERS[SEATS[position]].sideways_scale,
+        )
         if found is None:
             return None
         self._sideways[position] = found

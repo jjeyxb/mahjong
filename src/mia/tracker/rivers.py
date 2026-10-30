@@ -57,6 +57,15 @@ _COLLAPSED = 3
 #: 空的」那一種。
 _JUMP = 2
 
+#: 從空河一口氣長出 :data:`_JUMP` 張以上時,至少要有這個比例的格子認得出來。
+#:
+#: 中途接上的真牌河,有信心的格子約八成五。開局前的過場介面不是:Steam 素材
+#: 開局前有一塊白色介面落在對家的牌河上,**連續 18 格**(過得了連續性檢查),
+#: 只認得出 1 格,而那一格是有信心的白 —— 發出去就是一張假現物。延後確認也
+#: 擋不住:中間幾輪整家讀不到(不連續)而沒有觀察,前後兩次看到的是同一個
+#: 介面。
+_READABLE = 0.5
+
 
 @dataclass(frozen=True, slots=True)
 class Discard:
@@ -213,6 +222,15 @@ class RiverWatcher:
 
         if _is_prefix(known, seen):
             self._shrinking[position] = None
+            if (
+                not known
+                and len(seen) >= _JUMP
+                and sum(pai != UNKNOWN for pai in seen) < _READABLE * len(seen)
+            ):
+                # 一下子滿滿一條、卻幾乎都認不出來:那不是牌河。
+                self._growing[position] = None
+                self.stats.deferred += 1
+                return []
             jumped = self._growing[position]
             self._growing[position] = None
             if (

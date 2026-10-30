@@ -39,6 +39,7 @@ from mia.vision.tiles.river import (
     read_river,
     search_window,
     sideways_face_size,
+    sideways_shift,
 )
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
@@ -386,11 +387,19 @@ class TestTheSidewaysReachTile:
     def _flat(self, image: np.ndarray, seat: str = "toimen") -> np.ndarray:
         return DEFAULT_CORNERS[seat].rectify(image, TABLE)
 
+    #: 對家的橫放牌尺度。角點決定攤平後的水平比例,宣言牌的尺寸要跟著換。
+    SCALE = DEFAULT_CORNERS["toimen"].sideways_scale
+
     def test_it_finds_the_one_sideways_tile_and_nothing_else(
         self, table_image: np.ndarray, templates: TemplateSet
     ) -> None:
         found = {
-            seat: find_sideways(self._flat(table_image, seat), templates) for seat in SEATS
+            seat: find_sideways(
+                self._flat(table_image, seat),
+                templates,
+                scale=DEFAULT_CORNERS[seat].sideways_scale,
+            )
+            for seat in SEATS
         }
         assert found == {"own": None, "shimocha": None, "toimen": 8, "kamicha": None}
 
@@ -406,7 +415,7 @@ class TestTheSidewaysReachTile:
         upright = classify_river_tile(
             search_window(flat, river.cells[8]), templates, size=face_size()
         )
-        rotated = classify_sideways(flat, 8, templates)
+        rotated = classify_sideways(flat, 8, templates, scale=self.SCALE)
         want = EXPECTED["toimen"].split()[8]
         assert normalize_red(ms_to_mjai(upright.label)) != want
         assert normalize_red(ms_to_mjai(rotated.label)) == want
@@ -426,7 +435,7 @@ class TestTheSidewaysReachTile:
         **要放寬這一條,先拿出更多宣言牌的樣本。** 不要因為分數看起來夠高
         就把歸零那一行刪掉。
         """
-        match = classify_sideways(self._flat(table_image), 8, templates)
+        match = classify_sideways(self._flat(table_image), 8, templates, scale=self.SCALE)
         assert match.score >= 0.60, "分數本身是夠的 —— 棄權是刻意的,不是分數不足"
         assert match.margin == 0.0
         assert not match.is_confident
@@ -442,6 +451,11 @@ class TestTheSidewaysReachTile:
         assert SIDEWAYS_FACE[0] / SIDEWAYS_FACE[1] > 2.0
         assert sideways_face_size((90, 120)) == (110, 59)
 
+    def test_the_scale_only_narrows_it(self) -> None:
+        """角點換了,改變的是攤平後的**水平**比例 —— 高度不動。"""
+        assert sideways_face_size((90, 120), 0.875) == (96, 59)
+        assert sideways_shift(0.875) == round(SIDEWAYS_SHIFT * 0.875)
+
     def test_shifting_fixes_the_tile_after_it(
         self, table_image: np.ndarray, templates: TemplateSet
     ) -> None:
@@ -454,7 +468,7 @@ class TestTheSidewaysReachTile:
         size = face_size()
         got = []
         for sideways in (None, 8):
-            river = read_river(flat, sideways=sideways)
+            river = read_river(flat, sideways=sideways, scale=self.SCALE)
             match = classify_river_tile(
                 search_window(flat, river.cells[9]), templates, size=size
             )
@@ -472,7 +486,7 @@ class TestTheSidewaysReachTile:
         :meth:`River.is_plausible` 把**整家這一幀**丟掉:實測舊素材 10 次、
         新素材 5 次,全在立直之後。那是用扔掉整家去換宣言牌之後的正確率。
         """
-        river = read_river(self._flat(table_image), sideways=8)
+        river = read_river(self._flat(table_image), sideways=8, scale=self.SCALE)
         assert river.clipped == (11,)
         assert river.count == len(EXPECTED["toimen"].split())
         assert river.is_plausible()
@@ -480,9 +494,10 @@ class TestTheSidewaysReachTile:
     def test_the_shift_stays_inside_its_row(self, table_image: np.ndarray) -> None:
         """只推同一列、在它後面的格子。下一列從頭排,不受影響。"""
         plain = read_river(self._flat(table_image))
-        moved = read_river(self._flat(table_image), sideways=8)
+        moved = read_river(self._flat(table_image), sideways=8, scale=self.SCALE)
         shifts = [b.x - a.x for a, b in zip(plain.cells, moved.cells, strict=True)]
-        assert shifts == [0] * 9 + [SIDEWAYS_SHIFT] * 3 + [0] * 6
+        push = sideways_shift(self.SCALE)
+        assert shifts == [0] * 9 + [push] * 3 + [0] * 6
 
     def test_a_river_without_a_sideways_tile_is_untouched(
         self, table_image: np.ndarray
