@@ -71,7 +71,12 @@ from mia.vision.roi import MissingRoiError, RoiSet
 from mia.vision.tiles.classify import DEFAULT_SKIN, MIN_BRIGHTNESS, TemplateSet
 from mia.vision.tiles.dora import read_dora
 from mia.vision.tiles.melds import DEFAULT_VIEWS as MELD_VIEWS
-from mia.vision.tiles.melds import GROUP_LENGTH, occupied_length, read_meld_faces
+from mia.vision.tiles.melds import (
+    GROUP_LENGTH,
+    MeldFaces,
+    occupied_length,
+    read_meld_faces,
+)
 from mia.vision.tiles.river import (
     COLUMNS,
     CONFIDENT,
@@ -104,12 +109,16 @@ _HAKU = "P"
 
 @dataclass(frozen=True, slots=True)
 class _PendingFaces:
-    """一組還在認牌面的副露:認好之後填到 ``table`` 的那一家第 ``index`` 組。"""
+    """一組還在認牌面的副露:認好之後填到 ``table`` 的那一家第 ``index`` 組。
+
+    ``table`` 是為了換局:``_new_kyoku`` 會換掉 ``TableWorker._table``,
+    對不上就丟掉。
+    """
 
     table: TableTracker
     position: int
     index: int
-    future: Future[tuple[str, ...]]
+    future: Future[MeldFaces]
 
 
 class TableWorker(threading.Thread):
@@ -376,6 +385,7 @@ class TableWorker(threading.Thread):
         不看「那一家自己的河」:對家河的第三列常常不連續(``docs/cv_mjai.md``
         §3.6),牌譜實測那樣會把對家一整段的副露擋掉(22 張)。
         """
+        assert self._templates is not None
         self._collect_meld_faces()
         if (
             sum(river.is_plausible() for river in rivers) < _MELD_QUORUM
@@ -398,12 +408,15 @@ class TableWorker(threading.Thread):
                 # 組數**現在**就算數(副露威脅不等牌面),牌面認好了再填進來。
                 melds.append(guess_meld(()))
                 future = self._faces.submit(
-                    self._read_meld_faces,
+                    read_meld_faces,
                     image,
                     table,
                     seat,
-                    start + index * step,
-                    start + (index + 1) * step,
+                    self._templates,
+                    start=start + index * step,
+                    end=start + (index + 1) * step,
+                    # 一次長了兩組:前一組後面緊接著下一組,尾端不能往外放寬。
+                    open_end=index == fresh - 1,
                 )
                 self._pending_faces.append(
                     _PendingFaces(self._table, position, len(melds) - 1, future)
@@ -412,39 +425,35 @@ class TableWorker(threading.Thread):
     def _collect_meld_faces(self) -> None:
         """把認好的牌面填回去。
 
-        局換了(``_new_kyoku`` 換掉了 ``self._table``)就丟掉 —— 上一局的副露
-        不該出現在這一局。認失敗就留著未知,跟認不出來一樣。
+        為什麼不在這一輪直接認:一組要 4 ~ 5 秒,而剛有人鳴牌、下一張打出來
+        的牌正是最需要危險度的時候。:func:`cv2.matchTemplate` 會放開 GIL,
+        ``_faces`` 那條執行緒與這條真的是並行的。
+
+        **只認一次。** 試過沒認全的組隔幾秒拿新畫面再認、結果併起來:兩場牌譜
+        八個視角一組都沒有多認出來。漏的是系統性的(上家太糊、跨框的誤讀讓
+        整組作廢),不是時機 —— ``MeldWatcher`` 本來就等長度穩定才確認。
+
+        局換了就丟掉 —— 上一局的副露不該出現在這一局。認失敗就留著未知,
+        跟認不出來一樣。
         """
         pending = []
         for job in self._pending_faces:
+            if job.table is not self._table:
+                job.future.cancel()
+                continue
             if not job.future.done():
                 pending.append(job)
                 continue
-            if job.table is not self._table or job.future.cancelled():
-                continue
             try:
-                meld = job.future.result()
+                faces = job.future.result()
             except Exception as exc:  # noqa: BLE001 - 認不出來就是未知,不要讓整輪失敗
                 logger.warning("副露牌面認不成:%s", exc)
                 continue
-            self._table.players[job.position].melds[job.index] = meld
+            self._table.players[job.position].melds[job.index] = guess_meld(
+                (normalize_red(ms_to_mjai(face)) for face in faces.tiles),
+                repeated=(normalize_red(ms_to_mjai(face)) for face in faces.repeated),
+            )
         self._pending_faces = pending
-
-    def _read_meld_faces(
-        self, image: np.ndarray, table: Rect, seat: str, start: float, end: float
-    ) -> tuple[str, ...]:
-        """認新長出來的那一組的牌面(第二階段)。**在 ``_faces`` 那條執行緒跑。**
-
-        為什麼不在這一輪直接認:一組要 4 ~ 5 秒,而剛有人鳴牌、下一張打出來
-        的牌正是最需要危險度的時候。:func:`cv2.matchTemplate` 會放開 GIL,
-        兩條執行緒真的是並行的。
-
-        一次長了兩組以上就把那一段平分 —— 很少發生,分歪了的話
-        :func:`guess_meld` 湊不成一組,那組就記成未知。
-        """
-        assert self._templates is not None
-        faces = read_meld_faces(image, table, seat, self._templates, start=start, end=end)
-        return guess_meld(normalize_red(ms_to_mjai(face)) for face in faces)
 
     # ------------------------------------------------------------------ 寶牌
 

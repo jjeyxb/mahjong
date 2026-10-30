@@ -97,18 +97,21 @@ class MeldWatcher:
         return fresh
 
 
-def guess_meld(faces: Iterable[str]) -> tuple[str, ...]:
+def guess_meld(faces: Iterable[str], *, repeated: Iterable[str] = ()) -> tuple[str, ...]:
     """一組副露認出來的牌面(MJAI 記法)→ 記進 ``Player.melds`` 的那一組。
 
     認牌面只保證「認出來的是對的」,不保證認得全(橫放、遠的那家常常漏)。
     所以這裡只做**一定成立**的推論,其餘位置填未知:
 
     * 字牌只能碰、槓 —— 認出一張字牌,整組就是它。
-    * 數牌一張:可能是碰也可能是吃,只記那一張。
-    * 數牌兩三張:必須同一色、相差不超過 2,也就是湊得成一個順子。
+    * 數牌只認出一種:在兩個位置都認到(``repeated``)就是碰,否則可能是碰
+      也可能是吃,只記那一張。
+    * 數牌兩三種:必須同一色、湊得成一個順子。兩張差 2 就知道中間那張;
+      差 1 而碰到 1 或 9 也只有一種順子(1 2 → 1 2 3、8 9 → 7 8 9)。
 
-    湊不成一組(混了字牌與數牌、兩種花色、相差太遠)就代表有一張認錯了,
-    或是框到了別組的牌。不知道是哪一張錯,**整組當作沒認出來**。
+    湊不成一組(混了字牌與數牌、兩種花色、相差太遠、順子裡有一張出現兩次)
+    就代表有一張認錯了,或是框到了別組的牌。不知道是哪一張錯,**整組當作
+    沒認出來**。
 
     下游只看第一張(役牌、染手),所以認得出的牌排在前面。
 
@@ -116,14 +119,25 @@ def guess_meld(faces: Iterable[str]) -> tuple[str, ...]:
     未知不會被當成役牌、不會被當成某個花色。
     """
     tiles = sorted(set(faces))
+    twice = set(repeated)
     unread = (UNKNOWN, UNKNOWN, UNKNOWN)
     if not tiles or len(tiles) > 3:
         return unread
-    honors = [tile for tile in tiles if tile in HONOR_ORDER]
-    if honors:
+    if any(tile in HONOR_ORDER for tile in tiles):
         return (tiles[0],) * 3 if len(tiles) == 1 else unread
     suits = {tile[1] for tile in tiles}
     numbers = [int(tile[0]) for tile in tiles]
-    if len(suits) != 1 or max(numbers) - min(numbers) > 2:
+    low, high = min(numbers), max(numbers)
+    if len(suits) != 1 or high - low > 2:
         return unread
-    return tuple(tiles) + (UNKNOWN,) * (3 - len(tiles))
+    suit = tiles[0][1]
+    if len(tiles) == 1:
+        return (tiles[0],) * 3 if tiles[0] in twice else (tiles[0], UNKNOWN, UNKNOWN)
+    if twice:
+        # 順子不會有兩張一樣的牌。
+        return unread
+    if high - low == 2 or low == 1 or high == 9:
+        first = low if high - low == 2 or low == 1 else high - 2
+        return tuple(f"{n}{suit}" for n in range(first, first + 3))
+    return (*tiles, UNKNOWN)
+

@@ -76,7 +76,20 @@ class TestGuessMeld:
 
     def test_a_run_is_kept_in_order(self) -> None:
         assert guess_meld(["8p", "6p", "7p"]) == ("6p", "7p", "8p")
-        assert guess_meld(["8p", "6p"]) == ("6p", "8p", "?")
+        assert guess_meld(["7p", "6p"]) == ("6p", "7p", "?")
+
+    def test_two_of_a_run_can_pin_down_the_third(self) -> None:
+        """差 2 就知道中間;差 1 而碰到端點也只有一種順子。"""
+        assert guess_meld(["8p", "6p"]) == ("6p", "7p", "8p")
+        assert guess_meld(["1m", "2m"]) == ("1m", "2m", "3m")
+        assert guess_meld(["9s", "8s"]) == ("7s", "8s", "9s")
+
+    def test_the_same_number_in_two_places_is_a_pon(self) -> None:
+        """吃不會有兩張一樣的牌。"""
+        assert guess_meld(["6m"], repeated=["6m"]) == ("6m", "6m", "6m")
+
+    def test_a_run_with_a_repeat_is_wrong_somewhere(self) -> None:
+        assert guess_meld(["6m", "7m"], repeated=["6m"]) == ("?", "?", "?")
 
     def test_nothing_read_is_unknown(self) -> None:
         assert guess_meld([]) == ("?", "?", "?")
@@ -88,3 +101,4 @@ class TestGuessMeld:
         assert guess_meld(["6s", "6m"]) == ("?", "?", "?")
         assert guess_meld(["4s", "7s"]) == ("?", "?", "?")
         assert guess_meld(["4s", "6s", "7s", "8s"]) == ("?", "?", "?")
+

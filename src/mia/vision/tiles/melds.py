@@ -55,6 +55,7 @@ __all__ = [
     "DEFAULT_VIEWS",
     "EXTENT",
     "GROUP_LENGTH",
+    "MeldFaces",
     "MeldStrip",
     "MeldView",
     "occupied_length",
@@ -375,6 +376,11 @@ _FACE_MIN = 0.6
 #: 擋的是跨在兩張牌之間的框(實測 6 索旁邊多出 4 索,0.62 對 0.69)。
 _SAME_PLACE = (45, 60)
 
+#: 同一種牌的兩個命中相距多遠(牌河平面的 x)才算**兩張**。橫放的牌比直的
+#: 寬,同一張會被相鄰兩框各認一次:兩場牌譜裡這種重複最遠 50;碰的兩張
+#: 不同的牌最近 100(直的一張約 90 寬)。
+_APART = 100
+
 #: 帶子在長度以外、內外兩側各放寬幾格(副露那一格)。框中心落在範圍內就掃。
 _PAD = 0.5
 
@@ -387,11 +393,13 @@ def read_meld_faces(
     *,
     start: float,
     end: float,
-) -> frozenset[str]:
+    open_end: bool = True,
+) -> MeldFaces:
     """認出副露區 ``start`` 到 ``end`` 格之間的牌面(雀魂記法,赤五當普通五)。
 
     ``start`` / ``end`` 是 :func:`occupied_length` 的單位。只認**新長出來的那
-    一段**:舊的組已經認過,而且掃的範圍越短越快(一組約 1 秒)。
+    一段**:舊的組已經認過,而且掃的範圍越短越快。``open_end`` 表示 ``end``
+    後面沒有別的牌,可以往外放寬半格;後面緊接著另一組時要關掉。
 
     為什麼借用牌河的攤平
     --------------------
@@ -405,8 +413,54 @@ def read_meld_faces(
     Returns:
         認得出來的牌。認不出的就不在裡面 —— 上層要把它當成未知,不要猜。
     """
+    hits = _scan(image, table, seat, templates, start, end, open_end=open_end)
+    repeated = {
+        a.label
+        for a in hits
+        for b in hits
+        if a.label == b.label and abs(a.x - b.x) >= _APART
+    }
+    return MeldFaces(frozenset(hit.label for hit in hits), frozenset(repeated))
+
+
+@dataclass(frozen=True, slots=True)
+class MeldFaces:
+    """一組副露認出來的牌面。
+
+    Attributes:
+        tiles: 認得出來的牌(雀魂記法)。
+        repeated: 其中在**兩個不同位置**都認到的。吃不會有兩張一樣的牌,
+            所以這代表碰或槓 —— 只認出一種牌時,靠它分得出「碰 6 萬」與
+            「吃,其中一張是 6 萬」。
+    """
+
+    tiles: frozenset[str]
+    repeated: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
+class _Hit:
+    """一個認得出來的位置(牌河平面上的框左上角)。"""
+
+    score: float
+    x: int
+    y: int
+    label: str
+
+
+def _scan(
+    image: np.ndarray,
+    table: Rect,
+    seat: str,
+    templates: TemplateSet,
+    start: float,
+    end: float,
+    *,
+    open_end: bool,
+) -> list[_Hit]:
+    """:func:`read_meld_faces` 的本體:每個位置一個命中,分數高的在前。"""
     if end <= start:
-        return frozenset()
+        return []
     width, height = CELL
     river_width, river_height = RIVER_CELL
     target = np.array(
@@ -423,12 +477,13 @@ def read_meld_faces(
     # 起點不往前放寬:前一組最後那張牌的中心就在 start 前半格,放寬會把它
     # 認進這一組。第一組前面沒有東西,照放。
     head = start if start > 0 else -_PAD
+    tail = end + _PAD if open_end else end
     strip = np.array(
         [
             [head * width, -_PAD * height],
             [head * width, (1 + _PAD) * height],
-            [(end + _PAD) * width, (1 + _PAD) * height],
-            [(end + _PAD) * width, -_PAD * height],
+            [tail * width, (1 + _PAD) * height],
+            [tail * width, -_PAD * height],
         ],
         dtype=np.float32,
     )
@@ -442,7 +497,7 @@ def read_meld_faces(
     plane = cv2.warpPerspective(image, shift @ to_plane, size)
     polygon = (polygon - (left, top)).astype(np.float32)
 
-    hits: list[tuple[float, int, int, str]] = []
+    hits: list[_Hit] = []
     for x in range(0, size[0] - window_width, _STEP[0]):
         for y in range(0, size[1] - window_height, _STEP[1]):
             centre = (x + window_width / 2, y + window_height / 2)
@@ -451,14 +506,13 @@ def read_meld_faces(
             for window in _windows(plane, x, y):
                 label, score = _classify(window, templates, haku=_HAKU_SCORE[seat])
                 if label is not None:
-                    hits.append((score, x, y, label))
-    kept: list[tuple[float, int, int, str]] = []
+                    hits.append(_Hit(score, x, y, label))
+    kept: list[_Hit] = []
     near_x, near_y = _SAME_PLACE
-    for hit in sorted(hits, reverse=True):
-        _, x, y, _ = hit
-        if all(abs(x - kx) > near_x or abs(y - ky) > near_y for _, kx, ky, _ in kept):
+    for hit in sorted(hits, key=lambda h: h.score, reverse=True):
+        if all(abs(hit.x - k.x) > near_x or abs(hit.y - k.y) > near_y for k in kept):
             kept.append(hit)
-    return frozenset(label for *_, label in kept)
+    return kept
 
 
 def _windows(plane: np.ndarray, x: int, y: int) -> list[np.ndarray]:
