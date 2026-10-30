@@ -34,14 +34,16 @@ import cv2
 import numpy as np
 
 from mia.utils.geometry import Rect
-from mia.vision.tiles.river import is_face_up
+from mia.vision.tiles.river import is_face_up, tile_masks
 
 __all__ = [
     "CELL",
     "COLUMNS",
     "DEFAULT_VIEWS",
+    "EXTENT",
     "MeldStrip",
     "MeldView",
+    "occupied_length",
     "read_melds",
 ]
 
@@ -87,16 +89,32 @@ class MeldView:
         )
 
     def rectify(
-        self, image: np.ndarray, table: Rect, *, cell: tuple[int, int] = CELL
+        self,
+        image: np.ndarray,
+        table: Rect,
+        *,
+        cell: tuple[int, int] = CELL,
+        columns: int = COLUMNS,
     ) -> np.ndarray:
-        """把這一家的副露區攤平成 ``1 x COLUMNS`` 格的帶子。"""
+        """把這一家的副露區攤平成 ``1 x columns`` 格的帶子。
+
+        ``columns`` 大於 :data:`COLUMNS` 時,沿長度方向把最新那一端**外插**
+        出去。角點是照 13 格量的,外插是線性的,遠端會因為透視而略為偏短 ——
+        量長度只要單調、穩定,不要求每一格等於一張牌。
+        """
         width, height = cell
+        quad = self.quad(table)
+        if columns != COLUMNS:
+            scale = columns / COLUMNS
+            quad = quad.copy()
+            quad[2] = quad[1] + (quad[2] - quad[1]) * scale
+            quad[3] = quad[0] + (quad[3] - quad[0]) * scale
         target = np.array(
-            [[0, 0], [0, height], [COLUMNS * width, height], [COLUMNS * width, 0]],
+            [[0, 0], [0, height], [columns * width, height], [columns * width, 0]],
             dtype=np.float32,
         )
-        matrix = cv2.getPerspectiveTransform(self.quad(table), target)
-        return cv2.warpPerspective(image, matrix, (COLUMNS * width, height))
+        matrix = cv2.getPerspectiveTransform(quad, target)
+        return cv2.warpPerspective(image, matrix, (columns * width, height))
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,3 +219,64 @@ def read_melds(
             for i in range(COLUMNS)
         )
     )
+
+
+#: 量長度時帶子延伸到幾格。
+#:
+#: 四組大明槓約 4 x (3 + 1.33) = 17.3 張寬(``docs/cv_mjai.md`` §3.7),
+#: 13 格裝不下。取 20 多留一點:長度是從起點量到**第一個空隙**為止,
+#: 帶子長出去碰到桌布不會多算。
+EXTENT = 20
+
+#: 一欄裡「是牌」(正面或背面)的像素超過這個比例,這一欄就算有牌。
+#:
+#: 不取 0.5:橫放的牌比直的矮,在帶子裡只佔上半部;加槓疊上去的那張在
+#: 帶子外面。實測三個位置用 0.35 量到的長度,同一個狀態裡完全不跳。
+_COLUMN_OCCUPIED = 0.35
+
+#: 允許的空隙(帶子上的像素,一格寬 :data:`CELL` [0] = 48)。組與組之間有一條
+#: 細縫,不能把它當成結尾;但真正的結尾之後是一大片桌布。
+_GAP = 10
+
+
+def occupied_length(
+    image: np.ndarray,
+    table: Rect,
+    view: MeldView,
+    *,
+    cell: tuple[int, int] = CELL,
+    extent: int = EXTENT,
+) -> float:
+    """副露區從起點連續有牌多長,單位是**這個視角的一格**。
+
+    為什麼不數格子
+    --------------
+    :func:`read_melds` 把帶子切成等寬的格子,每格問一次 ``is_face_up``。
+    副露一多就撐不住(``docs/cv_mjai.md`` §3.7,四槓子實測):
+
+    * 橫放的牌比直的寬,一組碰約 3.33 張寬,格子越切越偏,某一格落在縫上
+      讀成空的 → 不連續 → 整家棄權。
+    * 暗槓兩端是**背面**,``is_face_up`` 擋的正是背面 → 中間一定有洞。
+
+    這裡改成逐欄看「正面或背面」的比例,從起點量到第一個空隙。三個位置在
+    四槓子那場的每一個狀態裡長度都**完全不跳**,而每多一組加固定的量
+    (暗槓 ÷ 碰 = 1.13~1.21,理論 4 / 3.33 = 1.2)。
+
+    單位是攤平後的一格,不是一張牌 —— 各視角的角點框的比例不同,換算成
+    「幾組」要各用各的組長。
+
+    Returns:
+        長度,以格為單位。0 表示沒有副露。
+    """
+    flat = view.rectify(image, table, cell=cell, columns=extent)
+    face, back = tile_masks(flat)
+    occupied = (face | back).mean(axis=0) > _COLUMN_OCCUPIED
+    end = miss = 0
+    for x, filled in enumerate(occupied):
+        if filled:
+            end, miss = x + 1, 0
+            continue
+        miss += 1
+        if miss > _GAP:
+            break
+    return end / cell[0]

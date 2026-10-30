@@ -113,6 +113,9 @@ VIEWS: dict[str, tuple[tuple[float, float], tuple[float, float]]] = {
     "kamicha": ((0.0575, 0.311), (0.151, 0.432)),
 }
 
+#: 一局結束的紀錄型別。
+_KYOKU_ENDS = {".lq.RecordHule", ".lq.RecordNoTile", ".lq.RecordLiuJu"}
+
 #: ``--probe`` 最多存幾張。
 _PROBE_SHOTS = 30
 
@@ -134,6 +137,8 @@ class Stepper:
     done: bool = False
     clicks: int = 0
     records: int | None = None
+    #: 只錄前幾局。0 是整場。
+    kyoku: int = 0
 
     _parsers: dict[str, LiqiParser] = field(default_factory=dict, repr=False)
     _ready_at: float | None = field(default=None, repr=False)
@@ -169,7 +174,14 @@ class Stepper:
             json.dumps({"uuid": head.uuid, "accounts": accounts}, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        self.records = len(decode_records(self.schema, data))
+        records = decode_records(self.schema, data)
+        self.records = len(records)
+        if self.kyoku:
+            # 只錄前幾局:數到第 N 個局尾(和了 / 流局)為止。紀錄第 i 筆是
+            # replay_steps 的第 i+1 步,所以「錄到它」= 步數 i+1。
+            ends = [i + 1 for i, (name, _) in enumerate(records) if name in _KYOKU_ENDS]
+            if len(ends) >= self.kyoku:
+                self.records = ends[self.kyoku - 1]
         logger.info("收到牌譜 {}:{} 步", head.uuid, self.records)
         # 牌譜開起來還要載入、演開場,先等一下再開始截。
         self._ready_at = time.monotonic() + max(self.settle, 3.0)
@@ -289,6 +301,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="換成一開始那個視角的下家/對家/上家再開始")
     parser.add_argument("--pre", type=_point, metavar="X,Y", action="append", default=[],
                         help="開始前依序點的位置,可重複。換視角:頭像、再攝影機")
+    parser.add_argument("--kyoku", type=int, default=0, metavar="N",
+                        help="只錄前 N 局(預設整場)。一場幾百步,只要某一局時用")
     parser.add_argument("--probe", action="store_true", help="只每 3 秒截一張,用來找按鈕")
     parser.add_argument("--canvas", default=DEFAULT_CANVAS)
     parser.add_argument("--user-data-dir", default=str(DEFAULT_PROFILE))
@@ -307,7 +321,7 @@ def main(argv: list[str] | None = None) -> int:
         encoding="utf-8",
     )
     stepper = Stepper(out=out, schema=LiqiSchema.load(), next_at=args.next,
-                      settle=args.settle, probe=args.probe,
+                      settle=args.settle, probe=args.probe, kyoku=args.kyoku,
                       pre=[*VIEWS.get(args.view or "", ()), *args.pre],
                       canvas=(canvas.width, canvas.height) if canvas else None)
     print(f"輸出目錄:{out}")

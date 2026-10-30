@@ -13,8 +13,10 @@ from mia.vision.tiles.melds import (
     CELL,
     COLUMNS,
     DEFAULT_VIEWS,
+    EXTENT,
     MeldStrip,
     MeldView,
+    occupied_length,
     read_melds,
 )
 
@@ -43,10 +45,10 @@ class TestTheStrip:
         assert read_melds(_table(0), TABLE, WHOLE).count == 0
 
     def test_the_strip_is_long_enough_for_four_kans(self) -> None:
-        """四組槓是 16 張,但第四張疊在第三張**上面**,畫面上仍是三張寬。
+        """只對**加槓**成立:加的那張疊在橫放那張上面,一組仍是三張寬。
 
-        所以上限是 12 格,留 13 ——寧可末端多一格空的,也不要在真的排滿時
-        切掉最後一組。
+        暗槓與大明槓會更寬(``docs/cv_mjai.md`` §3.7),那由
+        :func:`occupied_length` 的 EXTENT 處理;數格子這條路只保證碰與加槓。
         """
         assert COLUMNS >= 4 * 3
 
@@ -92,3 +94,47 @@ class TestTheMeasuredCorners:
     def test_the_cell_is_small_enough_to_be_cheap(self) -> None:
         """只判有無,不比對模板 —— 一整條帶子要比牌河一格還便宜。"""
         assert CELL[0] * CELL[1] * COLUMNS < 90 * 120 * 6 * 3
+
+
+#: 量長度用的帶子:13 格的角點框住整張桌子,外插到 EXTENT 格。
+#: 所以桌上的 1000 px 對應 13 格,一格約 77 px。
+_UNIT = 1000 / COLUMNS
+FACE = (235, 240, 240)
+BACK = (40, 140, 240)  # 橘色牌背(BGR)
+
+
+def _strip(*runs: tuple[float, float, tuple[int, int, int]]) -> np.ndarray:
+    """畫幾段牌,每段是 (起點格, 長度格, 顏色)。"""
+    image = np.full((1000, 1000, 3), (90, 60, 30), dtype=np.uint8)
+    for start, length, colour in runs:
+        image[:, round(start * _UNIT) : round((start + length) * _UNIT)] = colour
+    return image
+
+
+class TestOccupiedLength:
+    """副露一多,等寬切格會切偏、暗槓會有洞;量長度兩樣都不怕。"""
+
+    def test_nothing_is_zero(self) -> None:
+        assert occupied_length(_strip(), TABLE, WHOLE) == 0
+
+    def test_it_measures_from_the_start(self) -> None:
+        assert abs(occupied_length(_strip((0, 3.33, FACE)), TABLE, WHOLE) - 3.33) < 0.05
+
+    def test_the_seam_between_groups_is_not_the_end(self) -> None:
+        """組與組之間有一條細縫。"""
+        image = _strip((0, 3.3, FACE), (3.4, 3.3, FACE))
+        assert abs(occupied_length(image, TABLE, WHOLE) - 6.7) < 0.05
+
+    def test_an_ankan_counts_its_face_down_ends(self) -> None:
+        """暗槓是背、正、正、背 —— is_face_up 會在兩端各挖一個洞。"""
+        image = _strip((0, 1, BACK), (1, 2, FACE), (3, 1, BACK))
+        assert abs(occupied_length(image, TABLE, WHOLE) - 4) < 0.05
+
+    def test_a_gap_ends_it(self) -> None:
+        """結尾之後的東西(例如牌山)不算。"""
+        image = _strip((0, 3, FACE), (5, 3, BACK))
+        assert abs(occupied_length(image, TABLE, WHOLE) - 3) < 0.05
+
+    def test_four_daiminkan_fit(self) -> None:
+        """四組大明槓約 17.3 張寬,13 格裝不下。"""
+        assert EXTENT * 1.0 >= 4 * (3 + 1.33)
