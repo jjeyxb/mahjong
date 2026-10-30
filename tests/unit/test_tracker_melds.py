@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from mia.tracker.melds import MeldWatcher
+from mia.tracker.melds import MeldWatcher, guess_meld
 
 
 def watcher() -> MeldWatcher:
@@ -55,3 +55,36 @@ def test_positions_are_independent_and_reset_clears() -> None:
     assert w.groups == [1, 0]
     w.reset()
     assert w.groups == [0, 0]
+
+
+def test_the_length_moves_only_when_a_group_is_confirmed() -> None:
+    """新的一組從這個長度之後開始 —— 認牌面只認那一段。"""
+    w = watcher()
+    feed(w, 3.0)
+    assert w.length(0) == 0
+    feed(w, 3.0)
+    assert w.length(0) == 3.0
+
+
+class TestGuessMeld:
+    def test_one_honour_is_the_whole_group(self) -> None:
+        """字牌不能吃,認出一張就知道是碰(或槓)。"""
+        assert guess_meld(["C"]) == ("C", "C", "C")
+
+    def test_one_number_could_be_either(self) -> None:
+        assert guess_meld(["6s"]) == ("6s", "?", "?")
+
+    def test_a_run_is_kept_in_order(self) -> None:
+        assert guess_meld(["8p", "6p", "7p"]) == ("6p", "7p", "8p")
+        assert guess_meld(["8p", "6p"]) == ("6p", "8p", "?")
+
+    def test_nothing_read_is_unknown(self) -> None:
+        assert guess_meld([]) == ("?", "?", "?")
+
+    def test_what_cannot_be_one_group_is_dropped(self) -> None:
+        """有一張認錯了,不知道是哪一張:整組不採信。"""
+        assert guess_meld(["C", "N"]) == ("?", "?", "?")
+        assert guess_meld(["C", "6s"]) == ("?", "?", "?")
+        assert guess_meld(["6s", "6m"]) == ("?", "?", "?")
+        assert guess_meld(["4s", "7s"]) == ("?", "?", "?")
+        assert guess_meld(["4s", "6s", "7s", "8s"]) == ("?", "?", "?")

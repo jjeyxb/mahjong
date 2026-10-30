@@ -44,6 +44,8 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -53,7 +55,7 @@ from mia.config.models import RoiConfig
 from mia.live.bus import Dangers, UpdateBus, WorkerStatus
 from mia.mjai.events import Dahai, Dora, Reach
 from mia.mjai.table import TableTracker
-from mia.mjai.tiles import ms_to_mjai
+from mia.mjai.tiles import ms_to_mjai, normalize_red
 from mia.tracker import (
     UNKNOWN,
     DoraWatcher,
@@ -61,6 +63,7 @@ from mia.tracker import (
     KyokuWatcher,
     MeldWatcher,
     RiverWatcher,
+    guess_meld,
 )
 from mia.utils.geometry import Rect
 from mia.utils.logging import logger
@@ -68,7 +71,7 @@ from mia.vision.roi import MissingRoiError, RoiSet
 from mia.vision.tiles.classify import DEFAULT_SKIN, MIN_BRIGHTNESS, TemplateSet
 from mia.vision.tiles.dora import read_dora
 from mia.vision.tiles.melds import DEFAULT_VIEWS as MELD_VIEWS
-from mia.vision.tiles.melds import GROUP_LENGTH, occupied_length
+from mia.vision.tiles.melds import GROUP_LENGTH, occupied_length, read_meld_faces
 from mia.vision.tiles.river import (
     COLUMNS,
     CONFIDENT,
@@ -92,17 +95,21 @@ _INTERVAL = 1.0
 _DORA_ROI = "dora_indicators"
 
 
-#: 看得出有一組、看不出是哪幾張的副露。第一階段只數組數(``docs/cv_mjai.md``
-#: §3.1)。用未知佔位而不是留空:``Player.melded`` 要數得到它(副露威脅),
-#: 而未知不會被當成役牌、不會被當成某個花色,``revealed`` 也不碰 ——
-#: 「場上看得見幾張」不會被多算。
-_UNREAD_MELD = (UNKNOWN, UNKNOWN, UNKNOWN)
-
 #: 四家的牌河至少幾家讀得到,這一輪的副露長度才採信。見 ``_read_melds``。
 _MELD_QUORUM = 2
 
 #: 白(雀魂記法 ``5z`` 經 :func:`ms_to_mjai` 之後)。見 ``_read_seat``。
 _HAKU = "P"
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingFaces:
+    """一組還在認牌面的副露:認好之後填到 ``table`` 的那一家第 ``index`` 組。"""
+
+    table: TableTracker
+    position: int
+    index: int
+    future: Future[tuple[str, ...]]
 
 
 class TableWorker(threading.Thread):
@@ -158,6 +165,9 @@ class TableWorker(threading.Thread):
         self._dora = DoraWatcher()
         self._kyoku = KyokuWatcher()
         self._melds = MeldWatcher(units=tuple(GROUP_LENGTH[seat] for seat in SEATS))
+        # 認牌面慢(一組 4 ~ 5 秒),放到另一條執行緒。見 _read_melds。
+        self._faces = ThreadPoolExecutor(max_workers=1, thread_name_prefix="meld-faces")
+        self._pending_faces: list[_PendingFaces] = []
         self._known: list[list[str]] = [[] for _ in SEATS]
         self._sideways: list[int | None] = [None for _ in SEATS]
         # 每家「上一輪讀成白、還沒收下」的那一格。見 _read_seat。
@@ -209,6 +219,7 @@ class TableWorker(threading.Thread):
                 self._stop.wait(max(0.0, self._interval - (time.monotonic() - started)))
         finally:
             self.status.alive = False
+            self._faces.shutdown(wait=False, cancel_futures=True)
             if self._link is not None:
                 self._link.detach(self)
 
@@ -365,6 +376,7 @@ class TableWorker(threading.Thread):
         不看「那一家自己的河」:對家河的第三列常常不連續(``docs/cv_mjai.md``
         §3.6),牌譜實測那樣會把對家一整段的副露擋掉(22 張)。
         """
+        self._collect_meld_faces()
         if (
             sum(river.is_plausible() for river in rivers) < _MELD_QUORUM
             # 還沒有人打過牌就不可能有人鳴牌。Steam 實測開局動畫讓下家與上家
@@ -377,9 +389,62 @@ class TableWorker(threading.Thread):
         for position, seat in enumerate(SEATS):
             if position == self._table.seat:
                 continue
+            start = self._melds.length(position)
             length = occupied_length(image, table, MELD_VIEWS[seat])
-            for _ in range(self._melds.observe(position, length)):
-                self._table.players[position].melds.append(_UNREAD_MELD)
+            fresh = self._melds.observe(position, length)
+            step = (length - start) / fresh if fresh else 0.0
+            melds = self._table.players[position].melds
+            for index in range(fresh):
+                # 組數**現在**就算數(副露威脅不等牌面),牌面認好了再填進來。
+                melds.append(guess_meld(()))
+                future = self._faces.submit(
+                    self._read_meld_faces,
+                    image,
+                    table,
+                    seat,
+                    start + index * step,
+                    start + (index + 1) * step,
+                )
+                self._pending_faces.append(
+                    _PendingFaces(self._table, position, len(melds) - 1, future)
+                )
+
+    def _collect_meld_faces(self) -> None:
+        """把認好的牌面填回去。
+
+        局換了(``_new_kyoku`` 換掉了 ``self._table``)就丟掉 —— 上一局的副露
+        不該出現在這一局。認失敗就留著未知,跟認不出來一樣。
+        """
+        pending = []
+        for job in self._pending_faces:
+            if not job.future.done():
+                pending.append(job)
+                continue
+            if job.table is not self._table or job.future.cancelled():
+                continue
+            try:
+                meld = job.future.result()
+            except Exception as exc:  # noqa: BLE001 - 認不出來就是未知,不要讓整輪失敗
+                logger.warning("副露牌面認不成:%s", exc)
+                continue
+            self._table.players[job.position].melds[job.index] = meld
+        self._pending_faces = pending
+
+    def _read_meld_faces(
+        self, image: np.ndarray, table: Rect, seat: str, start: float, end: float
+    ) -> tuple[str, ...]:
+        """認新長出來的那一組的牌面(第二階段)。**在 ``_faces`` 那條執行緒跑。**
+
+        為什麼不在這一輪直接認:一組要 4 ~ 5 秒,而剛有人鳴牌、下一張打出來
+        的牌正是最需要危險度的時候。:func:`cv2.matchTemplate` 會放開 GIL,
+        兩條執行緒真的是並行的。
+
+        一次長了兩組以上就把那一段平分 —— 很少發生,分歪了的話
+        :func:`guess_meld` 湊不成一組,那組就記成未知。
+        """
+        assert self._templates is not None
+        faces = read_meld_faces(image, table, seat, self._templates, start=start, end=end)
+        return guess_meld(normalize_red(ms_to_mjai(face)) for face in faces)
 
     # ------------------------------------------------------------------ 寶牌
 

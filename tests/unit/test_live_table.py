@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import Future
 from pathlib import Path
 
 import cv2
@@ -16,7 +17,7 @@ import pytest
 from mia.calibration.table import Calibration
 from mia.config.loader import load_config
 from mia.live.bus import Dangers, UpdateBus
-from mia.live.table import TableLink, TableWorker
+from mia.live.table import TableLink, TableWorker, _PendingFaces
 from mia.utils.geometry import Rect, Size
 from mia.vision.tiles.classify import TemplateSet
 
@@ -50,6 +51,14 @@ def templates() -> TemplateSet:
 def _worker(templates: TemplateSet) -> tuple[TableWorker, UpdateBus]:
     bus = UpdateBus()
     return TableWorker(bus, config=load_config().roi, templates=templates), bus
+
+
+def _settle(worker: TableWorker, image: np.ndarray, calibration: Calibration) -> None:
+    """等背景認完副露牌面,再讀一輪把結果收回來。"""
+    for job in worker._pending_faces:  # noqa: SLF001
+        job.future.result(timeout=60)
+    worker.offer_frame(image, calibration)
+    worker.tick()
 
 
 class TestTheWholeChain:
@@ -91,17 +100,53 @@ class TestTheWholeChain:
         """牌河沒變就不該再投 —— 投了會讓 UI 每秒重畫一次一模一樣的東西。
 
         先讀兩次:這張圖上有副露,而副露要連兩次讀到同樣的長度才採信
-        (``mia.tracker.melds``),第二次才算定。之後同一張圖就不該再投。
+        (``mia.tracker.melds``),第二次才算定;它的牌面在另一條執行緒認,
+        再等它填回來。之後同一張圖就不該再投。
         """
         worker, bus = _worker(templates)
         worker.offer_hand(["1m", "9p", "5z"])
         for _ in range(2):
             worker.offer_frame(image, calibration)
             worker.tick()
+        _settle(worker, image, calibration)
         bus.drain()
         worker.offer_frame(image, calibration)
         worker.tick()
         assert not [u for u in bus.drain() if isinstance(u, Dangers)]
+
+    def test_a_called_group_is_recorded_with_what_it_could_read(
+        self, image: np.ndarray, calibration: Calibration, templates: TemplateSet
+    ) -> None:
+        """這張圖的下家吃了 1 2 3 筒(2、3 筒橫放疊在一起)。
+
+        讀得到的記下來,讀不到的留未知 —— 不猜。
+        """
+        worker, _ = _worker(templates)
+        worker.offer_hand(["1m", "9p", "5z"])
+        for _ in range(2):
+            worker.offer_frame(image, calibration)
+            worker.tick()
+        melds = worker._table.players[1].melds  # noqa: SLF001
+        assert melds == [("?", "?", "?")], "組數不等牌面,當下就要算數"
+        _settle(worker, image, calibration)
+        melds = worker._table.players[1].melds  # noqa: SLF001
+        assert len(melds) == 1
+        known = {tile for tile in melds[0] if tile != "?"}
+        assert known
+        assert known <= {"1p", "2p", "3p"}
+
+    def test_faces_from_the_last_kyoku_are_dropped(self, templates: TemplateSet) -> None:
+        """認牌面要好幾秒,中間換局的話,認好的那組屬於上一局。"""
+        worker, _ = _worker(templates)
+        old = worker._table  # noqa: SLF001
+        old.players[1].melds.append(("?", "?", "?"))
+        done: Future[tuple[str, ...]] = Future()
+        done.set_result(("C", "C", "C"))
+        worker._pending_faces.append(_PendingFaces(old, 1, 0, done))  # noqa: SLF001
+        worker._new_kyoku()  # noqa: SLF001
+        worker._collect_meld_faces()  # noqa: SLF001
+        assert worker._table.players[1].melds == []  # noqa: SLF001
+        assert worker._pending_faces == []  # noqa: SLF001
 
     def test_without_a_hand_it_stays_quiet(
         self, image: np.ndarray, calibration: Calibration, templates: TemplateSet

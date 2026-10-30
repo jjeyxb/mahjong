@@ -6,7 +6,7 @@
 
 from mia.tracker.dora import DoraWatcher, NewDora
 from mia.tracker.kyoku import KyokuSignal, KyokuWatcher
-from mia.tracker.melds import MeldWatcher
+from mia.tracker.melds import MeldWatcher, guess_meld
 from mia.tracker.rivers import UNKNOWN, Discard, RiverWatcher
 
 __all__ = [
@@ -18,4 +18,5 @@ __all__ = [
     "MeldWatcher",
     "NewDora",
     "RiverWatcher",
+    "guess_meld",
 ]
