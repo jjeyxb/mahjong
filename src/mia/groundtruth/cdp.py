@@ -389,8 +389,17 @@ def _fit_canvas(page: Page, canvas: Canvas) -> None:
     window_id = session.send("Browser.getWindowForTarget")["windowId"]
 
     def viewport() -> tuple[int, int]:
-        got = page.evaluate("() => [window.innerWidth, window.innerHeight]")
-        return int(got[0]), int(got[1])
+        # 雀魂開起來之後會自己再導向一次(牌譜連結實測會),導向途中 evaluate
+        # 會拋「Execution context was destroyed」。那不是錯,等它載完再問。
+        for attempt in range(10):
+            try:
+                got = page.evaluate("() => [window.innerWidth, window.innerHeight]")
+                return int(got[0]), int(got[1])
+            except Exception:  # Playwright 的錯誤型別不分導向與其他
+                if attempt == 9:
+                    raise
+                page.wait_for_timeout(500)
+        raise AssertionError("unreachable")
 
     def window_size() -> tuple[int, int]:
         bounds = session.send("Browser.getWindowBounds", {"windowId": window_id})["bounds"]

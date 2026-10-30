@@ -15,13 +15,24 @@
 
 用法
 ----
-第一次先看介面長什麼樣(下一步按鈕在哪)::
+::
 
-    .venv/bin/python tools/paipu.py "<牌譜連結>" --probe
+    .venv/bin/python tools/paipu.py "<牌譜連結>"
 
-登入、等牌譜開起來,它每幾秒存一張圖到輸出目錄。拿圖找出按鈕之後::
+登入過 ``tools/gt.py`` 那個瀏覽器的話不必再登。介面改版、按鈕搬家時,
+用 ``--probe`` 每幾秒存一張圖,拿圖重新找按鈕,再用 ``--next X,Y`` 指定。
 
-    .venv/bin/python tools/paipu.py "<牌譜連結>" --next 0.95,0.60
+按哪一顆
+--------
+下方工具列右邊三顆是「上一步 / 播放 / 下一步」。**要按最右邊那顆。**
+中間那顆是播放與暫停的切換,按它會變成自動播放,截圖時機就跟步數脫鉤
+(實測按 10 次前進的步數不固定)。點牌桌空白處也會前進,但不是每次都吃
+(實測 10 次只前進 3 步)。
+
+按最右邊那顆是一次一步、而且一個紀錄一步:第 k 張圖(按了 k 次之後)
+就是 :func:`~mia.groundtruth.paipu.replay_steps` 的第 k+1 步 —— 第 0 張是
+配牌之後。驗過的方法是中間的「余」數:按 10 次之後是 64,開局 69 摸掉
+5 張,與紀錄第 11 步一致。
 
 輸出(``data/recordings/paipu-<時間>/``):
 
@@ -65,12 +76,25 @@ DEFAULT_PROFILE = DATA_DIR / "live" / "chrome-profile"
 
 #: 畫布。16:9 是必要的:按鈕座標是畫布的比例,非 16:9 雀魂會加黑邊
 #: (而且 ``20260801-112437`` 那份 1.83 的素材整份讀不出來,牌桌排版會變)。
-#: 取 1920x1080 而不是 autoplay 的 1280x720:副露牌很小,解析度直接決定認不認得出來。
-DEFAULT_CANVAS = "1920x1080"
+#: 取 1280x720:MacBook(邏輯 1512x982)扣掉選單列與工具列,頁面最高只有 785,
+#: 實測 1920x1080 被壓成 1920x785、1440x810 被壓成 1440x785,雀魂整個換排版。
+#: 截圖是裝置像素,Retina 上 1280x720 實際是 2560x1440 —— 與
+#: ``20261024-123746`` 的牌桌矩形同一個大小,牌河與副露的角點直接適用。
+DEFAULT_CANVAS = "1280x720"
 
-#: 連續幾張一模一樣就當作演完了。牌譜最後一步之後再按下一步,畫面不會再變。
+#: 紀錄演完之後再多按幾次。第 k 張是第 k+1 步(見模組說明),所以按到
+#: ``records - 1`` 次就截到最後一步;多按的是結算畫面。
+#:
+#: **主要的停止條件是這個,不是下面的「畫面不變」。** 實測和了之後的結算畫面
+#: 一直有動畫,畫面永遠不會一模一樣 —— 只靠那一條的話,演完了還一直按下去。
+_TAIL = 2
+
+#: 備用的停止條件:連續幾張一模一樣就當作演完了。牌譜最後一步之後再按下一步,畫面不會再變。
 #: 但結算面板、流局畫面也可能停好幾步不動,所以不能太小。
 _SAME_LIMIT = 8
+
+#: 「下一步」按鈕,畫布比例。量測條件是 :data:`DEFAULT_CANVAS`,見模組說明。
+DEFAULT_NEXT = (0.831, 0.757)
 
 #: ``--probe`` 最多存幾張。
 _PROBE_SHOTS = 30
@@ -85,6 +109,8 @@ class Stepper:
     next_at: tuple[float, float] | None
     settle: float
     probe: bool = False
+    #: 要的 viewport(CSS 像素)。對不上就停 —— 見 :data:`DEFAULT_CANVAS`。
+    canvas: tuple[int, int] | None = None
 
     done: bool = False
     clicks: int = 0
@@ -134,6 +160,18 @@ class Stepper:
         now = time.monotonic()
         if self.done:
             return
+        if self.canvas is not None:
+            size = viewport(page)
+            if size is None:
+                return
+            if size != self.canvas:
+                # _fit_canvas 調不到只會警告。這裡要硬一點:比例不對雀魂會換排版,
+                # 截下來的每一張都不能用,而那要到事後才看得出來。
+                logger.error("viewport 是 {}x{},不是 {}x{} —— 停止。請改用小一點的 --canvas",
+                             *size, *self.canvas)
+                self.done = True
+                return
+            self.canvas = None  # 量過一次就好
         if self.probe:
             if self._ready_at is None:
                 self._ready_at = now
@@ -157,6 +195,10 @@ class Stepper:
         with (self.out / "steps.jsonl").open("a", encoding="utf-8") as fh:
             fh.write(json.dumps({"clicks": self.clicks, "frame": f"frames/{self.clicks:04d}.png",
                                  "same": self._same}) + "\n")
+        if self.records is not None and self.clicks >= self.records + _TAIL:
+            logger.info("按了 {} 次,紀錄 {} 步都截到了", self.clicks, self.records)
+            self.done = True
+            return
         if self._same >= _SAME_LIMIT:
             logger.info("連續 {} 張沒變,當作演完了。共按 {} 次", self._same, self.clicks)
             self.done = True
@@ -195,19 +237,19 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("url", help="牌譜連結")
     parser.add_argument("--out", type=Path, help="輸出目錄,預設 data/recordings/paipu-<時間>")
-    parser.add_argument("--next", type=_point, metavar="X,Y", help="「下一步」按鈕,畫布比例")
+    parser.add_argument("--next", type=_point, metavar="X,Y", default=DEFAULT_NEXT,
+                        help="「下一步」按鈕,畫布比例(預設 %(default)s)")
     parser.add_argument("--settle", type=float, default=1.5, help="按完等幾秒再截(預設 1.5)")
     parser.add_argument("--probe", action="store_true", help="只每 3 秒截一張,用來找按鈕")
     parser.add_argument("--canvas", default=DEFAULT_CANVAS)
     parser.add_argument("--user-data-dir", default=str(DEFAULT_PROFILE))
     args = parser.parse_args(argv)
 
-    if not args.probe and args.next is None:
-        parser.error("沒有 --next 就不知道要按哪裡;先用 --probe 看介面")
     setup_logging()
 
     from mia.groundtruth.cdp import CdpCapture, PlaywrightMissingError
 
+    canvas = Canvas.parse(args.canvas)
     out: Path = args.out or DATA_DIR / "recordings" / time.strftime("paipu-%Y%m%d-%H%M%S")
     out.mkdir(parents=True, exist_ok=True)
     (out / "source.json").write_text(
@@ -216,7 +258,8 @@ def main(argv: list[str] | None = None) -> int:
         encoding="utf-8",
     )
     stepper = Stepper(out=out, schema=LiqiSchema.load(), next_at=args.next,
-                      settle=args.settle, probe=args.probe)
+                      settle=args.settle, probe=args.probe,
+                      canvas=(canvas.width, canvas.height) if canvas else None)
     print(f"輸出目錄:{out}")
     print("請在開起來的瀏覽器裡登入(登入過就不用),牌譜會自己開。Ctrl-C 結束。")
     try:
@@ -224,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
             CdpCapture(writer).run_launched(
                 url=args.url,
                 user_data_dir=args.user_data_dir,
-                canvas=Canvas.parse(args.canvas),
+                canvas=canvas,
                 autoplay=stepper,
                 stop_check=lambda: stepper.done,
             )
