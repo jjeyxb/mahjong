@@ -91,6 +91,9 @@ DEFAULT_CANVAS = "1280x720"
 #: 一直有動畫,畫面永遠不會一模一樣 —— 只靠那一條的話,演完了還一直按下去。
 _TAIL = 2
 
+#: 畫面沒變的話最多再等幾次(每次 1 秒)。見 :meth:`Stepper.act`。
+_WAIT_MAX = 4
+
 #: 備用的停止條件:連續幾張一模一樣就當作演完了。牌譜最後一步之後再按下一步,畫面不會再變。
 #: 但結算面板、流局畫面也可能停好幾步不動,所以不能太小。
 _SAME_LIMIT = 8
@@ -137,6 +140,7 @@ class Stepper:
     _shots: int = field(default=0, repr=False)
     _last_hash: str = field(default="", repr=False)
     _same: int = field(default=0, repr=False)
+    _waits: int = field(default=0, repr=False)
 
     # ------------------------------------------------------------ 封包
 
@@ -218,6 +222,19 @@ class Stepper:
             self._ready_at = now + 1.0
             return
         digest = hashlib.sha1(image).hexdigest()
+        if (
+            digest == self._last_hash
+            and 0 < self.clicks <= (self.records or 0)
+            and self._waits < _WAIT_MAX
+        ):
+            # 紀錄裡每一步都會讓畫面變(至少「余」或手牌會動),所以整張圖一樣
+            # 就是動畫還沒演完,答案會錯一步。**這是保險,還沒真的遇過**:一度
+            # 以為加槓會這樣,查下去是比對腳本只看畫面中段、漏掉了上下兩端的
+            # 副露,實際的圖是對的。
+            self._waits += 1
+            self._ready_at = now + 1.0
+            return
+        self._waits = 0
         self._same = self._same + 1 if digest == self._last_hash else 0
         self._last_hash = digest
         with (self.out / "steps.jsonl").open("a", encoding="utf-8") as fh:
