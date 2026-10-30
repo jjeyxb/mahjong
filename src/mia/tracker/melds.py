@@ -26,9 +26,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-__all__ = ["MeldWatcher"]
+from mia.mjai.tiles import HONOR_ORDER, UNKNOWN
+
+__all__ = ["MeldWatcher", "guess_meld"]
 
 #: 長了多少個組長才算一組。一組最短是 1.0(吃 / 碰),量測誤差約 ±0.1。
 _MIN_GROUP = 0.7
@@ -66,6 +69,10 @@ class MeldWatcher:
         self._base = [0.0 for _ in self.units]
         self._pending = [[] for _ in self.units]
 
+    def length(self, position: int) -> float:
+        """這一家目前採信的長度。新長出來的組就在這個長度之後。"""
+        return self._base[position]
+
     def observe(self, position: int, length: float | None) -> int:
         """收一家的一次讀數,回傳**新**長出來幾組(通常是 0)。
 
@@ -88,3 +95,35 @@ class MeldWatcher:
         self._pending[position] = []
         self.groups[position] += fresh
         return fresh
+
+
+def guess_meld(faces: Iterable[str]) -> tuple[str, ...]:
+    """一組副露認出來的牌面(MJAI 記法)→ 記進 ``Player.melds`` 的那一組。
+
+    認牌面只保證「認出來的是對的」,不保證認得全(橫放、遠的那家常常漏)。
+    所以這裡只做**一定成立**的推論,其餘位置填未知:
+
+    * 字牌只能碰、槓 —— 認出一張字牌,整組就是它。
+    * 數牌一張:可能是碰也可能是吃,只記那一張。
+    * 數牌兩三張:必須同一色、相差不超過 2,也就是湊得成一個順子。
+
+    湊不成一組(混了字牌與數牌、兩種花色、相差太遠)就代表有一張認錯了,
+    或是框到了別組的牌。不知道是哪一張錯,**整組當作沒認出來**。
+
+    下游只看第一張(役牌、染手),所以認得出的牌排在前面。
+
+    用未知佔位而不是少記一組:``Player.melded`` 要數得到它(副露威脅),而
+    未知不會被當成役牌、不會被當成某個花色。
+    """
+    tiles = sorted(set(faces))
+    unread = (UNKNOWN, UNKNOWN, UNKNOWN)
+    if not tiles or len(tiles) > 3:
+        return unread
+    honors = [tile for tile in tiles if tile in HONOR_ORDER]
+    if honors:
+        return (tiles[0],) * 3 if len(tiles) == 1 else unread
+    suits = {tile[1] for tile in tiles}
+    numbers = [int(tile[0]) for tile in tiles]
+    if len(suits) != 1 or max(numbers) - min(numbers) > 2:
+        return unread
+    return tuple(tiles) + (UNKNOWN,) * (3 - len(tiles))

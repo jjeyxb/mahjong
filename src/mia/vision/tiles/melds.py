@@ -1,7 +1,8 @@
-"""讀副露區:攤平成一條帶子,只問每一格**是不是翻開的牌**。
+"""讀副露區:先量長度(第一階段),鳴牌確認時再認牌面(第二階段)。
 
-這是副露的第一階段。第二階段(認出每一張是什麼,用來算「壁」)還沒做 ——
-見 ``docs/cv_mjai.md`` §3.1 為什麼要分兩階段。
+第一階段只問每一欄**是不是牌**,用來數組數;第二階段 :func:`read_meld_faces`
+認出新長出來那一組是哪幾張,用來判役牌、染手 —— 見 ``docs/cv_mjai.md``
+§3.1 為什麼要分兩階段、§3.8 第二階段怎麼做。
 
 第一階段不必認牌面,所以**格子不必擺正**
 ---------------------------------------
@@ -22,8 +23,9 @@
 牌山就在旁邊,而牌山也是牌
 --------------------------
 牌河四周是空桌布,副露不是 —— 它緊貼著牌山。但**牌山是背面朝上**,而
-``is_face_up`` 擋掉的正是牌背。所以第一階段躲得過這件事;第二階段要認
-牌面的時候躲不過,那時候才需要把邊界切準。
+``is_face_up`` 擋掉的正是牌背。所以第一階段躲得過這件事。第二階段躲不過
+(框得到牌山、自己的手牌、名牌),所以它**只掃第一階段量到的那一段** ——
+掃整條帶子的雛型,自家視角把手牌裡的白認成了副露。
 """
 
 from __future__ import annotations
@@ -34,7 +36,18 @@ import cv2
 import numpy as np
 
 from mia.utils.geometry import Rect
-from mia.vision.tiles.river import is_face_up, tile_masks
+from mia.vision.tiles.classify import TemplateSet
+from mia.vision.tiles.river import CELL as RIVER_CELL
+from mia.vision.tiles.river import COLUMNS as RIVER_COLUMNS
+from mia.vision.tiles.river import (
+    CONFIDENT,
+    DEFAULT_CORNERS,
+    ROWS,
+    classify_river_tile,
+    face_coverage,
+    is_face_up,
+    tile_masks,
+)
 
 __all__ = [
     "CELL",
@@ -45,6 +58,7 @@ __all__ = [
     "MeldStrip",
     "MeldView",
     "occupied_length",
+    "read_meld_faces",
     "read_melds",
 ]
 
@@ -104,6 +118,14 @@ class MeldView:
         量長度只要單調、穩定,不要求每一格等於一張牌。
         """
         width, height = cell
+        matrix = self.matrix(table, cell=cell, columns=columns)
+        return cv2.warpPerspective(image, matrix, (columns * width, height))
+
+    def matrix(
+        self, table: Rect, *, cell: tuple[int, int] = CELL, columns: int = COLUMNS
+    ) -> np.ndarray:
+        """原圖 → 帶子的透視變換。:meth:`rectify` 用它,認牌面時要反過來用。"""
+        width, height = cell
         quad = self.quad(table)
         if columns != COLUMNS:
             scale = columns / COLUMNS
@@ -114,8 +136,7 @@ class MeldView:
             [[0, 0], [0, height], [columns * width, height], [columns * width, 0]],
             dtype=np.float32,
         )
-        matrix = cv2.getPerspectiveTransform(quad, target)
-        return cv2.warpPerspective(image, matrix, (columns * width, height))
+        return cv2.getPerspectiveTransform(quad, target)
 
 
 @dataclass(frozen=True, slots=True)
@@ -324,3 +345,149 @@ def occupied_length(
         if miss > _GAP:
             break
     return end / cell[0]
+
+
+# ---------------------------------------------------------------------- 牌面
+
+#: 掃描用的框(寬, 高),在**牌河平面**上的像素。比模板大一圈,對齊交給
+#: :func:`cv2.matchTemplate`。
+_WINDOW = (100, 140)
+
+#: 框的步距。框比最大的模板寬 36、高 48,步距小於這個就不會漏掉位置;
+#: 實測 15 x 20 與 25 x 40 認出來的完全一樣,後者快三倍以上。
+_STEP = (25, 40)
+
+#: 模板尺寸。副露比牌河離鏡頭遠一點、角度也不同,上家又更小一號:四槓子
+#: 那場上家的字牌要 0.82 ~ 0.9 倍才認得到。
+_SIZES = ((64, 92), (58, 83), (52, 75))
+
+#: 白的分數門檻,依座位。其他牌照牌河的 :data:`CONFIDENT`。
+#:
+#: 白沒有圖案,框到牌的側面、頂面也湊得出分數:下家 0.6 ~ 0.65,對家(看得到
+#: 牌的頂面)到 0.76。真的白在自家、對家、下家都在 0.85 以上,但 Steam 實戰
+#: 的上家(最小最糊)只有 0.80 —— 跟對家的假白分不開,只能各用各的。
+_HAKU_SCORE = {"own": 0.85, "shimocha": 0.85, "toimen": 0.85, "kamicha": 0.75}
+
+#: 框中央至少要有這麼多是牌面,才拿去比模板。擋掉框在桌布上的。
+_FACE_MIN = 0.6
+
+#: 同一個位置只有一張牌:兩個命中的框距離小於這個(x, y),只留分數高的。
+#: 擋的是跨在兩張牌之間的框(實測 6 索旁邊多出 4 索,0.62 對 0.69)。
+_SAME_PLACE = (45, 60)
+
+#: 帶子在長度以外、內外兩側各放寬幾格(副露那一格)。框中心落在範圍內就掃。
+_PAD = 0.5
+
+
+def read_meld_faces(
+    image: np.ndarray,
+    table: Rect,
+    seat: str,
+    templates: TemplateSet,
+    *,
+    start: float,
+    end: float,
+) -> frozenset[str]:
+    """認出副露區 ``start`` 到 ``end`` 格之間的牌面(雀魂記法,赤五當普通五)。
+
+    ``start`` / ``end`` 是 :func:`occupied_length` 的單位。只認**新長出來的那
+    一段**:舊的組已經認過,而且掃的範圍越短越快(一組約 1 秒)。
+
+    為什麼借用牌河的攤平
+    --------------------
+    第一階段的帶子只框長度方向,牌是斜的、歪的,不能比模板。而**同一家的
+    牌河與副露在同一個桌面上**,牌河的透視變換本來就是為了把牌轉正、
+    放大到模板的大小 —— 拿它攤平副露區,牌面一樣是正的,只差一點遠近。
+    直接攤平帶子則要每家另外找縮放,上家還有剪切,試過不行。
+
+    橫放的那張(吃 / 碰進來的)轉 90 度再比。
+
+    Returns:
+        認得出來的牌。認不出的就不在裡面 —— 上層要把它當成未知,不要猜。
+    """
+    if end <= start:
+        return frozenset()
+    width, height = CELL
+    river_width, river_height = RIVER_CELL
+    target = np.array(
+        [
+            [0, 0],
+            [RIVER_COLUMNS * river_width, 0],
+            [RIVER_COLUMNS * river_width, ROWS * river_height],
+            [0, ROWS * river_height],
+        ],
+        dtype=np.float32,
+    )
+    to_plane = cv2.getPerspectiveTransform(DEFAULT_CORNERS[seat].quad(table), target)
+    from_strip = np.linalg.inv(DEFAULT_VIEWS[seat].matrix(table, columns=EXTENT))
+    # 起點不往前放寬:前一組最後那張牌的中心就在 start 前半格,放寬會把它
+    # 認進這一組。第一組前面沒有東西,照放。
+    head = start if start > 0 else -_PAD
+    strip = np.array(
+        [
+            [head * width, -_PAD * height],
+            [head * width, (1 + _PAD) * height],
+            [(end + _PAD) * width, (1 + _PAD) * height],
+            [(end + _PAD) * width, -_PAD * height],
+        ],
+        dtype=np.float32,
+    )
+    polygon = cv2.perspectiveTransform(strip[None], to_plane @ from_strip)[0]
+    window_width, window_height = _WINDOW
+    margin = np.array(_WINDOW, dtype=np.float32)
+    left, top = polygon.min(axis=0) - margin
+    right, bottom = polygon.max(axis=0) + margin
+    shift = np.array([[1, 0, -left], [0, 1, -top], [0, 0, 1]], dtype=np.float64)
+    size = (int(right - left), int(bottom - top))
+    plane = cv2.warpPerspective(image, shift @ to_plane, size)
+    polygon = (polygon - (left, top)).astype(np.float32)
+
+    hits: list[tuple[float, int, int, str]] = []
+    for x in range(0, size[0] - window_width, _STEP[0]):
+        for y in range(0, size[1] - window_height, _STEP[1]):
+            centre = (x + window_width / 2, y + window_height / 2)
+            if cv2.pointPolygonTest(polygon, centre, False) < 0:
+                continue
+            for window in _windows(plane, x, y):
+                label, score = _classify(window, templates, haku=_HAKU_SCORE[seat])
+                if label is not None:
+                    hits.append((score, x, y, label))
+    kept: list[tuple[float, int, int, str]] = []
+    near_x, near_y = _SAME_PLACE
+    for hit in sorted(hits, reverse=True):
+        _, x, y, _ = hit
+        if all(abs(x - kx) > near_x or abs(y - ky) > near_y for _, kx, ky, _ in kept):
+            kept.append(hit)
+    return frozenset(label for *_, label in kept)
+
+
+def _windows(plane: np.ndarray, x: int, y: int) -> list[np.ndarray]:
+    """``(x, y)`` 那一框:直的一張,加上同一個中心、轉 90 度的兩張。"""
+    width, height = _WINDOW
+    out = []
+    upright = plane[y : y + height, x : x + width]
+    if upright.shape[:2] == (height, width):
+        out.append(upright)
+    pad = (height - width) // 2
+    wide = plane[y + pad : y + height - pad, x - pad : x + width + pad] if x >= pad else plane[:0]
+    if wide.shape[:2] == (width, height):
+        out.append(cv2.rotate(wide, cv2.ROTATE_90_CLOCKWISE))
+        out.append(cv2.rotate(wide, cv2.ROTATE_90_COUNTERCLOCKWISE))
+    return out
+
+
+def _classify(
+    window: np.ndarray, templates: TemplateSet, *, haku: float
+) -> tuple[str | None, float]:
+    """這一框是哪張牌;沒把握回 ``(None, 0)``。"""
+    width, height = _WINDOW
+    centre = window[height // 4 : height - height // 4, width // 4 : width - width // 4]
+    if face_coverage(centre) < _FACE_MIN:
+        return None, 0.0
+    best: tuple[str | None, float] = (None, 0.0)
+    for size in _SIZES:
+        match = classify_river_tile(window, templates, size=size)
+        floor = haku if match.label == "5z" else CONFIDENT[0]
+        if match.score >= max(floor, best[1]) and match.margin >= CONFIDENT[1]:
+            best = (match.label, match.score)
+    return best
