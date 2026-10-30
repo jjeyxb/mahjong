@@ -18,6 +18,8 @@
 ::
 
     .venv/bin/python tools/paipu.py "<牌譜連結>"
+    # 同一場換成另外三個視角
+    .venv/bin/python tools/paipu.py "<牌譜連結>" --view shimocha
 
 登入過 ``tools/gt.py`` 那個瀏覽器的話不必再登。介面改版、按鈕搬家時,
 用 ``--probe`` 每幾秒存一張圖,拿圖重新找按鈕,再用 ``--next X,Y`` 指定。
@@ -96,6 +98,18 @@ _SAME_LIMIT = 8
 #: 「下一步」按鈕,畫布比例。量測條件是 :data:`DEFAULT_CANVAS`,見模組說明。
 DEFAULT_NEXT = (0.831, 0.757)
 
+#: 換視角要按的兩個位置:頭像、再按頭像旁邊跳出來的攝影機。畫布比例,
+#: 量測條件是 :data:`DEFAULT_CANVAS`。「下家」是**一開始那個視角**的下家。
+#:
+#: 同一場從四個視角各看一次,同一個人的副露就分別出現在自己、下家、對家、
+#: 上家的位置 —— 副露角點缺的那一家(下家 0 樣本)就是這樣補的。
+#: 切過去之後步數的對應不變(第 10 張的「余」兩個視角都是 64)。
+VIEWS: dict[str, tuple[tuple[float, float], tuple[float, float]]] = {
+    "shimocha": ((0.915, 0.311), (0.917, 0.441)),
+    "toimen": ((0.740, 0.089), (0.767, 0.235)),
+    "kamicha": ((0.0575, 0.311), (0.151, 0.432)),
+}
+
 #: ``--probe`` 最多存幾張。
 _PROBE_SHOTS = 30
 
@@ -109,6 +123,8 @@ class Stepper:
     next_at: tuple[float, float] | None
     settle: float
     probe: bool = False
+    #: 開始之前依序要點的位置(畫布比例),例如換視角:頭像 → 攝影機。
+    pre: list[tuple[float, float]] = field(default_factory=list)
     #: 要的 viewport(CSS 像素)。對不上就停 —— 見 :data:`DEFAULT_CANVAS`。
     canvas: tuple[int, int] | None = None
 
@@ -172,6 +188,18 @@ class Stepper:
                 self.done = True
                 return
             self.canvas = None  # 量過一次就好
+        if self.pre and self.records is not None and self._ready_at is not None:
+            if now < self._ready_at:
+                return
+            size = viewport(page)
+            if size is None:
+                return
+            x, y = self.pre.pop(0)
+            _press(page, int(size[0] * x), int(size[1] * y))
+            page.wait_for_timeout(int(self.settle * 1000))
+            self._shoot(page, f"pre-{self._shots:02d}.png")
+            self._ready_at = time.monotonic() + self.settle
+            return
         if self.probe:
             if self._ready_at is None:
                 self._ready_at = now
@@ -240,6 +268,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--next", type=_point, metavar="X,Y", default=DEFAULT_NEXT,
                         help="「下一步」按鈕,畫布比例(預設 %(default)s)")
     parser.add_argument("--settle", type=float, default=1.5, help="按完等幾秒再截(預設 1.5)")
+    parser.add_argument("--view", choices=sorted(VIEWS),
+                        help="換成一開始那個視角的下家/對家/上家再開始")
+    parser.add_argument("--pre", type=_point, metavar="X,Y", action="append", default=[],
+                        help="開始前依序點的位置,可重複。換視角:頭像、再攝影機")
     parser.add_argument("--probe", action="store_true", help="只每 3 秒截一張,用來找按鈕")
     parser.add_argument("--canvas", default=DEFAULT_CANVAS)
     parser.add_argument("--user-data-dir", default=str(DEFAULT_PROFILE))
@@ -253,12 +285,13 @@ def main(argv: list[str] | None = None) -> int:
     out: Path = args.out or DATA_DIR / "recordings" / time.strftime("paipu-%Y%m%d-%H%M%S")
     out.mkdir(parents=True, exist_ok=True)
     (out / "source.json").write_text(
-        json.dumps({"url": args.url, "next": args.next, "settle": args.settle,
-                    "canvas": args.canvas}, ensure_ascii=False, indent=2),
+        json.dumps({"url": args.url, "view": args.view, "pre": args.pre, "next": args.next,
+                    "settle": args.settle, "canvas": args.canvas}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     stepper = Stepper(out=out, schema=LiqiSchema.load(), next_at=args.next,
                       settle=args.settle, probe=args.probe,
+                      pre=[*VIEWS.get(args.view or "", ()), *args.pre],
                       canvas=(canvas.width, canvas.height) if canvas else None)
     print(f"輸出目錄:{out}")
     print("請在開起來的瀏覽器裡登入(登入過就不用),牌譜會自己開。Ctrl-C 結束。")
