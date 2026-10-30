@@ -63,6 +63,7 @@ __all__ = [
     "is_face_up",
     "read_river",
     "search_window",
+    "tile_masks",
 ]
 
 #: 牌河的格數。雀魂固定 6 格一排、三排。
@@ -840,11 +841,22 @@ def face_coverage(patch: np.ndarray) -> float:
     """
     if patch.size == 0:
         return 0.0
+    face, _ = tile_masks(patch)
+    return float(face.mean())
+
+
+def tile_masks(patch: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """逐像素的「是牌面」與「是牌背」,兩張布林圖。
+
+    :func:`face_coverage` 與副露的佔用長度(:mod:`mia.vision.tiles.melds`)
+    共用。副露要**兩樣都算**:暗槓兩端是背面,只看牌面的話暗槓中間一定有洞。
+    門檻與 :func:`is_face_up` 同一組,理由見那幾個常數。
+    """
     grey = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
     hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
     hue, saturation = hsv[:, :, 0], hsv[:, :, 1]
     back = ((hue <= _BACK_HUE[0]) | (hue >= _BACK_HUE[1])) & (saturation >= _BACK_SATURATION)
-    return float(((grey > _OCCUPIED_MEDIAN) & ~back).mean())
+    return (grey > _OCCUPIED_MEDIAN) & ~back, back
 
 
 def _is_back(hue: float, saturation: float) -> bool:
