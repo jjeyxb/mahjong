@@ -51,9 +51,11 @@ class MeldWatcher:
     """
 
     units: tuple[float, ...]
+    #: 連續幾次讀到同樣的長度才採信。
+    confirm: int = 2
     groups: list[int] = field(default_factory=list)
     _base: list[float] = field(default_factory=list, repr=False)
-    _pending: list[float | None] = field(default_factory=list, repr=False)
+    _pending: list[list[float]] = field(default_factory=list, repr=False)
 
     def __post_init__(self) -> None:
         self.reset()
@@ -62,7 +64,7 @@ class MeldWatcher:
         """新的一局。"""
         self.groups = [0 for _ in self.units]
         self._base = [0.0 for _ in self.units]
-        self._pending = [None for _ in self.units]
+        self._pending = [[] for _ in self.units]
 
     def observe(self, position: int, length: float | None) -> int:
         """收一家的一次讀數,回傳**新**長出來幾組(通常是 0)。
@@ -73,14 +75,16 @@ class MeldWatcher:
         unit = self.units[position]
         if length is None or length < self._base[position] + _MIN_GROUP * unit:
             # 沒長、變短(被蓋住),或還在動畫中間。只增不減:不動基準。
-            self._pending[position] = None
+            self._pending[position] = []
             return 0
         pending = self._pending[position]
-        self._pending[position] = length
-        if pending is None or abs(length - pending) > _STABLE * unit:
+        if pending and abs(length - pending[0]) > _STABLE * unit:
+            pending.clear()
+        pending.append(length)
+        if len(pending) < self.confirm:
             return 0
         fresh = max(1, round((length - self._base[position]) / (_MEAN_GROUP * unit)))
         self._base[position] = length
-        self._pending[position] = None
+        self._pending[position] = []
         self.groups[position] += fresh
         return fresh

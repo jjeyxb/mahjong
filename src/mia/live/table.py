@@ -98,6 +98,9 @@ _DORA_ROI = "dora_indicators"
 #: 「場上看得見幾張」不會被多算。
 _UNREAD_MELD = (UNKNOWN, UNKNOWN, UNKNOWN)
 
+#: 四家的牌河至少幾家讀得到,這一輪的副露長度才採信。見 ``_read_melds``。
+_MELD_QUORUM = 2
+
 #: 白(雀魂記法 ``5z`` 經 :func:`ms_to_mjai` 之後)。見 ``_read_seat``。
 _HAKU = "P"
 
@@ -355,18 +358,26 @@ class TableWorker(threading.Thread):
         **自己不讀。** 放銃分析不對自己算危險,自己的副露只會餵「壁」,而那要
         認牌面(第二階段)。只數組數對自己沒有用處。
 
-        那一家的牌河這一輪讀不到(不連續)就不採信他的副露長度:立繪與結算
-        面板蓋住時,牌河的連續性先壞掉。蓋住的那幾秒如果剛好讀到兩次一樣的
-        假長度,就會變成一組假的副露 —— 而副露只增不減,錯了收不回來。
+        四家的牌河有一半以上讀不到(不連續)時,這一輪的副露長度都不採信:
+        立繪與結算面板蓋住時,幾家的河**一起**壞掉。蓋住的那幾秒如果剛好讀到
+        兩次一樣的假長度,就會變成一組假的副露 —— 而副露只增不減,錯了收不回來。
+
+        不看「那一家自己的河」:對家河的第三列常常不連續(``docs/cv_mjai.md``
+        §3.6),牌譜實測那樣會把對家一整段的副露擋掉(22 張)。
         """
+        if (
+            sum(river.is_plausible() for river in rivers) < _MELD_QUORUM
+            # 還沒有人打過牌就不可能有人鳴牌。Steam 實測開局動畫讓下家與上家
+            # 同時多記一組(那時四家的河都是空的)。
+            or not any(river.count for river in rivers if river.is_plausible())
+        ):
+            for position in range(len(SEATS)):
+                self._melds.observe(position, None)
+            return
         for position, seat in enumerate(SEATS):
             if position == self._table.seat:
                 continue
-            length = (
-                occupied_length(image, table, MELD_VIEWS[seat])
-                if rivers[position].is_plausible()
-                else None
-            )
+            length = occupied_length(image, table, MELD_VIEWS[seat])
             for _ in range(self._melds.observe(position, length)):
                 self._table.players[position].melds.append(_UNREAD_MELD)
 
