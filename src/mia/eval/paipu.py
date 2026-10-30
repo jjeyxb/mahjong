@@ -12,6 +12,16 @@
 * **從誰那裡鳴的** —— 決定橫放那張在哪(上家最左、對家中間、下家最右)。
 * **加槓** —— 加的那張疊在橫放那張上面,寬度不變;與大明槓長得不一樣。
 
+局與局之間要重新對齊
+--------------------
+「第 k 張 = 第 k+1 步」只在**一局之內**成立。一局結束之後要多按幾次才會進到
+下一局:實測流局多按兩次(流局畫面、點數結算),而紀錄裡只有一筆
+``RecordNoTile``。和了要多按幾次跟役種數量有關,事前算不出來。
+
+所以每一局開頭用畫面自己對齊:局結束之後,第一張「四家牌河都是空的而且
+都讀得到」的圖就是新一局的配牌 —— 與 :class:`~mia.tracker.kyoku.KyokuWatcher`
+同一個判斷。中間那幾張(結算畫面)沒有答案。
+
 視角是哪一家
 ------------
 牌譜連結的 ``_a`` 是視角那個人的帳號,編碼過。換視角(``--view``)之後
@@ -26,9 +36,13 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 
+import cv2
+
 from mia.groundtruth.paipu import RecordStep, replay_steps
 from mia.groundtruth.schema import LiqiSchema
 from mia.mjai.events import Ankan, Chi, Daiminkan, Kakan, Pon, StartKyoku
+from mia.utils.geometry import Rect
+from mia.vision.tiles.river import DEFAULT_CORNERS, SEATS, read_river
 
 __all__ = [
     "MeldKind",
@@ -41,6 +55,9 @@ __all__ = [
 
 #: ``tools/paipu.py --view`` 的名稱 → 相對於起始視角差幾家。
 VIEW_OFFSETS = {None: 0, "shimocha": 1, "toimen": 2, "kamicha": 3}
+
+#: 新一局的空桌最多往後找幾張。實測流局是 2。
+_BOUNDARY_SEARCH = 12
 
 #: 相對位置的名稱,與 ``river.DEFAULT_CORNERS`` 的鍵一致。
 POSITIONS = ("own", "shimocha", "toimen", "kamicha")
@@ -119,11 +136,15 @@ class PaipuSession:
     Attributes:
         frames: 第 k 張圖的路徑。
         seat: 這份素材的視角是哪個座位。
+        steps: 第 k 張圖是紀錄的第幾步。``None`` 是局與局之間的結算畫面,
+            沒有答案。
         melds: 第 k 張圖的答案,依**相對位置**(:data:`POSITIONS`)。
+            結算畫面那幾張是空的,評分時要跳過(看 :attr:`steps`)。
     """
 
     frames: list[Path]
     seat: int
+    steps: list[int | None]
     melds: list[dict[str, tuple[MeldTruth, ...]]]
 
 
@@ -144,8 +165,42 @@ def load_session(directory: Path, schema: LiqiSchema | None = None) -> PaipuSess
     after = meld_truth(steps)
 
     frames = sorted((directory / "frames").glob("*.png"))
-    melds = []
-    for k in range(len(frames)):
-        state = after[min(k + 1, len(after) - 1)]
-        melds.append({POSITIONS[(s - seat) % 4]: state[s] for s in range(4)})
-    return PaipuSession(frames, seat, melds)
+    at = _frame_steps(frames, steps)
+    empty: dict[str, tuple[MeldTruth, ...]] = {p: () for p in POSITIONS}
+    melds = [
+        {POSITIONS[(s - seat) % 4]: after[i][s] for s in range(4)} if i is not None else empty
+        for i in at
+    ]
+    return PaipuSession(frames, seat, at, melds)
+
+
+def _frame_steps(frames: list[Path], steps: list[RecordStep]) -> list[int | None]:
+    """每張圖是第幾步。見模組說明「局與局之間要重新對齊」。"""
+    starts = [
+        s.index for s in steps if any(isinstance(e, StartKyoku) for e in s.events)
+    ]
+    out: list[int | None] = []
+    step = 1  # 第 0 張是配牌之後
+    while len(out) < len(frames):
+        k = len(out)
+        if step in starts[1:] and not _empty_table(frames[k]):
+            # 該是新一局的配牌,畫面卻還不是空桌 —— 還在結算畫面,沒有答案。
+            # 找不到空桌的話(錄到一半停了)就一直沒有答案,不要硬配。
+            out.append(None)
+            if out[-_BOUNDARY_SEARCH:] == [None] * _BOUNDARY_SEARCH:
+                out.extend([None] * (len(frames) - len(out)))
+            continue
+        out.append(min(step, len(steps) - 1))
+        step += 1
+    return out[: len(frames)]
+
+
+def _empty_table(path: Path) -> bool:
+    """四家牌河都是空的而且都讀得到 —— 新一局剛配完牌。"""
+    image = cv2.imread(str(path))
+    if image is None:
+        return False
+    height, width = image.shape[:2]
+    table = Rect(0, 0, width, height)
+    rivers = [read_river(DEFAULT_CORNERS[seat].rectify(image, table)) for seat in SEATS]
+    return all(r.count == 0 and r.is_plausible() for r in rivers)
