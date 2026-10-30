@@ -54,11 +54,21 @@ from mia.live.bus import Dangers, UpdateBus, WorkerStatus
 from mia.mjai.events import Dahai, Dora, Reach
 from mia.mjai.table import TableTracker
 from mia.mjai.tiles import ms_to_mjai
-from mia.tracker import UNKNOWN, DoraWatcher, KyokuSignal, KyokuWatcher, RiverWatcher
+from mia.tracker import (
+    UNKNOWN,
+    DoraWatcher,
+    KyokuSignal,
+    KyokuWatcher,
+    MeldWatcher,
+    RiverWatcher,
+)
+from mia.utils.geometry import Rect
 from mia.utils.logging import logger
 from mia.vision.roi import MissingRoiError, RoiSet
 from mia.vision.tiles.classify import DEFAULT_SKIN, MIN_BRIGHTNESS, TemplateSet
 from mia.vision.tiles.dora import read_dora
+from mia.vision.tiles.melds import DEFAULT_VIEWS as MELD_VIEWS
+from mia.vision.tiles.melds import GROUP_LENGTH, occupied_length
 from mia.vision.tiles.river import (
     COLUMNS,
     CONFIDENT,
@@ -81,6 +91,12 @@ _INTERVAL = 1.0
 #: 寶牌面板在牌桌矩形裡的位置(``data/roi_ref/roi.yaml`` 的 ``dora_indicators``)。
 _DORA_ROI = "dora_indicators"
 
+
+#: 看得出有一組、看不出是哪幾張的副露。第一階段只數組數(``docs/cv_mjai.md``
+#: §3.1)。用未知佔位而不是留空:``Player.melded`` 要數得到它(副露威脅),
+#: 而未知不會被當成役牌、不會被當成某個花色,``revealed`` 也不碰 ——
+#: 「場上看得見幾張」不會被多算。
+_UNREAD_MELD = (UNKNOWN, UNKNOWN, UNKNOWN)
 
 #: 白(雀魂記法 ``5z`` 經 :func:`ms_to_mjai` 之後)。見 ``_read_seat``。
 _HAKU = "P"
@@ -138,6 +154,7 @@ class TableWorker(threading.Thread):
         self._rivers = RiverWatcher()
         self._dora = DoraWatcher()
         self._kyoku = KyokuWatcher()
+        self._melds = MeldWatcher(units=tuple(GROUP_LENGTH[seat] for seat in SEATS))
         self._known: list[list[str]] = [[] for _ in SEATS]
         self._sideways: list[int | None] = [None for _ in SEATS]
         # 每家「上一輪讀成白、還沒收下」的那一格。見 _read_seat。
@@ -229,6 +246,7 @@ class TableWorker(threading.Thread):
                 continue
             self._read_seat(position, flat, river)
 
+        self._read_melds(image, table, rivers)
         self._read_dora(image)
         # **狀態寫在最後。** 寫在開頭的話會被這一輪後面的訊息蓋掉 ——
         # 實測「等讀到自己的手牌」被局邊界的「新的一局」洗掉了,而那正是
@@ -329,6 +347,29 @@ class TableWorker(threading.Thread):
         known.clear()
         return found
 
+    # ------------------------------------------------------------------ 副露
+
+    def _read_melds(self, image: np.ndarray, table: Rect, rivers: Sequence[River]) -> None:
+        """量三家對手的副露長度,長了一組就記一組。
+
+        **自己不讀。** 放銃分析不對自己算危險,自己的副露只會餵「壁」,而那要
+        認牌面(第二階段)。只數組數對自己沒有用處。
+
+        那一家的牌河這一輪讀不到(不連續)就不採信他的副露長度:立繪與結算
+        面板蓋住時,牌河的連續性先壞掉。蓋住的那幾秒如果剛好讀到兩次一樣的
+        假長度,就會變成一組假的副露 —— 而副露只增不減,錯了收不回來。
+        """
+        for position, seat in enumerate(SEATS):
+            if position == self._table.seat:
+                continue
+            length = (
+                occupied_length(image, table, MELD_VIEWS[seat])
+                if rivers[position].is_plausible()
+                else None
+            )
+            for _ in range(self._melds.observe(position, length)):
+                self._table.players[position].melds.append(_UNREAD_MELD)
+
     # ------------------------------------------------------------------ 寶牌
 
     def _read_dora(self, image: np.ndarray) -> None:
@@ -354,6 +395,7 @@ class TableWorker(threading.Thread):
         self._table.seat = 0
         self._rivers.reset()
         self._dora.reset()
+        self._melds.reset()
         self._known = [[] for _ in SEATS]
         self._sideways = [None for _ in SEATS]
         self._haku = [None for _ in SEATS]
