@@ -49,6 +49,22 @@ def hand4() -> np.ndarray:
     return load("hand_4_with_melds.png")
 
 
+class TestAfterACall:
+    def test_the_drawn_tile_straddling_two_slots_is_one_tile(self) -> None:
+        """10 張 + 摸牌:摸牌只隔不到半張,同時壓到第 11、12 個槽位。"""
+        hand = read_hand(load("hand_10_with_draw.png"))
+        assert len(hand) == 10
+        assert hand.drawn is not None
+        assert hand.melds == 1
+
+    def test_the_tile_to_discard_stays_inside_the_hand(self) -> None:
+        """吃碰之後沒有摸牌:連續 11 張,沒有擺到旁邊的那一張。"""
+        hand = read_hand(load("hand_11_after_call.png"))
+        assert len(hand) == 11
+        assert hand.drawn is None
+        assert hand.is_plausible
+
+
 class TestCounting:
     def test_full_hand(self, hand13: np.ndarray) -> None:
         hand = read_hand(hand13)
@@ -101,9 +117,20 @@ class TestMeldCount:
         assert hand.melds == melds
         assert hand.is_plausible
 
-    @pytest.mark.parametrize("concealed", [2, 3, 5, 6, 8, 9, 11, 12])
+    @pytest.mark.parametrize(("concealed", "melds"), [(11, 1), (8, 2), (5, 3), (2, 4)])
+    def test_a_call_leaves_the_discard_inside_the_hand(self, concealed: int, melds: int) -> None:
+        """吃碰之後沒有摸牌,該打的那張連在手牌裡,不是擺在旁邊。"""
+        hand = Hand(tuple(DEFAULT_LAYOUT.slot(1813, 207, i) for i in range(concealed)))
+        assert hand.melds == melds
+        assert hand.is_plausible
+
+    def test_a_called_length_with_a_drawn_tile_is_impossible(self) -> None:
+        slots = tuple(DEFAULT_LAYOUT.slot(1813, 207, i) for i in range(12))
+        assert not Hand(slots[:11], slots[11]).is_plausible
+
+    @pytest.mark.parametrize("concealed", [3, 6, 9, 12])
     def test_impossible_lengths_are_flagged(self, concealed: int) -> None:
-        """張數不是 13/10/7/4/1 就代表這一幀讀錯了(通常抓在理牌動畫中間)。
+        """張數不合就代表這一幀讀錯了(通常抓在理牌動畫中間)。
 
         回傳 -1 而不是拋錯,是因為這在即時串流裡是**預期會發生**的常態,
         呼叫端該做的是丟掉這一幀,不是處理例外。
