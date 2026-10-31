@@ -10,7 +10,7 @@ import pytest
 
 from mia.tracker import RoundWatcher
 from mia.utils.geometry import Rect
-from mia.vision.hud import Hud, HudDigits, read_hud
+from mia.vision.hud import Hud, HudDigits, _split_joined, read_hud
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 TABLE = Rect(0, 174, 2536, 1430)
@@ -53,6 +53,17 @@ class TestItAbstains:
         blank = np.full((1430, 2536, 3), 30, dtype=np.uint8)
         hud = read_hud(blank, Rect(0, 0, 2536, 1430), HudDigits.load())
         assert hud == Hud()
+
+
+class TestJoinedDigits:
+    def test_a_wide_span_is_two_digits(self) -> None:
+        """透視讓相鄰的字在欄位投影上重疊:34600 只切得出四段。"""
+        spans = [(0, 30), (32, 48), (50, 66), (68, 84)]
+        assert _split_joined(spans) == [(0, 15), (15, 30), (32, 48), (50, 66), (68, 84)]
+
+    def test_a_lone_digit_is_left_alone(self) -> None:
+        """只有一段時沒有東西可以比。點數 0 就是這樣。"""
+        assert _split_joined([(0, 30)]) == [(0, 30)]
 
 
 class TestTheChecksum:
@@ -108,7 +119,7 @@ class TestRoundWatcher:
         assert watcher.observe(bad) is None
 
     def test_an_unknown_wind_does_not_block_the_dealer(self) -> None:
-        """南場還認不得,但莊家不能因此整局不知道。"""
+        """西入認不得,但莊家不能因此整局不知道。"""
         watcher = RoundWatcher()
         watcher.observe(_round(bakaze=None))
         settled = watcher.observe(_round(bakaze=None))
