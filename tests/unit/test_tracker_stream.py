@@ -6,6 +6,7 @@ from mia.mjai.events import (
     Ankan,
     Chi,
     Dahai,
+    Daiminkan,
     Dora,
     Kakan,
     MjaiEvent,
@@ -256,6 +257,12 @@ class TestOtherMelds:
         assert isinstance(called, Chi)
         numbers = sorted(int(t[0]) for t in (called.pai, *called.consumed))
         assert numbers[2] - numbers[0] == 2
+
+    def test_an_open_kan_takes_three_tiles(self) -> None:
+        steps = [Step(T, 1), Step(D, 1, "7p"), Step(C, 3, target=1, kan=True), Step(T, 3)]
+        melds: list[list[tuple[str, ...]]] = [[], [], [], [("?", "?", "?")]]
+        events = body(compose(log(steps=steps, melds=melds)).events)
+        assert events[2] == Daiminkan(actor=3, target=1, pai="7p", consumed=["7p", "7p", "7p"])
 
     def test_a_closed_kan_has_no_target(self) -> None:
         steps = [Step(T, 1), Step(C, 1), Step(T, 1), Step(D, 1, "1s")]

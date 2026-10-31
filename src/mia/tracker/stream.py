@@ -359,7 +359,9 @@ class _Composer:
         if not any(isinstance(event, Dahai) for event in self.events):
             # 被鳴的那張還沒排出來,可能是自己打的、手牌還沒跟上。
             return False
-        self.events.append(self._open_meld(step, known))
+        self.events.append(
+            self._open_kan(step, known) if step.kan else self._open_meld(step, known)
+        )
         return True
 
     def _own_call(self, move: OwnMove) -> MjaiEvent | None:
@@ -385,6 +387,16 @@ class _Composer:
             tile = full[0] if full else _FILLERS[0]
         self.left[normalize_red(tile)] -= _COPIES
         return Ankan(actor=actor, consumed=[tile] * _COPIES)
+
+    def _open_kan(self, step: Step, known: list[str]) -> Daiminkan:
+        """別家的大明槓。四張一樣,所以認到一張就夠了。"""
+        assert step.target is not None
+        at = self._last_dahai()
+        plain = normalize_red(self.events[at].pai)  # type: ignore[attr-defined]
+        tile = known[0] if known else plain
+        pai = self._replace(at, tile)
+        consumed = [self._pick(tile) for _ in range(_COPIES - 1)]
+        return Daiminkan(actor=step.actor, target=step.target, pai=pai, consumed=consumed)
 
     def _open_meld(self, step: Step, known: list[str]) -> MjaiEvent:
         """別家的吃碰。``pai`` 是剛打出來的牌;牌面說不是的話聽牌面的。"""
