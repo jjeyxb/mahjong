@@ -119,10 +119,10 @@ MJAI 本來就是 JSON-lines over stdio 的協定，子程序化是它的原生�
 | **網頁版** | 擷取瀏覽器視窗 | CDP 攔 WebSocket |
 | **Steam 版** | 擷取 Unity 客戶端視窗 | **沒有** —— 不經過瀏覽器 |
 
-版本在設定頁選，記在 `ui_state.json`。選了 Steam 之後，AI 建議與放銃分析的
-開關**停用並寫明原因**，不是撥了沒反應 —— 那兩個功能在那一版上沒有資料來源，
-而「不能用」與「壞了」要分得出來。程式上就是 [`src/mia/platforms.py`](src/mia/platforms.py)
-的 `SUPPORTED` 表；組員的圖像辨識接上之後改它一行就好。
+版本在設定頁選，記在 `ui_state.json`。選了 Steam 之後，AI 建議與放銃分析全部走
+畫面辨識：別家打的牌讀不出來時只能猜，別家的手切 / 摸切看不到，所以準確度比網頁版低，
+數字見 [`docs/cv_mjai.md`](docs/cv_mjai.md) §4.4。程式上哪一版撐得起哪些功能寫在
+[`src/mia/platforms.py`](src/mia/platforms.py) 的 `SUPPORTED` 表。
 
 **認牌那一段兩版完全一樣** —— 擷取到的就是一張圖，CV 不在乎是誰畫的。
 差別只有兩個：找哪個視窗，以及牌桌矩形怎麼來。見下方「Steam 版實測」。
