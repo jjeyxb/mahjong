@@ -52,6 +52,7 @@ from mia.recorder.session import FrameRecord, SessionReader
 from mia.tracker import UNKNOWN
 from mia.tracker.rivers import WatchStats
 from mia.utils.geometry import Rect
+from mia.vision.hud import Hud
 from mia.vision.tiles.classify import DEFAULT_SKIN, TemplateSet
 from mia.vision.tiles.river import SEATS
 
@@ -150,6 +151,7 @@ class ReplayReport:
     interval: float = 1.0
     reaches: list[str] = field(default_factory=list)
     doras: list[str] = field(default_factory=list)
+    rounds: list[str] = field(default_factory=list)
     kyokus: int = 0
     posts: int = 0
     watch: WatchStats = field(default_factory=WatchStats)
@@ -209,6 +211,8 @@ class ReplayReport:
         lines.append(f"  立直 {len(self.reaches)} 次:{'、'.join(self.reaches) or '(無)'}")
         lines.append(f"  寶牌 {len(self.doras)} 張:{'、'.join(self.doras) or '(無)'}")
         lines.append(f"  局邊界 {self.kyokus} 次   投出危險度 {self.posts} 次")
+        lines.append(f"  HUD 讀到 {len(self.rounds)} 局:")
+        lines += [f"    {line}" for line in self.rounds]
         # ``confused`` 與 ``deferred`` 是 tracker 那一層唯一的症狀 ——
         # 格線可以每一格都對,而這兩欄還是爆的(實測:認牌全對,但 watcher
         # 把「少讀一格」當成鳴牌,整排挪位)。所以一定要印出來。
@@ -339,6 +343,7 @@ def replay(
 
     seen_reach = [False for _ in SEATS]
     seen_dora: list[str] = []
+    seen_round: Hud | None = None
     kyokus = 0
 
     for done, tick in enumerate(ticks, 1):
@@ -374,6 +379,13 @@ def replay(
         for indicator in current[len(seen_dora) :]:
             report.doras.append(f"{indicator}@{done}")
         seen_dora = current
+        if worker.round is not None and worker.round is not seen_round:
+            seen_round = worker.round
+            report.rounds.append(
+                f"{seen_round.bakaze or '?'}{seen_round.kyoku} 局 {seen_round.honba} 本場 "
+                f"供託 {seen_round.kyotaku}  莊 {SEATS[seen_round.dealer or 0]}  "
+                f"{list(seen_round.scores)} @{done}"
+            )
         if answers is None:
             truth = timeline.stable_at(tick.wall, settle)
         else:

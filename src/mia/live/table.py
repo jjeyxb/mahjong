@@ -63,10 +63,12 @@ from mia.tracker import (
     KyokuWatcher,
     MeldWatcher,
     RiverWatcher,
+    RoundWatcher,
     guess_meld,
 )
 from mia.utils.geometry import Rect
 from mia.utils.logging import logger
+from mia.vision.hud import Hud, HudDigits, read_hud
 from mia.vision.roi import MissingRoiError, RoiSet
 from mia.vision.tiles.classify import DEFAULT_SKIN, MIN_BRIGHTNESS, TemplateSet
 from mia.vision.tiles.dora import read_dora
@@ -165,6 +167,7 @@ class TableWorker(threading.Thread):
         self._hand: tuple[str, ...] = ()
         self._stop = threading.Event()
         self._templates = templates
+        self._digits: HudDigits | None = None
 
         self._table = TableTracker()
         # 視角位置直接當絕對座位,自己是 0 —— 於是「下家」就是 1,與
@@ -173,6 +176,7 @@ class TableWorker(threading.Thread):
         self._rivers = RiverWatcher()
         self._dora = DoraWatcher()
         self._kyoku = KyokuWatcher()
+        self._round = RoundWatcher()
         self._melds = MeldWatcher(units=tuple(GROUP_LENGTH[seat] for seat in SEATS))
         # 認牌面慢(一組 4 ~ 5 秒),放到另一條執行緒。見 _read_melds。
         self._faces = ThreadPoolExecutor(max_workers=1, thread_name_prefix="meld-faces")
@@ -271,6 +275,7 @@ class TableWorker(threading.Thread):
 
         self._read_melds(image, table, rivers)
         self._read_dora(image)
+        self._read_round(image, table, rivers)
         # **狀態寫在最後。** 寫在開頭的話會被這一輪後面的訊息蓋掉 ——
         # 實測「等讀到自己的手牌」被局邊界的「新的一局」洗掉了,而那正是
         # 使用者最需要看到前者的時候。狀態列要講的是這一輪**結束時**的狀態。
@@ -477,6 +482,36 @@ class TableWorker(threading.Thread):
 
     # ------------------------------------------------------------------ 其他
 
+    def _read_round(self, image: np.ndarray, table: Rect, rivers: Sequence[River]) -> None:
+        """這一局還不知道是哪一局的話,讀 HUD。
+
+        用視角當座位(自己是 0),所以莊家直接就是 :attr:`Hud.dealer`。役牌只看
+        相對莊家的位置,旋轉不影響 —— 而畫面這條路終於有場風與自風了,之前
+        只有三元牌。
+
+        **桌上還沒有牌就不讀。** 換局的空檔 HUD 正在更新:實測讀到過新的點數
+        配舊的局數(東 3 局 4 本場的點數已經是下一局的),兩次一樣、總和也對,
+        檢查碼擋不住。第一張牌出現的時候它一定已經換完了。
+        """
+        if self._round.settled is not None or not any(
+            river.count for river in rivers if river.is_plausible()
+        ):
+            return
+        if self._digits is None:
+            try:
+                self._digits = HudDigits.load()
+            except (FileNotFoundError, ValueError) as exc:
+                self.status.say(f"載不到 HUD 模板:{exc}")
+                return
+        settled = self._round.observe(read_hud(image, table, self._digits))
+        if settled is not None and settled.dealer is not None:
+            self._table.set_round(settled.bakaze, settled.dealer)
+
+    @property
+    def round(self) -> Hud | None:
+        """這一局的開局資訊。HUD 還沒讀穩就是 ``None``。"""
+        return self._round.settled
+
     def _new_kyoku(self) -> None:
         """清掉所有跟局有關的狀態。
 
@@ -488,6 +523,7 @@ class TableWorker(threading.Thread):
         self._rivers.reset()
         self._dora.reset()
         self._melds.reset()
+        self._round.reset()
         self._known = [[] for _ in SEATS]
         self._sideways = [None for _ in SEATS]
         self._haku = [None for _ in SEATS]

@@ -327,13 +327,25 @@ class TableTracker:
         只能在這裡做。場風與莊家也要留著,因為 :attr:`Player.yakuhai` 是每家
         一份而不是全桌一份 —— 同一張東,對莊家是役牌,對西家不是。
         """
-        self.bakaze = event.bakaze
-        self.oya = event.oya
-        self.players = [
-            Player(yakuhai=frozenset((*DRAGONS, event.bakaze, _WINDS[(seat - event.oya) % SEATS])))
-            for seat in range(SEATS)
-        ]
+        self.players = [Player() for _ in range(SEATS)]
+        self.set_round(event.bakaze, event.oya)
         self.dora_markers = [normalize_red(event.dora_marker)]
+
+    def set_round(self, bakaze: str | None, oya: int) -> None:
+        """記下場風與莊家,發每一家的役牌。**不動牌河。**
+
+        封包那條路在 ``start_kyoku`` 一次拿到;畫面那條路要等 HUD 讀穩,那時候
+        通常已經有人打牌了 —— 所以這一步要能單獨做,不能跟清桌綁在一起。
+
+        Args:
+            bakaze: 場風。``None`` 表示讀不到:只算三元牌與自風,方向是少算役牌。
+            oya: 這一局的莊家。
+        """
+        self.bakaze = bakaze
+        self.oya = oya
+        round_wind = () if bakaze is None else (bakaze,)
+        for seat, player in enumerate(self.players):
+            player.yakuhai = frozenset((*DRAGONS, *round_wind, _WINDS[(seat - oya) % SEATS]))
 
     def _discard(self, actor: int, tile: str) -> None:
         pai = normalize_red(tile)
