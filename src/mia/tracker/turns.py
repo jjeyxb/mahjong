@@ -22,7 +22,11 @@
 ``s`` 是下家          2,有副露   暗槓:摸、槓、嶺上
 ``s`` 不是下家        0           ``s`` 鳴了 ``a`` 的牌
 ``s`` 不是下家        1 以上      中間有人摸打,**那張一打出就被鳴走**
+``s`` 槓了別人的牌    1 以上      大明槓:鳴、嶺上、打
 ====================  ==========  ================================
+
+槓靠副露長度分:碰與吃是 1.0 個組長,槓至少 1.13。``unseen`` 分不開「大明槓的嶺上」
+與「被秒鳴的那一家的摸牌」,但長度分得開。
 
 最後一列是每秒讀一次的盲點:牌在河裡待不到一秒,從來沒被讀到過。
 
@@ -92,6 +96,7 @@ class Step:
         guess: 沒有把握時的最佳猜測。Mortal 不收 ``?``,見 :mod:`mia.tracker.stream`。
         target: :attr:`Action.CALL` 鳴的是誰的牌;``None`` 是暗槓。
         serial: 這是打的人的第幾張捨牌。``None`` 是河裡從沒出現過的牌。
+        kan: :attr:`Action.CALL` 是不是大明槓。
     """
 
     action: Action
@@ -100,6 +105,7 @@ class Step:
     guess: str | None = None
     target: int | None = None
     serial: int | None = None
+    kan: bool = False
 
 
 @dataclass(slots=True)
@@ -124,7 +130,7 @@ class TurnTracker:
     drawn: int = 0
     last: int = field(init=False)
     _queue: list[_Pending] = field(default_factory=list, repr=False)
-    _melds: list[tuple[int, int]] = field(default_factory=list, repr=False)
+    _melds: list[tuple[int, int, bool]] = field(default_factory=list, repr=False)
     _wall: int | None = field(default=None, repr=False)
     _wall_tick: int = field(default=-1, repr=False)
 
@@ -139,6 +145,7 @@ class TurnTracker:
         wall: int | None = None,
         *,
         hurry: bool = False,
+        kans: Sequence[int] = (),
     ) -> list[Step]:
         """收一輪的觀察,回傳這一輪可以確定的動作。
 
@@ -149,8 +156,9 @@ class TurnTracker:
             melds: 這一輪副露多了一組的座位,一組一筆。
             wall: 這一輪讀到的余牌,讀不到給 ``None``。
             hurry: 輪到自己了,不必再等。見模組說明。
+            kans: ``melds`` 裡寬度是槓的那幾家。
         """
-        self._melds += [(tick, seat) for seat in melds]
+        self._melds += [(tick, seat, seat in kans) for seat in melds]
         # 同一輪的並列照輪替排:誰離上一個打的人最近,誰先。
         anchor = self._queue[-1].actor if self._queue else self.last
         for seat, pai, *rest in sorted(discards, key=lambda d: self._distance(anchor, d[0])):
@@ -189,15 +197,15 @@ class TurnTracker:
     def _distance(anchor: int, seat: int) -> int:
         return (seat - anchor - 1) % _SEATS
 
-    def _take_meld(self, seat: int, tick: int) -> bool:
+    def _take_meld(self, seat: int, tick: int) -> tuple[int, int, bool] | None:
         for entry in self._melds:
             if entry[1] == seat and entry[0] >= tick - _MELD_BEFORE:
                 self._melds.remove(entry)
-                return True
-        return False
+                return entry
+        return None
 
     def _has_meld(self, seat: int, tick: int) -> bool:
-        return any(s == seat and t >= tick - _MELD_BEFORE for t, s in self._melds)
+        return any(s == seat and t >= tick - _MELD_BEFORE for t, s, _ in self._melds)
 
     def _resolve(self, item: _Pending, now: int) -> list[Step] | None:
         """這張牌之前發生了什麼。還不能確定就回 ``None``。"""
@@ -211,7 +219,10 @@ class TurnTracker:
             return [Step(Action.TSUMO, seat), drop]
         if not self._has_meld(seat, item.tick) and now - item.tick < WAIT:
             return None
-        if self._take_meld(seat, item.tick):
+        meld = self._take_meld(seat, item.tick)
+        if meld is not None:
+            if meld[2] and (not following or unseen == 1):
+                return self._open_kan(seat, unseen, drop)
             if not following:
                 # 第一張就被鳴走:桌上還沒有牌,一定是莊家打的,而開局沒有上一輪
                 # 的余牌可以比。
@@ -240,6 +251,14 @@ class TurnTracker:
             return [*steps, Step(Action.TSUMO, seat), drop]
         self.drawn += max(1, unseen)
         return [Step(Action.TSUMO, seat), drop]
+
+    def _open_kan(self, seat: int, unseen: int, drop: Step) -> list[Step]:
+        """大明槓:鳴、嶺上、打。``unseen`` 裡最後一張是嶺上。"""
+        hidden = self._hidden(seat, unseen - 1)
+        target = hidden[-1].actor if hidden else self.last
+        self.drawn += 1
+        call = Step(Action.CALL, seat, target=target, kan=True)
+        return [*hidden, call, Step(Action.TSUMO, seat), drop]
 
     def _hidden(self, seat: int, unseen: int) -> list[Step]:
         """跳過的那幾家裡,余牌有減的就是看不見的摸打。"""

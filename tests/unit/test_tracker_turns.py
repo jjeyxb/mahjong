@@ -70,6 +70,14 @@ class TestCalls:
             steps += turns.tick(tick, wall=68)
         assert shape(steps) == [(T, 1), (D, 1)]
 
+    def test_an_open_kan_draws_from_the_dead_wall(self) -> None:
+        """對家大明槓莊家的牌:嶺上讓余牌減一張,不是有人被跳過。"""
+        turns = self._after_first_discard()
+        turns.tick(3, wall=68)
+        steps = turns.tick(4, [(2, "5p")], melds=[2], wall=68, kans=[2])
+        assert shape(steps) == [(C, 2), (T, 2), (D, 2)]
+        assert steps[0] == Step(C, 2, target=0, kan=True)
+
     def test_a_late_river_keeps_its_turn(self) -> None:
         """下家的河這一輪讀不到,對家的牌先到:不是跳家,不要補假的隱藏捨牌。"""
         turns = self._after_first_discard()

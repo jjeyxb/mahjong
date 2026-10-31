@@ -125,6 +125,9 @@ _OPENING_WALL = (70, 69)
 #: 連續幾副不同的手牌解釋不了,就算事件流對不上了。見 ``stream``。
 _HAND_LOST = 3
 
+#: 副露一組長了這麼多個組長以上就是槓。吃碰是 1.0,槓實測 1.13 以上。
+_KAN_WIDTH = 1.1
+
 #: 排出來的摸牌數與余牌差到幾張,就算事件流對不上了。排序本來就會落後幾步,
 #: 而加槓的嶺上看不見。
 _WALL_LOST = 5
@@ -195,6 +198,7 @@ class TableWorker(threading.Thread):
         # 兩輪之間手牌可能變了好幾次(摸、打),一次都不能漏,所以是佇列。
         self._hands: list[tuple[tuple[str, ...], str | None]] = []
         self._stop = threading.Event()
+        self._wake = threading.Event()
         self._templates = templates
         self._digits: HudDigits | None = None
 
@@ -208,9 +212,10 @@ class TableWorker(threading.Thread):
         self._round = RoundWatcher()
         self._reach = ReachWatcher()
         self._turns: TurnTracker | None = None
-        self._turn_buffer: list[tuple[int, list[_Seen], list[int], int | None]] = []
+        self._turn_buffer: list[tuple[int, list[_Seen], list[int], list[int], int | None]] = []
         self._turn_discards: list[_Seen] = []
         self._turn_melds: list[int] = []
+        self._turn_kans: list[int] = []
         self._joined_late = False
         self.steps: list[Step] = []
         self._own = HandWatcher()
@@ -256,9 +261,13 @@ class TableWorker(threading.Thread):
         with self._lock:
             self._hand = tuple(tiles)
             self._hands.append((tuple(tiles), drawn))
+        # 手牌一變就要讀,不等下一輪:輪到自己的那一刻正是 Mortal 要回答的時候。
+        # 牌桌一秒讀一次的話,建議平均晚半秒、最多晚一秒,而手牌一手才變兩次。
+        self._wake.set()
 
     def stop(self) -> None:
         self._stop.set()
+        self._wake.set()
 
     # ------------------------------------------------------------------ 主迴圈
 
@@ -279,7 +288,8 @@ class TableWorker(threading.Thread):
                 except Exception as exc:  # noqa: BLE001 - 執行緒裡漏出來的例外只會被吞掉
                     logger.warning("牌桌辨識這一輪失敗:%s", exc)
                     self.status.say(f"這一輪讀不成:{exc}")
-                self._stop.wait(max(0.0, self._interval - (time.monotonic() - started)))
+                self._wake.wait(max(0.0, self._interval - (time.monotonic() - started)))
+                self._wake.clear()
         finally:
             self.status.alive = False
             self._faces.shutdown(wait=False, cancel_futures=True)
@@ -301,7 +311,12 @@ class TableWorker(threading.Thread):
             #
             # 現在 LiveRuntime 會一併打開畫面辨識(見 _ensure_vision_for),
             # 所以這句話只會在真的還沒送到第一幀時出現(找視窗、校正中)。
-            self.status.say("等畫面辨識把牌桌送過來")
+            #
+            # 讀過之後就不講了:手牌把這一輪提早叫醒時,新的畫面可能還沒到。
+            if not self.reads:
+                self.status.say("等畫面辨識把牌桌送過來")
+            with self._lock:
+                self._hands = hands + self._hands
             return
 
         image, calibration = frame
@@ -531,6 +546,8 @@ class TableWorker(threading.Thread):
             fresh = self._melds.observe(position, length)
             self._turn_melds.extend([position] * fresh)
             step = (length - start) / fresh if fresh else 0.0
+            if fresh and step >= _KAN_WIDTH * GROUP_LENGTH[seat]:
+                self._turn_kans.append(position)
             melds = self._table.players[position].melds
             for index in range(fresh):
                 # 組數**現在**就算數(副露威脅不等牌面),牌面認好了再填進來。
@@ -666,8 +683,8 @@ class TableWorker(threading.Thread):
 
         莊家要等 HUD 讀穩才知道,所以開局那幾輪先存著。
         """
-        discards, melds = self._turn_discards, self._turn_melds
-        self._turn_discards, self._turn_melds = [], []
+        discards, melds, kans = self._turn_discards, self._turn_melds, self._turn_kans
+        self._turn_discards, self._turn_melds, self._turn_kans = [], [], []
         if self._digits is None or self._kyoku.empty or self._joined_late:
             return
         if len(discards) >= _JOINED_LATE:
@@ -679,16 +696,18 @@ class TableWorker(threading.Thread):
         self._wall = wall if wall is not None else self._wall
         own_turn = bool(self._own.hand) and len(self._own.hand) % 3 == 2
         if self._turns is None:
-            self._turn_buffer.append((self.reads, discards, melds, wall))
+            self._turn_buffer.append((self.reads, discards, melds, kans, wall))
             settled = self._round.settled
             if settled is None or settled.dealer is None:
                 return
             self._turns = TurnTracker(settled.dealer)
-            for tick, buffered, called, seen in self._turn_buffer:
-                self.steps += self._turns.tick(tick, buffered, called, seen)
+            for tick, buffered, called, wide, seen in self._turn_buffer:
+                self.steps += self._turns.tick(tick, buffered, called, seen, kans=wide)
             self._turn_buffer = []
             return
-        self.steps += self._turns.tick(self.reads, discards, melds, wall, hurry=own_turn)
+        self.steps += self._turns.tick(
+            self.reads, discards, melds, wall, hurry=own_turn, kans=kans
+        )
 
     @property
     def round(self) -> Hud | None:
@@ -753,6 +772,7 @@ class TableWorker(threading.Thread):
         self._turn_buffer = []
         self._turn_discards = []
         self._turn_melds = []
+        self._turn_kans = []
         self._joined_late = False
         self.steps = []
         self._known = [[] for _ in SEATS]
