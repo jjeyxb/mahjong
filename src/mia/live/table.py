@@ -268,10 +268,14 @@ class TableWorker(threading.Thread):
                 "新的一局" if signal is KyokuSignal.STARTED else "牌桌清空了"
             )
 
-        for position, (flat, river) in enumerate(zip(flats, rivers, strict=True)):
-            if not river.is_plausible():
-                continue
-            self._read_seat(position, flat, river)
+        # **局還沒開始就不讀牌河。** 開始要四家都連續,而讀牌只看那一家:第一張牌
+        # 剛好遇上別家不連續的那一輪,牌會先被收下,下一輪開局訊號到了又整個重設,
+        # 同一批牌再發一次 —— 事件流的順序就亂了。開局前的介面也擋在這裡。
+        if not self._kyoku.empty:
+            for position, (flat, river) in enumerate(zip(flats, rivers, strict=True)):
+                if not river.is_plausible():
+                    continue
+                self._read_seat(position, flat, river)
 
         self._read_melds(image, table, rivers)
         self._read_dora(image)
@@ -385,10 +389,9 @@ class TableWorker(threading.Thread):
     # ------------------------------------------------------------------ 副露
 
     def _read_melds(self, image: np.ndarray, table: Rect, rivers: Sequence[River]) -> None:
-        """量三家對手的副露長度,長了一組就記一組。
+        """量四家的副露長度,長了一組就記一組。
 
-        **自己不讀。** 放銃分析不對自己算危險,自己的副露只會餵「壁」,而那要
-        認牌面(第二階段)。只數組數對自己沒有用處。
+        自己也讀:放銃分析用不到,但事件流要靠「誰鳴了」排出出牌順序。
 
         四家的牌河有一半以上讀不到(不連續)時,這一輪的副露長度都不採信:
         立繪與結算面板蓋住時,幾家的河**一起**壞掉。蓋住的那幾秒如果剛好讀到
@@ -409,8 +412,6 @@ class TableWorker(threading.Thread):
                 self._melds.observe(position, None)
             return
         for position, seat in enumerate(SEATS):
-            if position == self._table.seat:
-                continue
             start = self._melds.length(position)
             length = occupied_length(image, table, MELD_VIEWS[seat])
             fresh = self._melds.observe(position, length)
