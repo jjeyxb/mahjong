@@ -34,8 +34,13 @@
 
 什麼時候要等
 ------------
-絕大多數的牌立刻發。只有 ``unseen`` 不是 1 的下家要等副露確認(最多
-:data:`WAIT` 輪),因為吃與摸打的差別只有那一筆紀錄。等不到就當成摸打。
+正常摸打立刻發。其他情況都要等副露確認,最多 :data:`WAIT` 輪:
+
+* 下家、``unseen`` 不是 1:吃與摸打的差別只有那一筆紀錄。
+* 跳家:一定是鳴牌,而鳴牌一定有副露。
+
+等不到副露、余牌也沒減的牌**不是真的捨牌**。和了之後的結算畫面會被讀成一排
+``?``,實測一局最多多出 3 張;它們既沒有摸牌也沒有鳴牌,在這裡就留不下來。
 """
 
 from __future__ import annotations
@@ -103,8 +108,6 @@ class TurnTracker:
     last: int = field(init=False)
     _queue: list[_Pending] = field(default_factory=list, repr=False)
     _melds: list[tuple[int, int]] = field(default_factory=list, repr=False)
-    #: 這幾家的鳴牌已經從「跳過」推出來了,之後才到的副露紀錄要銷帳。
-    _owed: list[int] = field(default_factory=lambda: [0] * _SEATS, repr=False)
     _wall: int | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -125,11 +128,7 @@ class TurnTracker:
             melds: 這一輪副露多了一組的座位,一組一筆。
             wall: 這一輪讀到的余牌,讀不到給 ``None``。
         """
-        for seat in melds:
-            if self._owed[seat]:
-                self._owed[seat] -= 1
-            else:
-                self._melds.append((tick, seat))
+        self._melds += [(tick, seat) for seat in melds]
         # 同一輪的並列照輪替排:誰離上一個打的人最近,誰先。
         anchor = self._queue[-1].actor if self._queue else self.last
         for seat, pai in sorted(discards, key=lambda d: self._distance(anchor, d[0])):
@@ -142,8 +141,10 @@ class TurnTracker:
             steps = self._resolve(self._queue[0], tick)
             if steps is None:
                 break
-            out += steps
-            self.last = self._queue.pop(0).actor
+            item = self._queue.pop(0)
+            if steps:
+                out += steps
+                self.last = item.actor
         return out
 
     @staticmethod
@@ -166,29 +167,33 @@ class TurnTracker:
         known = _FULL_WALL - self.drawn if item.wall is None else item.wall
         unseen = _FULL_WALL - self.drawn - known
         drop = Step(Action.DAHAI, seat, item.pai)
-        if seat != (self.last + 1) % _SEATS:
-            return [*self._hidden(seat, unseen), Step(Action.CALL, seat), drop] if self._settle(
-                seat, item
-            ) else None
-        if unseen == 1:
+        following = seat == (self.last + 1) % _SEATS
+        if following and unseen == 1:
             self.drawn += 1
             return [Step(Action.TSUMO, seat), drop]
         if not self._has_meld(seat, item.tick) and now - item.tick < WAIT:
             return None
         if self._take_meld(seat, item.tick):
+            if not following:
+                return [*self._hidden(seat, unseen), Step(Action.CALL, seat), drop]
             if unseen <= 0:
                 return [Step(Action.CALL, seat), drop]
             self.drawn += 2
             draw = Step(Action.TSUMO, seat)
             return [draw, Step(Action.CALL, seat), draw, drop]
+        # 等完了還是沒有副露。余牌有減就是動作太快、摸牌沒趕上那一輪;沒減就不是真的牌。
+        behind = _FULL_WALL - self.drawn - (known if self._wall is None else self._wall)
+        if behind < 1:
+            return []
+        if not following:
+            # 跳家卻沒有副露,而余牌有減:中間漏看了。補上再接回去,不然 last 停在
+            # 原地,之後每一張都變成「跳家且沒有副露」,整局後面一路被丟。
+            lost = (seat - self.last - 1) % _SEATS
+            steps = self._hidden(seat, min(lost, max(behind - 1, 0)))
+            self.drawn += 1
+            return [*steps, Step(Action.TSUMO, seat), drop]
         self.drawn += max(1, unseen)
         return [Step(Action.TSUMO, seat), drop]
-
-    def _settle(self, seat: int, item: _Pending) -> bool:
-        """跳家:鳴牌已經確定了,副露紀錄來了就銷帳,還沒來就記著。"""
-        if not self._take_meld(seat, item.tick):
-            self._owed[seat] += 1
-        return True
 
     def _hidden(self, seat: int, unseen: int) -> list[Step]:
         """跳過的那幾家裡,余牌有減的就是看不見的摸打。"""
