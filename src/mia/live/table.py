@@ -62,6 +62,7 @@ from mia.tracker import (
     KyokuSignal,
     KyokuWatcher,
     MeldWatcher,
+    ReachWatcher,
     RiverWatcher,
     RoundWatcher,
     Step,
@@ -186,6 +187,7 @@ class TableWorker(threading.Thread):
         self._dora = DoraWatcher()
         self._kyoku = KyokuWatcher()
         self._round = RoundWatcher()
+        self._reach = ReachWatcher()
         self._turns: TurnTracker | None = None
         self._turn_buffer: list[tuple[int, list[_Seen], list[int], int | None]] = []
         self._turn_discards: list[_Seen] = []
@@ -399,8 +401,7 @@ class TableWorker(threading.Thread):
         if found is None:
             return None
         self._sideways[position] = found
-        self._table.handle(Reach(actor=position))
-        self.status.say(f"{SEATS[position]} 立直了")
+        self._declare_reach(position)
         # 格線整個挪過,這一家要重認。
         known.clear()
         return found
@@ -503,6 +504,13 @@ class TableWorker(threading.Thread):
 
     # ------------------------------------------------------------------ 其他
 
+    def _declare_reach(self, position: int) -> None:
+        """記下這一家立直了。橫放牌與點數兩條路都會走到這裡,只算一次。"""
+        if self._table.players[position].reach:
+            return
+        self._table.handle(Reach(actor=position))
+        self.status.say(f"{SEATS[position]} 立直了")
+
     def _read_round(self, image: np.ndarray, table: Rect, rivers: Sequence[River]) -> None:
         """這一局還不知道是哪一局的話,讀 HUD。
 
@@ -513,10 +521,10 @@ class TableWorker(threading.Thread):
         **桌上還沒有牌就不讀。** 換局的空檔 HUD 正在更新:實測讀到過新的點數
         配舊的局數(東 3 局 4 本場的點數已經是下一局的),兩次一樣、總和也對,
         檢查碼擋不住。第一張牌出現的時候它一定已經換完了。
+
+        讀穩之後還是每一輪都讀(1.5 毫秒):點數變了就是有人立直。
         """
-        if self._round.settled is not None or not any(
-            river.count for river in rivers if river.is_plausible()
-        ):
+        if not any(river.count for river in rivers if river.is_plausible()):
             return
         if self._digits is None:
             try:
@@ -524,9 +532,15 @@ class TableWorker(threading.Thread):
             except (FileNotFoundError, ValueError) as exc:
                 self.status.say(f"載不到 HUD 模板:{exc}")
                 return
-        settled = self._round.observe(read_hud(image, table, self._digits))
+        hud = read_hud(image, table, self._digits)
+        if self._round.settled is not None:
+            for position in self._reach.observe(hud):
+                self._declare_reach(position)
+            return
+        settled = self._round.observe(hud)
         if settled is not None and settled.dealer is not None:
             self._table.set_round(settled.bakaze, settled.dealer)
+            self._reach.start(settled)
 
     def _read_turns(self, image: np.ndarray, table: Rect) -> None:
         """這一輪的捨牌、副露、余牌交給 :class:`TurnTracker`,排出先後順序。
@@ -572,6 +586,7 @@ class TableWorker(threading.Thread):
         self._dora.reset()
         self._melds.reset()
         self._round.reset()
+        self._reach.reset()
         self._turns = None
         self._turn_buffer = []
         self._turn_discards = []
