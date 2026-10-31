@@ -53,6 +53,13 @@ _MIN_WIDTH = 2
 _SCORE = 0.60
 _MARGIN = 0.05
 
+#: 場風的門檻要高得多。它是**開放集合**:模板只有東與南,西入時要能棄權,而不是
+#: 硬選一個。實測正解 0.94 以上,另一個模板 0.74 以下。
+_WIND_SCORE = 0.85
+
+#: 一段比一般的字寬這麼多倍,就是兩個字黏在一起。
+_JOINED = 1.6
+
 #: 四人場開局的總點數。見 :attr:`Hud.scores_agree`。
 _TOTAL = 100000
 
@@ -107,7 +114,7 @@ class HudDigits:
     * ``round`` 第幾局的青色斜體。
     * ``stick`` 本場與供託的白色斜體。**只有 0 ~ 4**:素材裡沒見過更大的。
       5 以上會比不過門檻而回 ``None``,不會被說成別的數字。
-    * ``wind`` 場風。**只有東**:現有素材都是東場。
+    * ``wind`` 場風。**只有東與南**:素材裡沒有西入。
     """
 
     def __init__(self, sets: dict[str, dict[str, np.ndarray]]) -> None:
@@ -131,7 +138,7 @@ class HudDigits:
             raise FileNotFoundError(f"找不到 HUD 模板:{base}")
         return cls(sets)
 
-    def best(self, name: str, patch: np.ndarray) -> str | None:
+    def best(self, name: str, patch: np.ndarray, *, floor: float = _SCORE) -> str | None:
         """``patch`` 是這一套裡的哪個字;沒把握回 ``None``。"""
         ranked = sorted(
             ((_correlation(patch, face), label) for label, face in self._sets[name].items()),
@@ -139,7 +146,7 @@ class HudDigits:
         )
         score, label = ranked[0]
         runner_up = ranked[1][0] if len(ranked) > 1 else -1.0
-        return label if score >= _SCORE and score - runner_up >= _MARGIN else None
+        return label if score >= floor and score - runner_up >= _MARGIN else None
 
 
 def _correlation(a: np.ndarray, b: np.ndarray) -> float:
@@ -155,7 +162,7 @@ class Hud:
     """一張畫面讀到的 HUD。每個欄位讀不到就是 ``None``。
 
     Attributes:
-        bakaze: 場風。現在只認得 ``E``。
+        bakaze: 場風。認得 ``E`` 與 ``S``,西入回 ``None``。
         kyoku: 第幾局,1 起算。
         wall: 余幾張。
         honba: 本場數。
@@ -212,18 +219,40 @@ def _digits(patch: np.ndarray) -> list[np.ndarray]:
         return []
     ink = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)[:, :, 2] > _INK
     columns = [*ink.any(axis=0).tolist(), False]
-    out = []
+    spans = []
     start = None
     for x, filled in enumerate(columns):
         if filled and start is None:
             start = x
         elif not filled and start is not None:
             if x - start >= _MIN_WIDTH:
-                rows = np.flatnonzero(ink[:, start:x].any(axis=1))
-                glyph = patch[rows[0] : rows[-1] + 1, start:x]
-                grey = cv2.cvtColor(glyph, cv2.COLOR_BGR2GRAY)
-                out.append(cv2.resize(grey, _DIGIT, interpolation=cv2.INTER_AREA))
+                spans.append((start, x))
             start = None
+    out = []
+    for left, right in _split_joined(spans):
+        rows = np.flatnonzero(ink[:, left:right].any(axis=1))
+        glyph = patch[rows[0] : rows[-1] + 1, left:right]
+        grey = cv2.cvtColor(glyph, cv2.COLOR_BGR2GRAY)
+        out.append(cv2.resize(grey, _DIGIT, interpolation=cv2.INTER_AREA))
+    return out
+
+
+def _split_joined(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """黏在一起的兩個字對半切開。
+
+    字有透視斜度,相鄰兩個字的筆畫在欄位投影上會重疊:實測對家的 34600 只切出
+    四段,「34」被當成一個字,認不出來,整局過不了檢查碼。
+    """
+    if len(spans) < 2:
+        return spans
+    typical = float(np.median([right - left for left, right in spans]))
+    out = []
+    for left, right in spans:
+        if right - left >= _JOINED * typical:
+            middle = (left + right) // 2
+            out += [(left, middle), (middle, right)]
+        else:
+            out.append((left, right))
     return out
 
 
@@ -267,7 +296,7 @@ def read_hud(image: np.ndarray, table: Rect, digits: HudDigits) -> Hud:
         interpolation=cv2.INTER_AREA,
     )
     return Hud(
-        bakaze=digits.best("wind", wind),
+        bakaze=digits.best("wind", wind, floor=_WIND_SCORE),
         kyoku=_number(_crop(image, table, _ROUND), digits, "round"),
         wall=_number(_crop(image, table, _WALL), digits, "wall"),
         honba=_number(_crop(image, table, _HONBA), digits, "stick"),
