@@ -36,6 +36,7 @@ from mia.vision.tiles.river import (
     classify_sideways,
     face_size,
     find_sideways,
+    is_face_up,
     read_river,
     search_window,
     sideways_face_size,
@@ -530,3 +531,10 @@ class TestTheRotatedTemplates:
     def test_the_rotation_is_cached(self, templates: TemplateSet) -> None:
         """每一幀的每一格都會問一次 —— 37 張影像不該每次重轉。"""
         assert templates.rotated() is templates.rotated()
+
+
+def test_a_red_five_is_not_a_tile_back() -> None:
+    """赤 5 筒的中位色相落在牌背上,實際畫面裁下來的一格。"""
+    fixtures = Path(__file__).resolve().parents[1] / "fixtures"
+    face = cv2.imread(str(fixtures / "river_red_5p_face.png"))
+    assert is_face_up(face)

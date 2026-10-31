@@ -21,10 +21,13 @@ from mia.mjai.tiles import ms_to_mjai
 from mia.vision.tiles.classify import (
     FACE_RATIO,
     MIN_BRIGHTNESS,
+    WHOLE_RED,
     Match,
     TemplateSet,
     classify,
     classify_hand,
+    red_ink,
+    settle_five,
 )
 from mia.vision.tiles.hand import read_hand
 
@@ -453,3 +456,25 @@ class TestTileHeight:
         assert classify(tall, templates, tile_height=box.height).label == (
             classify(tight, templates).label
         )
+
+
+class TestRedFive:
+    """赤五與普通五形狀一樣,只差顏色。"""
+
+    @pytest.mark.parametrize("suit", "mps")
+    def test_a_red_five_is_red(self, templates: TemplateSet, suit: str) -> None:
+        red = templates.scaled((64, 92))[templates.labels.index(f"0{suit}")][1]
+        plain = templates.scaled((64, 92))[templates.labels.index(f"5{suit}")][1]
+        assert settle_five(f"5{suit}", red) == f"0{suit}"
+        assert settle_five(f"0{suit}", plain) == f"5{suit}"
+
+    def test_other_tiles_stay_as_they_are(self, templates: TemplateSet) -> None:
+        chun = templates.scaled((64, 92))[templates.labels.index("7z")][1]
+        assert settle_five("7z", chun) == "7z"
+        assert red_ink(chun) >= WHOLE_RED
+
+    def test_a_blank_patch_has_no_ink(self) -> None:
+        assert red_ink(np.full((20, 20, 3), 235, np.uint8)) == 0.0
+
+    def test_only_keeps_the_named_faces(self, templates: TemplateSet) -> None:
+        assert set(templates.only("0m", "7z").labels) == {"0m", "7z"}

@@ -39,7 +39,7 @@ import cv2
 import numpy as np
 
 from mia.utils.geometry import Rect
-from mia.vision.tiles.classify import Match, TemplateSet, classify
+from mia.vision.tiles.classify import WHOLE_RED, Match, TemplateSet, classify, red_ink
 
 __all__ = [
     "CELL",
@@ -58,6 +58,7 @@ __all__ = [
     "classify_river_tile",
     "classify_sideways",
     "face_coverage",
+    "face_patch",
     "face_size",
     "find_sideways",
     "is_face_up",
@@ -236,7 +237,7 @@ _BACK_SATURATION = 70.0
 #: 九筒、八筒這種畫滿花紋的牌,一半以上的像素是深色的,中位數掉到門檻以下,
 #: 那一格就成了河中間的一個洞,整家判成不連續。半莊實測 3163 張牌有 204 張如此,
 #: 這個門檻補回 164 張,而 5837 個空格一個都沒有誤判(空格最高 0.37,來自壓到
-#: 隔壁的牌)。
+#: 隔壁的牌)。赤五也靠這個門檻,見 :func:`is_face_up`。
 _DENSE_FACE = 0.4
 
 #: 牌背的色相範圍(OpenCV 的 0~179,也就是色環的一半)。**光靠飽和度不夠。**
@@ -272,6 +273,9 @@ _DENSE_FACE = 0.4
 #:
 #: 色環是繞的,所以紅紫兩端都要含進來(接近 0 與接近 179 是同一個顏色)。
 _BACK_HUE = (90.0, 170.0)
+
+#: :func:`face_patch` 往內裁幾像素。
+_FACE_TRIM = 6
 
 
 @dataclass(frozen=True, slots=True)
@@ -839,6 +843,19 @@ def _face_of(cell: Rect, size: tuple[int, int]) -> Rect:
     )
 
 
+def face_patch(flat: np.ndarray, cell: Rect) -> np.ndarray:
+    """一格裡的牌面,外圍再裁掉一點:看顏色時不要算到桌布與牌的側面。
+
+    裁 6 像素是掃出來的:赤五與普通五的紅墨比例在這裡分得最開,裁 12 像素時
+    索子的差距從 0.26 縮到 0.20。
+    """
+    face = _face_of(cell, CELL)
+    return flat[
+        face.y + _FACE_TRIM : face.y + face.height - _FACE_TRIM,
+        face.x + _FACE_TRIM : face.x + face.width - _FACE_TRIM,
+    ]
+
+
 def _occupied(image: np.ndarray, cell: Rect) -> bool:
     """這一塊是一張**攤開的捨牌**嗎。
 
@@ -870,8 +887,14 @@ def is_face_up(patch: np.ndarray) -> bool:
     # 會被藍通道拉高到門檻以上 —— 那會讓空格子變成「有牌」。
     grey = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
     hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
-    if float(np.median(grey)) < _OCCUPIED_MEDIAN and face_coverage(patch) < _DENSE_FACE:
+    dense = face_coverage(patch) >= _DENSE_FACE
+    if float(np.median(grey)) < _OCCUPIED_MEDIAN and not dense:
         return False
+    # 赤五整張紅,中位數落在牌背的色相上:實測赤 5 筒因此被當成牌背,河中間一個洞,
+    # 整家判成不連續。兩個條件要一起看:牌背也紅,但沒有紙。只看紙的話,動畫中的牌
+    # 與半張牌背會過關。
+    if dense and red_ink(patch) >= WHOLE_RED:
+        return True
     return not _is_back(float(np.median(hsv[:, :, 0])), float(np.median(hsv[:, :, 1])))
 
 

@@ -54,10 +54,15 @@ __all__ = [
     "FACE_RATIO",
     "HOVER_HEADROOM",
     "MIN_BRIGHTNESS",
+    "RED_INK",
+    "WHOLE_RED",
     "Match",
     "TemplateSet",
     "classify",
     "classify_hand",
+    "ink_masks",
+    "red_ink",
+    "settle_five",
 ]
 
 #: 牌面佔牌框的比例。掃描 0.60~0.94 後取平均最高分的極大值。
@@ -208,6 +213,10 @@ class TemplateSet:
             self._cache[size] = cached
         return cached
 
+    def only(self, *labels: str) -> TemplateSet:
+        """只留這幾張的模板集。"""
+        return TemplateSet({label: self._faces[label] for label in labels})
+
     def rotated(self) -> TemplateSet:
         """整套模板逆時針轉九十度 —— 認橫放的立直宣言牌用。
 
@@ -325,6 +334,64 @@ def classify(
     reference = templates.brightness(best[0])
     brightness = _median_grey(window) / reference if reference else 1.0
     return Match(best[0], best[1], second[0], second[1], brightness)
+
+
+#: 紅色的墨水(OpenCV HSV):色相、飽和度下限、亮度下限。
+_RED_HUE = (10, 170)
+_RED_SATURATION = 70
+_RED_VALUE = 70
+
+#: 紙:飽和度低而且亮。這以外都算墨水。
+_PAPER_SATURATION = 45
+_PAPER_VALUE = 150
+
+#: 五的墨水有多少是紅的才算赤五,依花色。普通五有黑字、黑圈、綠條,赤五整張紅。
+#:
+#: 取兩邊的中間。半莊 13 局的牌河逐格量(``docs/cv_mjai.md`` §4.4):
+#:
+#: ====  ==========  ==========
+#: 花色  普通五最高  赤五最低
+#: ====  ==========  ==========
+#: 萬    0.60        0.86
+#: 筒    0.16        0.86
+#: 索    0.33        0.59
+#: ====  ==========  ==========
+RED_INK = {"m": 0.73, "p": 0.50, "s": 0.46}
+
+#: 不管是哪張牌,紅到這個程度就只可能是赤五或中。同一份素材其他牌最高 0.72。
+WHOLE_RED = 0.8
+
+
+def ink_masks(patch: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """逐像素的「是墨水」與「是紅色」,兩張布林圖。"""
+    hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+    hue, saturation, value = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+    ink = ~((saturation < _PAPER_SATURATION) & (value > _PAPER_VALUE))
+    red = (
+        ((hue <= _RED_HUE[0]) | (hue >= _RED_HUE[1]))
+        & (saturation >= _RED_SATURATION)
+        & (value >= _RED_VALUE)
+    )
+    return ink, red
+
+
+def red_ink(patch: np.ndarray) -> float:
+    """牌面的墨水裡紅色佔多少,0~1。
+
+    赤五與普通五形狀一樣,差別只在顏色,而模板比對要看整張牌的圖案,差距很薄。
+    這裡直接問顏色:牌框要裁到牌面上,外面的桌布會被算成墨水。
+    """
+    ink, red = ink_masks(patch)
+    total = int(ink.sum())
+    return float(red.sum()) / total if total else 0.0
+
+
+def settle_five(label: str, patch: np.ndarray) -> str:
+    """``label`` 是五的話,由 ``patch`` 的顏色決定赤不赤。其他牌原樣回傳。"""
+    suit = label[-1]
+    if label[0] not in "05" or suit not in RED_INK:
+        return label
+    return f"{0 if red_ink(patch) >= RED_INK[suit] else 5}{suit}"
 
 
 def _same_tile(a: str, b: str) -> bool:

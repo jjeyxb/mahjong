@@ -223,6 +223,50 @@ class TestOwnKans:
         assert events[-1] == Kakan(actor=0, pai="E", consumed=["E", "E", "E"])
 
 
+class TestRedInMelds:
+    def _stream(
+        self,
+        pai: str,
+        faces: tuple[str, ...],
+        suits: str = "mps",
+        *,
+        tehai: tuple[str, ...] = TEHAI,
+    ) -> list[MjaiEvent]:
+        steps = [Step(T, 1), Step(D, 1, pai), Step(C, 2, target=1), Step(D, 2, "1s")]
+        melds: list[list[tuple[str, ...]]] = [[], [], [faces], []]
+        reds = {(2, 0): frozenset(suits)}
+        kept = KyokuLog(
+            hud=HUD, tehai=tehai, doras=[(0, "9m")], steps=steps, melds=melds, meld_reds=reds
+        )
+        return body(compose(kept).events)
+
+    def test_the_five_in_the_hand_turns_red(self) -> None:
+        called = self._stream("6s", ("4s", "5s", "6s"))[2]
+        assert called == Chi(actor=2, target=1, pai="6s", consumed=["4s", "5sr"])
+
+    def test_the_called_five_turns_red_in_the_river_too(self) -> None:
+        events = self._stream("5s", ("6s", "7s", "?"))
+        assert events[1] == Dahai(actor=1, pai="5sr", tsumogiri=False)
+        assert events[2] == Chi(actor=2, target=1, pai="5sr", consumed=["6s", "7s"])
+
+    def test_a_pon_of_fives(self) -> None:
+        called = self._stream("5p", ("5p", "5p", "5p"))[2]
+        assert called == Pon(actor=2, target=1, pai="5p", consumed=["5pr", "5p"])
+
+    def test_a_run_without_a_five_stays_as_it_is(self) -> None:
+        called = self._stream("7m", ("6m", "7m", "8m"))[2]
+        assert called == Chi(actor=2, target=1, pai="7m", consumed=["6m", "8m"])
+
+    def test_the_threshold_of_another_suit_does_not_count(self) -> None:
+        called = self._stream("6m", ("4m", "5m", "6m"), "ps")[2]
+        assert called == Chi(actor=2, target=1, pai="6m", consumed=["4m", "5m"])
+
+    def test_there_is_only_one_red_five_of_a_suit(self) -> None:
+        tehai = ("5sr", *TEHAI[1:])
+        called = self._stream("6s", ("4s", "5s", "6s"), tehai=tehai)[2]
+        assert called == Chi(actor=2, target=1, pai="6s", consumed=["4s", "5s"])
+
+
 class TestOtherMelds:
     def _called(
         self, faces: tuple[str, ...], *, actor: int = 2, pai: str | None = "7p"
@@ -263,6 +307,24 @@ class TestOtherMelds:
         melds: list[list[tuple[str, ...]]] = [[], [], [], [("?", "?", "?")]]
         events = body(compose(log(steps=steps, melds=melds)).events)
         assert events[2] == Daiminkan(actor=3, target=1, pai="7p", consumed=["7p", "7p", "7p"])
+
+    def test_a_closed_kan_of_fives_holds_the_red(self) -> None:
+        steps = [Step(T, 1), Step(C, 1), Step(T, 1), Step(D, 1, "1s")]
+        melds: list[list[tuple[str, ...]]] = [[], [("5s", "5s", "5s")], [], []]
+        events = body(compose(log(steps=steps, melds=melds)).events)
+        assert events[1] == Ankan(actor=1, consumed=["5sr", "5s", "5s", "5s"])
+
+    def test_an_open_kan_of_fives_holds_the_red(self) -> None:
+        steps = [Step(T, 1), Step(D, 1, "5m"), Step(C, 3, target=1, kan=True), Step(T, 3)]
+        melds: list[list[tuple[str, ...]]] = [[], [], [], [("5m", "?", "?")]]
+        events = body(compose(log(steps=steps, melds=melds)).events)
+        assert events[2] == Daiminkan(actor=3, target=1, pai="5m", consumed=["5mr", "5m", "5m"])
+
+    def test_an_open_kan_on_the_red_itself(self) -> None:
+        steps = [Step(T, 1), Step(D, 1, "5mr"), Step(C, 3, target=1, kan=True), Step(T, 3)]
+        melds: list[list[tuple[str, ...]]] = [[], [], [], [("5m", "?", "?")]]
+        events = body(compose(log(steps=steps, melds=melds)).events)
+        assert events[2] == Daiminkan(actor=3, target=1, pai="5mr", consumed=["5m", "5m", "5m"])
 
     def test_a_closed_kan_has_no_target(self) -> None:
         steps = [Step(T, 1), Step(C, 1), Step(T, 1), Step(D, 1, "1s")]

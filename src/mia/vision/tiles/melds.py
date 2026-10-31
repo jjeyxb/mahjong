@@ -36,7 +36,7 @@ import cv2
 import numpy as np
 
 from mia.utils.geometry import Rect
-from mia.vision.tiles.classify import TemplateSet
+from mia.vision.tiles.classify import TemplateSet, ink_masks
 from mia.vision.tiles.river import CELL as RIVER_CELL
 from mia.vision.tiles.river import COLUMNS as RIVER_COLUMNS
 from mia.vision.tiles.river import (
@@ -384,6 +384,25 @@ _APART = 100
 #: 帶子在長度以外、內外兩側各放寬幾格(副露那一格)。框中心落在範圍內就掃。
 _PAD = 0.5
 
+#: 找赤五的框(寬, 高),牌河平面的像素。一張直放的牌面大小;橫放的把兩邊對調。
+_RED_WINDOW = (60, 84)
+
+#: 找赤五的框步距。
+_RED_STEP = 4
+
+#: 框裡至少這麼多是紙,才算框在牌面上。
+_RED_PAPER = 0.45
+
+#: 框裡至少這麼多像素是墨水。擋掉只框到牌邊一角的。
+_RED_INK_PIXELS = 300
+
+#: 一組副露的 :func:`_red_score` 到多少算有赤五,依花色。
+#:
+#: 兩份素材、七個視角共 78 組副露:真的赤五 4 組(5 索 3 組、5 萬 1 組)0.79 ~ 0.88,
+#: 其他的萬子最高 0.75、筒子 0.51、索子 0.46。5 筒與上家、對家沒有真的樣本:把真實
+#: 畫面裡的普通五改成紅色,最低 0.79。``docs/cv_mjai.md`` §4.4。
+_RED_MELD = {"m": 0.77, "p": 0.65, "s": 0.62}
+
 
 def read_meld_faces(
     image: np.ndarray,
@@ -413,14 +432,22 @@ def read_meld_faces(
     Returns:
         認得出來的牌。認不出的就不在裡面 —— 上層要把它當成未知,不要猜。
     """
-    hits = _scan(image, table, seat, templates, start, end, open_end=open_end)
+    if end <= start:
+        return MeldFaces(frozenset())
+    plane, polygon = _meld_plane(image, table, seat, start, end, open_end=open_end)
+    hits = _scan(plane, polygon, seat, templates)
     repeated = {
         a.label
         for a in hits
         for b in hits
         if a.label == b.label and abs(a.x - b.x) >= _APART
     }
-    return MeldFaces(frozenset(hit.label for hit in hits), frozenset(repeated))
+    score = _red_score(plane, polygon)
+    return MeldFaces(
+        frozenset(hit.label for hit in hits),
+        frozenset(repeated),
+        frozenset(suit for suit, floor in _RED_MELD.items() if score >= floor),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -432,10 +459,13 @@ class MeldFaces:
         repeated: 其中在**兩個不同位置**都認到的。吃不會有兩張一樣的牌,
             所以這代表碰或槓 —— 只認出一種牌時,靠它分得出「碰 6 萬」與
             「吃,其中一張是 6 萬」。
+        red_suits: 這組的牌如果是這幾種花色,裡面的五是赤五。這裡只看顏色,不知道
+            這組是什麼花色;牌面常常認不全,花色要上層從牌河與規則推。
     """
 
     tiles: frozenset[str]
     repeated: frozenset[str] = frozenset()
+    red_suits: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -448,19 +478,16 @@ class _Hit:
     label: str
 
 
-def _scan(
+def _meld_plane(
     image: np.ndarray,
     table: Rect,
     seat: str,
-    templates: TemplateSet,
     start: float,
     end: float,
     *,
     open_end: bool,
-) -> list[_Hit]:
-    """:func:`read_meld_faces` 的本體:每個位置一個命中,分數高的在前。"""
-    if end <= start:
-        return []
+) -> tuple[np.ndarray, np.ndarray]:
+    """副露那一段攤到牌河平面上。回傳影像,與要掃的範圍(影像上的四邊形)。"""
     width, height = CELL
     river_width, river_height = RIVER_CELL
     target = np.array(
@@ -488,18 +515,23 @@ def _scan(
         dtype=np.float32,
     )
     polygon = cv2.perspectiveTransform(strip[None], to_plane @ from_strip)[0]
-    window_width, window_height = _WINDOW
     margin = np.array(_WINDOW, dtype=np.float32)
     left, top = polygon.min(axis=0) - margin
     right, bottom = polygon.max(axis=0) + margin
     shift = np.array([[1, 0, -left], [0, 1, -top], [0, 0, 1]], dtype=np.float64)
     size = (int(right - left), int(bottom - top))
     plane = cv2.warpPerspective(image, shift @ to_plane, size)
-    polygon = (polygon - (left, top)).astype(np.float32)
+    return plane, (polygon - (left, top)).astype(np.float32)
 
+
+def _scan(
+    plane: np.ndarray, polygon: np.ndarray, seat: str, templates: TemplateSet
+) -> list[_Hit]:
+    """:func:`read_meld_faces` 的本體:每個位置一個命中,分數高的在前。"""
+    window_width, window_height = _WINDOW
     hits: list[_Hit] = []
-    for x in range(0, size[0] - window_width, _STEP[0]):
-        for y in range(0, size[1] - window_height, _STEP[1]):
+    for x in range(0, plane.shape[1] - window_width, _STEP[0]):
+        for y in range(0, plane.shape[0] - window_height, _STEP[1]):
             centre = (x + window_width / 2, y + window_height / 2)
             if cv2.pointPolygonTest(polygon, centre, False) < 0:
                 continue
@@ -513,6 +545,37 @@ def _scan(
         if all(abs(hit.x - k.x) > near_x or abs(hit.y - k.y) > near_y for k in kept):
             kept.append(hit)
     return kept
+
+
+def _red_score(plane: np.ndarray, polygon: np.ndarray) -> float:
+    """這組裡最像一張整張紅的牌的那一框,0~1。
+
+    赤五很少被模板認到(牌面只有這幾像素,紅與普通又只差顏色),但顏色不用認牌:
+    掃一張牌大的框,問墨水有多少是紅的。
+
+    **框的兩半都要有紅。** 萬字本來就是紅的,框往下滑到只蓋住一張牌的下半部時,
+    一萬到九萬的紅墨都能到 0.87。赤五上下都紅,普通萬子上半是黑的。
+    """
+    ink, red = ink_masks(plane)
+    width, height = _RED_WINDOW
+    best = 0.0
+    for wide, tall in ((width, height), (height, width)):
+        for x in range(0, plane.shape[1] - wide, _RED_STEP):
+            for y in range(0, plane.shape[0] - tall, _RED_STEP):
+                centre = (x + wide / 2, y + tall / 2)
+                if cv2.pointPolygonTest(polygon, centre, False) < 0:
+                    continue
+                inked = int(np.count_nonzero(ink[y : y + tall, x : x + wide]))
+                if inked < _RED_INK_PIXELS or 1 - inked / (wide * tall) < _RED_PAPER:
+                    continue
+                reds = red[y : y + tall, x : x + wide]
+                total = int(np.count_nonzero(reds))
+                half = reds[: tall // 2] if tall > wide else reds[:, : wide // 2]
+                first = int(np.count_nonzero(half))
+                if total:
+                    balance = 2 * min(first, total - first) / total
+                    best = max(best, total / inked * balance)
+    return best
 
 
 def _windows(plane: np.ndarray, x: int, y: int) -> list[np.ndarray]:
