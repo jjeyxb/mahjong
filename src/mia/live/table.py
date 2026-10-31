@@ -64,11 +64,13 @@ from mia.tracker import (
     MeldWatcher,
     RiverWatcher,
     RoundWatcher,
+    Step,
+    TurnTracker,
     guess_meld,
 )
 from mia.utils.geometry import Rect
 from mia.utils.logging import logger
-from mia.vision.hud import Hud, HudDigits, read_hud
+from mia.vision.hud import Hud, HudDigits, read_hud, read_wall
 from mia.vision.roi import MissingRoiError, RoiSet
 from mia.vision.tiles.classify import DEFAULT_SKIN, MIN_BRIGHTNESS, TemplateSet
 from mia.vision.tiles.dora import read_dora
@@ -107,6 +109,13 @@ _MELD_QUORUM = 2
 
 #: 白(雀魂記法 ``5z`` 經 :func:`ms_to_mjai` 之後)。見 ``_read_seat``。
 _HAKU = "P"
+
+#: 一張捨牌:誰打的、什麼牌(讀不出來是 ``None``)。
+_Seen = tuple[int, str | None]
+
+#: 一輪湧進這麼多張捨牌,代表是中途接上、一次看到滿河。出牌順序已經無從得知,
+#: 這一局不出事件流。CPU 對局一秒最多兩個動作,實測一輪最多 3 張。
+_JOINED_LATE = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,6 +186,12 @@ class TableWorker(threading.Thread):
         self._dora = DoraWatcher()
         self._kyoku = KyokuWatcher()
         self._round = RoundWatcher()
+        self._turns: TurnTracker | None = None
+        self._turn_buffer: list[tuple[int, list[_Seen], list[int], int | None]] = []
+        self._turn_discards: list[_Seen] = []
+        self._turn_melds: list[int] = []
+        self._joined_late = False
+        self.steps: list[Step] = []
         self._melds = MeldWatcher(units=tuple(GROUP_LENGTH[seat] for seat in SEATS))
         # 認牌面慢(一組 4 ~ 5 秒),放到另一條執行緒。見 _read_melds。
         self._faces = ThreadPoolExecutor(max_workers=1, thread_name_prefix="meld-faces")
@@ -280,6 +295,7 @@ class TableWorker(threading.Thread):
         self._read_melds(image, table, rivers)
         self._read_dora(image)
         self._read_round(image, table, rivers)
+        self._read_turns(image, table)
         # **狀態寫在最後。** 寫在開頭的話會被這一輪後面的訊息蓋掉 ——
         # 實測「等讀到自己的手牌」被局邊界的「新的一局」洗掉了,而那正是
         # 使用者最需要看到前者的時候。狀態列要講的是這一輪**結束時**的狀態。
@@ -348,6 +364,9 @@ class TableWorker(threading.Thread):
     def _emit(self, position: int, known: list[str]) -> None:
         """把這一家看得見的河交給 :class:`RiverWatcher`,新的捨牌送進 tracker。"""
         for discard in self._rivers.observe(position, known):
+            self._turn_discards.append(
+                (position, None if discard.pai == UNKNOWN else discard.pai)
+            )
             if discard.pai != UNKNOWN:
                 self._table.handle(Dahai(actor=position, pai=discard.pai, tsumogiri=False))
 
@@ -415,6 +434,7 @@ class TableWorker(threading.Thread):
             start = self._melds.length(position)
             length = occupied_length(image, table, MELD_VIEWS[seat])
             fresh = self._melds.observe(position, length)
+            self._turn_melds.extend([position] * fresh)
             step = (length - start) / fresh if fresh else 0.0
             melds = self._table.players[position].melds
             for index in range(fresh):
@@ -508,6 +528,33 @@ class TableWorker(threading.Thread):
         if settled is not None and settled.dealer is not None:
             self._table.set_round(settled.bakaze, settled.dealer)
 
+    def _read_turns(self, image: np.ndarray, table: Rect) -> None:
+        """這一輪的捨牌、副露、余牌交給 :class:`TurnTracker`,排出先後順序。
+
+        莊家要等 HUD 讀穩才知道,所以開局那幾輪先存著。
+        """
+        discards, melds = self._turn_discards, self._turn_melds
+        self._turn_discards, self._turn_melds = [], []
+        if self._digits is None or self._kyoku.empty or self._joined_late:
+            return
+        if len(discards) >= _JOINED_LATE:
+            self._joined_late = True
+            self._turns = None
+            self._turn_buffer = []
+            return
+        wall = read_wall(image, table, self._digits)
+        if self._turns is None:
+            self._turn_buffer.append((self.reads, discards, melds, wall))
+            settled = self._round.settled
+            if settled is None or settled.dealer is None:
+                return
+            self._turns = TurnTracker(settled.dealer)
+            for tick, buffered, called, seen in self._turn_buffer:
+                self.steps += self._turns.tick(tick, buffered, called, seen)
+            self._turn_buffer = []
+            return
+        self.steps += self._turns.tick(self.reads, discards, melds, wall)
+
     @property
     def round(self) -> Hud | None:
         """這一局的開局資訊。HUD 還沒讀穩就是 ``None``。"""
@@ -525,6 +572,12 @@ class TableWorker(threading.Thread):
         self._dora.reset()
         self._melds.reset()
         self._round.reset()
+        self._turns = None
+        self._turn_buffer = []
+        self._turn_discards = []
+        self._turn_melds = []
+        self._joined_late = False
+        self.steps = []
         self._known = [[] for _ in SEATS]
         self._sideways = [None for _ in SEATS]
         self._haku = [None for _ in SEATS]

@@ -165,6 +165,20 @@ class TestTheWholeChain:
         assert "N" in worker._table.players[0].yakuhai  # noqa: SLF001
         assert "S" in worker._table.players[2].yakuhai  # noqa: SLF001
 
+    def test_joining_mid_kyoku_gives_no_event_stream(
+        self, image: np.ndarray, calibration: Calibration, templates: TemplateSet
+    ) -> None:
+        """一上來就滿河,誰先打的已經無從得知 —— 這一局不出事件流,不要亂排。
+
+        放銃分析照常:河是成員問題,不是順序問題。
+        """
+        worker, _ = _worker(templates)
+        for _ in range(3):
+            worker.offer_frame(image, calibration)
+            worker.tick()
+        assert worker.steps == []
+        assert any(player.river for player in worker._table.players)  # noqa: SLF001
+
     def test_without_a_hand_it_stays_quiet(
         self, image: np.ndarray, calibration: Calibration, templates: TemplateSet
     ) -> None:
