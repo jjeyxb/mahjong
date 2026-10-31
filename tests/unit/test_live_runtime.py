@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from mia import features
+from mia import features, platforms
 from mia.calibration.canvas import Canvas, CanvasChoice
 from mia.engine.base import Advice, EngineError
 from mia.engine.styles import StyleChoice, StyleProfile
@@ -932,11 +932,29 @@ class TestClearIf:
 class TestGamePlatform:
     """網頁版 / Steam 版。差別是**資料來源少了一條**,不是偏好。"""
 
-    def test_steam_closes_the_features_it_cannot_feed(self, model, bus) -> None:
-        """換到 Steam 版要把沒有來源的功能關掉,不是留著開關撥在「開」。
+    def test_steam_restarts_advice_on_the_screen_path(self, model, bus) -> None:
+        """AI 建議兩版走不同的路,而走哪條是建構時決定的。"""
+        vision, _ = _feature(features.VISION)
+        advice, advice_spy = _feature(features.ADVICE, Spy("建議"))
+        runtime = LiveRuntime(
+            model, bus, features=[vision, advice], platform=PlatformChoice(WEB)
+        )
+        runtime.start()
+        runtime.set_enabled(features.ADVICE, True)
+        before = advice_spy.latest
+
+        runtime.set_platform(STEAM)
+        assert runtime.is_enabled(features.ADVICE)
+        assert before.stopped
+
+    def test_a_platform_closes_the_features_it_cannot_feed(
+        self, model, bus, monkeypatch
+    ) -> None:
+        """換版本要把沒有來源的功能關掉,不是留著開關撥在「開」。
 
         留著的話畫面在說謊:開關亮著、內容永遠不更新,而使用者會等下去。
         """
+        monkeypatch.setitem(platforms.SUPPORTED, STEAM, (features.VISION, features.DANGER))
         vision, _ = _feature(features.VISION)
         advice, advice_spy = _feature(features.ADVICE, Spy("建議"))
         runtime = LiveRuntime(
@@ -958,18 +976,21 @@ class TestGamePlatform:
         runtime.set_platform(STEAM)
         assert runtime.available(features.VISION)
 
-    def test_an_unsupported_feature_reads_as_unavailable(self, model, bus) -> None:
+    def test_an_unsupported_feature_reads_as_unavailable(
+        self, model, bus, monkeypatch
+    ) -> None:
         """UI 只問一件事:開關要畫成可按還是停用。
 
         「沒建起來」與「這一版沒有來源」對使用者是同一種結果,所以
         ``available`` 把兩者合在一起 —— 但**理由要分得出來**。
         """
+        monkeypatch.setitem(platforms.SUPPORTED, STEAM, (features.VISION, features.DANGER))
         advice, _ = _feature(features.ADVICE)
         runtime = LiveRuntime(model, bus, features=[advice], platform=PlatformChoice(STEAM))
         assert not runtime.available(features.ADVICE)
         reason = runtime.unavailable_reason(features.ADVICE)
         assert reason is not None
-        assert "封包" in reason
+        assert "資料來源" in reason
 
     def test_a_usable_feature_has_no_reason(self, model, bus) -> None:
         vision, _ = _feature(features.VISION)

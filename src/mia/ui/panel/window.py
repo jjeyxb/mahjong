@@ -696,9 +696,9 @@ class PanelWindow(QMainWindow):
         else:
             _select_data(picker, self._platform.platform())
             picker.setToolTip(
-                "網頁版:MIA 自己開瀏覽器,三個功能都有料。\n"
-                "Steam 版:遊戲自己開,MIA 找到視窗跑畫面辨識;\n"
-                "沒有封包來源,所以 AI 建議與放銃分析要等圖像辨識接上。"
+                "網頁版:MIA 自己開瀏覽器,資料來自封包。\n"
+                "Steam 版:遊戲自己開,MIA 找到視窗,全部靠畫面辨識;\n"
+                "看不到的牌只能猜,AI 建議的準確度比網頁版低。"
             )
             picker.currentIndexChanged.connect(self._on_platform_picked)
 
@@ -726,8 +726,8 @@ class PanelWindow(QMainWindow):
 
         兩個時機都必須做:
 
-        * 換版本之後 —— Steam 版沒有封包,AI 建議整個沒有來源,而 runtime
-          已經把它關掉了。開關若還撥在「開」,畫面就在說謊。
+        * 換版本之後 —— 新的版本若沒有某個功能的來源,runtime 已經把它關掉了。
+          開關若還撥在「開」,畫面就在說謊。
         * 撥任何一個開關之後 —— 一個功能可能帶動另一個(見 :meth:`_on_switch`)。
         """
         if self._switchboard is None:

@@ -21,12 +21,12 @@ class TestWhatEachPlatformCanDo:
         原生程式。
 
         **放銃分析 2026-10-25 起兩版都有**:它有兩條路,而純畫面那條只看
-        螢幕(見 mia.features.DangerSourceChoice)。AI 建議仍然只有網頁版
-        —— 它要完整的事件流,而純畫面那條目前約四成的牌讀不出來。
+        螢幕(見 mia.features.DangerSourceChoice)。**AI 建議 2026-10-31 起也是**:
+        事件流可以只靠畫面組出來(見 mia.live.advice)。
         """
         assert platforms.supports(STEAM, features.VISION)
         assert platforms.supports(STEAM, features.DANGER)
-        assert not platforms.supports(STEAM, features.ADVICE)
+        assert platforms.supports(STEAM, features.ADVICE)
 
     def test_an_unknown_platform_is_let_through(self) -> None:
         """認不得的版本一律放行。
@@ -36,14 +36,15 @@ class TestWhatEachPlatformCanDo:
         """
         assert platforms.supports("未來的某一版", features.ADVICE)
 
-    def test_the_reason_says_why_not_just_that_it_is_off(self) -> None:
+    def test_the_reason_says_why_not_just_that_it_is_off(self, monkeypatch) -> None:
         """理由要寫給使用者看 —— 講「為什麼」而不是「不支援」。
 
         後者會讓人以為是 MIA 還沒做,然後去設定裡找一個不存在的開關。
         """
+        monkeypatch.setitem(platforms.SUPPORTED, STEAM, (features.VISION,))
         why = platforms.why_unsupported(STEAM, features.ADVICE)
         assert why is not None
-        assert "封包" in why
+        assert "資料來源" in why
 
     def test_a_supported_feature_has_no_reason(self) -> None:
         assert platforms.why_unsupported(WEB, features.ADVICE) is None
@@ -71,8 +72,8 @@ class TestPlatformChoice:
     def test_it_answers_what_the_platform_supports(self) -> None:
         choice = PlatformChoice(STEAM)
         assert choice.supports(features.VISION)
-        assert not choice.supports(features.ADVICE)
-        assert choice.why_unsupported(features.ADVICE) is not None
+        assert choice.supports(features.ADVICE)
+        assert choice.why_unsupported(features.ADVICE) is None
 
     def test_it_has_a_name_for_people(self) -> None:
         assert str(PlatformChoice(STEAM)) == "Steam 版"
