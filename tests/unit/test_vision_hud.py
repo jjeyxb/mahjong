@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 import pytest
 
-from mia.tracker import RoundWatcher
+from mia.tracker import ReachWatcher, RoundWatcher
 from mia.utils.geometry import Rect
 from mia.vision.hud import Hud, HudDigits, _split_joined, read_hud
 
@@ -135,3 +135,56 @@ class TestRoundWatcher:
         watcher.reset()
         watcher.observe(_round())
         assert watcher.observe(_round()) is not None
+
+
+class TestReachWatcher:
+    def _started(self) -> ReachWatcher:
+        watcher = ReachWatcher()
+        watcher.start(_round())
+        return watcher
+
+    def test_a_thousand_gone_and_a_stick_on_the_table(self) -> None:
+        watcher = self._started()
+        hud = _round(kyotaku=1, scores=(25000, 24000, 25000, 25000))
+        assert watcher.observe(hud) == []
+        assert watcher.observe(hud) == [1]
+
+    def test_nothing_changed_means_nothing(self) -> None:
+        watcher = self._started()
+        assert watcher.observe(_round()) == []
+        assert watcher.observe(_round()) == []
+
+    def test_two_players_can_reach_in_turn(self) -> None:
+        watcher = self._started()
+        first = _round(kyotaku=1, scores=(25000, 24000, 25000, 25000))
+        watcher.observe(first)
+        watcher.observe(first)
+        second = _round(kyotaku=2, scores=(24000, 24000, 25000, 25000))
+        watcher.observe(second)
+        assert watcher.observe(second) == [0]
+
+    def test_two_at_once_between_reads(self) -> None:
+        """每 0.5 秒一個動作的時候,兩次讀取之間可能有兩個人立直。"""
+        watcher = self._started()
+        hud = _round(kyotaku=2, scores=(24000, 24000, 25000, 25000))
+        watcher.observe(hud)
+        assert watcher.observe(hud) == [0, 1]
+
+    def test_settling_up_at_the_end_is_not_a_reach(self) -> None:
+        """局尾的點數移動:有人剛好付 1000,但供託沒有多。"""
+        watcher = self._started()
+        hud = _round(scores=(26000, 24000, 25000, 25000))
+        watcher.observe(hud)
+        assert watcher.observe(hud) == []
+
+    def test_a_flicker_is_not_a_reach(self) -> None:
+        watcher = self._started()
+        assert watcher.observe(_round(kyotaku=1, scores=(25000, 24000, 25000, 25000))) == []
+        assert watcher.observe(_round()) == []
+        assert watcher.observe(_round()) == []
+
+    def test_nothing_before_the_round_is_known(self) -> None:
+        hud = _round(kyotaku=1, scores=(25000, 24000, 25000, 25000))
+        watcher = ReachWatcher()
+        assert watcher.observe(hud) == []
+        assert watcher.observe(hud) == []
