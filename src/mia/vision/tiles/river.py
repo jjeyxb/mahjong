@@ -231,6 +231,14 @@ _OCCUPIED_MEDIAN = 110.0
 #: (5 百分位 80)。
 _BACK_SATURATION = 70.0
 
+#: 中位數過不了時,亮的像素至少要佔這麼多才算有牌。
+#:
+#: 九筒、八筒這種畫滿花紋的牌,一半以上的像素是深色的,中位數掉到門檻以下,
+#: 那一格就成了河中間的一個洞,整家判成不連續。半莊實測 3163 張牌有 204 張如此,
+#: 這個門檻補回 164 張,而 5837 個空格一個都沒有誤判(空格最高 0.37,來自壓到
+#: 隔壁的牌)。
+_DENSE_FACE = 0.4
+
 #: 牌背的色相範圍(OpenCV 的 0~179,也就是色環的一半)。**光靠飽和度不夠。**
 #:
 #: 為什麼要加色相
@@ -862,7 +870,7 @@ def is_face_up(patch: np.ndarray) -> bool:
     # 會被藍通道拉高到門檻以上 —— 那會讓空格子變成「有牌」。
     grey = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
     hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
-    if float(np.median(grey)) < _OCCUPIED_MEDIAN:
+    if float(np.median(grey)) < _OCCUPIED_MEDIAN and face_coverage(patch) < _DENSE_FACE:
         return False
     return not _is_back(float(np.median(hsv[:, :, 0])), float(np.median(hsv[:, :, 1])))
 

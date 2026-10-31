@@ -300,11 +300,11 @@ class TestDegradedConditions:
     ) -> None:
         """張數不合法幾乎都是抓在動畫中間。這時上一巡的手牌仍是最好的資訊。"""
         good, roi = _frame_with_hand(window, _hand_image())
-        # 只留左邊三分之一,其餘整條塗成桌布 —— 剩下的張數不是 13/10/7/4/1
+        # 只留左邊 6 張,其餘整條塗成桌布 —— 6 張不是合法的手牌張數
         partial = good.image.copy()
         hand_w = round(roi.own_hand[2] * FRAME_SIZE[0])
         hand_h = round(roi.own_hand[3] * FRAME_SIZE[1])
-        cut = PASTE.x + hand_w // 3
+        cut = PASTE.x + round(hand_w * 0.42)
         partial[PASTE.y : PASTE.y + hand_h, cut : PASTE.x + hand_w] = (40, 90, 40)
         broken = Frame(partial, window, scale=1.0)
 

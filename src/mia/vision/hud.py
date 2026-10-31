@@ -110,21 +110,23 @@ class HudDigits:
     """HUD 用的模板。一套數字一個子目錄,``assets/hud/<set>/<字>.png``。
 
     * ``score`` 四邊的金色點數。
-    * ``wall`` 余幾張的青色數字。
+    * ``wall`` 余幾張的青色數字。**有兩種字形**:Steam 與網頁版的字寬不同,
+      只有 Steam 的模板時,網頁版的 3 與 8 分不開(差距 0.03),30 幾張整段讀不到。
+      同一個字可以有多份,檔名寫成 ``3_web.png``,底線之前才是字。
     * ``round`` 第幾局的青色斜體。
     * ``stick`` 本場與供託的白色斜體。**只有 0 ~ 4**:素材裡沒見過更大的。
       5 以上會比不過門檻而回 ``None``,不會被說成別的數字。
     * ``wind`` 場風。**只有東與南**:素材裡沒有西入。
     """
 
-    def __init__(self, sets: dict[str, dict[str, np.ndarray]]) -> None:
+    def __init__(self, sets: dict[str, dict[str, list[np.ndarray]]]) -> None:
         self._sets = sets
 
     @classmethod
     def load(cls, *, root: Path | None = None) -> HudDigits:
         """從 ``assets/hud/`` 載入。找不到就拋錯,不要安靜地什麼都讀不到。"""
         base = (root or ASSETS_DIR) / "hud"
-        sets: dict[str, dict[str, np.ndarray]] = {}
+        sets: dict[str, dict[str, list[np.ndarray]]] = {}
         for folder in sorted(base.glob("*")):
             if not folder.is_dir():
                 continue
@@ -133,7 +135,8 @@ class HudDigits:
                 face = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
                 if face is None:
                     raise ValueError(f"讀不到模板 {path}")
-                sets[folder.name][path.stem] = face.astype(np.float32)
+                label = path.stem.split("_")[0]
+                sets[folder.name].setdefault(label, []).append(face.astype(np.float32))
         if not sets:
             raise FileNotFoundError(f"找不到 HUD 模板:{base}")
         return cls(sets)
@@ -141,7 +144,10 @@ class HudDigits:
     def best(self, name: str, patch: np.ndarray, *, floor: float = _SCORE) -> str | None:
         """``patch`` 是這一套裡的哪個字;沒把握回 ``None``。"""
         ranked = sorted(
-            ((_correlation(patch, face), label) for label, face in self._sets[name].items()),
+            (
+                (max(_correlation(patch, face) for face in faces), label)
+                for label, faces in self._sets[name].items()
+            ),
             reverse=True,
         )
         score, label = ranked[0]

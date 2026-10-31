@@ -132,9 +132,17 @@ class Hand:
         由暗手牌張數反推 —— 副露的**內容**不需要辨識,向聽數只要知道組數。
         張數不是 13/10/7/4/1 時回傳 -1,代表這一幀讀到的手牌不合法
         (通常是抓在理牌或摸打的動畫中間)。
+
+        **例外是 11/8/5/2。** 吃碰之後不會摸牌,該打的牌連在手牌裡、沒有擺到
+        旁邊,所以讀到的是連續的 3n+2 張。一開始把它當不合法,結果每次鳴牌之後
+        的那一手都讀不到 —— 而那正是要問 Mortal 切哪張的時候。
         """
         remainder = MAX_CONCEALED - len(self.concealed)
-        return remainder // 3 if remainder % 3 == 0 else -1
+        if remainder % 3 == 0:
+            return remainder // 3
+        if self.drawn is None and remainder % 3 == 2:
+            return (remainder + 1) // 3
+        return -1
 
     @property
     def is_plausible(self) -> bool:
@@ -163,6 +171,15 @@ def _has_tile(roi: np.ndarray, box: Rect) -> bool:
     return bool(grey.std() > _OCCUPIED_STD)
 
 
+def _is_gap(roi: np.ndarray, box: Rect, layout: HandLayout) -> bool:
+    """這個槽位的開頭是空的:牌是摸來的那張,往右挪了一點。
+
+    摸牌只隔不到半張牌,所以有副露時,10 張手牌加一張摸牌會同時壓到第 11、12 個
+    槽位,被數成 12 張,整手讀不到。滿手 13 張碰不到這件事:第 14 個槽位不掃。
+    """
+    return not _has_tile(roi, Rect(box.x, box.y, round(layout.draw_gap * roi.shape[1]), box.height))
+
+
 def read_hand(roi: np.ndarray, *, layout: HandLayout = DEFAULT_LAYOUT) -> Hand:
     """從 ``own_hand`` ROI 影像讀出手牌。
 
@@ -187,6 +204,8 @@ def read_hand(roi: np.ndarray, *, layout: HandLayout = DEFAULT_LAYOUT) -> Hand:
     for index in range(MAX_CONCEALED):
         box = layout.slot(width, height, index)
         if box.x + box.width > width or not _has_tile(roi, box):
+            break
+        if index % 3 == 1 and _is_gap(roi, box, layout):
             break
         concealed.append(box)
 
