@@ -5,10 +5,12 @@
 """
 
 from mia.tracker.dora import DoraWatcher, NewDora
+from mia.tracker.hand import HandWatcher, Move, OwnMove
 from mia.tracker.kyoku import KyokuSignal, KyokuWatcher
 from mia.tracker.melds import MeldWatcher, guess_meld
 from mia.tracker.rivers import UNKNOWN, Discard, RiverWatcher
 from mia.tracker.round import ReachWatcher, RoundWatcher
+from mia.tracker.stream import KyokuLog, Stream, compose
 from mia.tracker.turns import Action, Step, TurnTracker
 
 __all__ = [
@@ -16,14 +18,20 @@ __all__ = [
     "Action",
     "Discard",
     "DoraWatcher",
+    "HandWatcher",
+    "KyokuLog",
     "KyokuSignal",
     "KyokuWatcher",
     "MeldWatcher",
+    "Move",
     "NewDora",
+    "OwnMove",
     "ReachWatcher",
     "RiverWatcher",
     "RoundWatcher",
     "Step",
+    "Stream",
     "TurnTracker",
+    "compose",
     "guess_meld",
 ]

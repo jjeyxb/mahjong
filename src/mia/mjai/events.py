@@ -5,8 +5,8 @@ dataclass 而不是直接傳 dict:事件流會同時被 AI 引擎消費與被測
 的型別,除錯與斷言都好做得多;真正要送進引擎時再 :meth:`MjaiEvent.to_dict`
 轉成 JSON。
 
-目前事件由封包解析(:mod:`mia.groundtruth.to_mjai`)產生 ——
-視覺辨識不再重建完整對局狀態,見 ``docs/decisions.md``。
+事件有兩個來源:封包解析(:mod:`mia.groundtruth.to_mjai`)與畫面辨識
+(:mod:`mia.tracker.stream`)。
 
 省略 ``None`` 欄位是刻意的:MJAI 的消費端(libriichi / Mortal)以「鍵不存在」
 而非「值為 null」來判斷選填欄位。

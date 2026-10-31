@@ -95,7 +95,7 @@ class TableSink(Protocol):
 
     def offer_frame(self, image: np.ndarray, calibration: Calibration) -> None: ...
 
-    def offer_hand(self, tiles: Sequence[str]) -> None: ...
+    def offer_hand(self, tiles: Sequence[str], drawn: str | None = None) -> None: ...
 
 
 class VisionWorker(threading.Thread):
@@ -406,7 +406,9 @@ class VisionWorker(threading.Thread):
         if self._sink is not None:
             # 危險度要知道自己手上有什麼。**含剛摸的那張** —— 那張正是
             # 使用者現在要決定切不切的牌。
-            self._sink.offer_hand([m.label for m in matches])
+            self._sink.offer_hand(
+                [m.label for m in matches], drawn.label if drawn is not None else None
+            )
 
     def __repr__(self) -> str:
         return (

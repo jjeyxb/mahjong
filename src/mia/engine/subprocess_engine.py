@@ -131,6 +131,10 @@ class SubprocessEngine:
         reply = self._exchange(line)
         elapsed = (time.perf_counter() - started) * 1000
 
+        # ``start_game`` 之後 ``bot.py`` 從零開始,之前的歷史不必再重播。畫面那條路
+        # 會重來很多次(見 :mod:`mia.live.advice`),不清的話 peek 會越來越慢。
+        if event.TYPE == "start_game":
+            self._history.clear()
         self._history.append(line)
         return self._to_advice(reply, elapsed)
 

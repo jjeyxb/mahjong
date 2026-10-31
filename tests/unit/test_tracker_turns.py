@@ -70,6 +70,32 @@ class TestCalls:
             steps += turns.tick(tick, wall=68)
         assert shape(steps) == [(T, 1), (D, 1)]
 
+    def test_a_late_river_keeps_its_turn(self) -> None:
+        """下家的河這一輪讀不到,對家的牌先到:不是跳家,不要補假的隱藏捨牌。"""
+        turns = self._after_first_discard()
+        steps = turns.tick(3, [(2, "5p")], wall=67)
+        steps += turns.tick(4, [(1, "2p")], wall=67)
+        for tick in range(5, 5 + WAIT):
+            steps += turns.tick(tick, wall=67)
+        assert shape(steps) == [(T, 1), (D, 1), (T, 2), (D, 2)]
+        assert [s.pai for s in steps if s.action is D] == ["2p", "5p"]
+
+    def test_own_turn_flushes_what_is_waiting(self) -> None:
+        """自己摸到牌了:前面的事都發生過,Mortal 要的是完整的局面。"""
+        turns = TurnTracker(oya=1)
+        turns.tick(1, wall=69)
+        assert turns.tick(2, [(1, "1m")]) != []
+        steps = turns.tick(3, [(2, "5p")], wall=68)
+        assert steps == []
+        assert shape(turns.tick(4, hurry=True, wall=66)) == [(T, 2), (D, 2)]
+
+    def test_the_very_first_tile_called_at_once(self) -> None:
+        """莊家第一張就被鳴走:河裡沒出現過,而開局沒有上一輪的余牌可以比。"""
+        turns = TurnTracker(oya=2)
+        steps = turns.tick(1, [(3, "9s")], melds=[3], wall=69)
+        assert shape(steps) == [(T, 2), (D, 2), (C, 3), (D, 3)]
+        assert steps[2].target == 2
+
     def test_a_tile_that_was_called_at_once_is_filled_in(self) -> None:
         """下家打的牌被上家馬上鳴走,河裡從沒出現過 —— 余牌減過,所以知道。"""
         turns = self._after_first_discard()

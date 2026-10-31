@@ -41,6 +41,15 @@
 
 等不到副露、余牌也沒減的牌**不是真的捨牌**。和了之後的結算畫面會被讀成一排
 ``?``,實測一局最多多出 3 張;它們既沒有摸牌也沒有鳴牌,在這裡就留不下來。
+
+**輪到自己就不用等了。** 自己摸到牌,代表前面的事都發生過了,佇列裡的牌可以全部
+排出來 —— 這一刻正是 Mortal 要回答的時候,而等四輪的話它看到的局面少一兩張。
+
+河會晚到
+--------
+某一家的河這一輪讀不到(立繪、動畫),下一輪才出現,下家的牌就先到了。看起來像跳家,
+但那一家的牌就排在佇列後面。所以跳家沒有副露時先往後找:找得到就照輪替換回來,
+不是真的跳過。不這樣做的話會補一張假的隱藏捨牌,真的牌到了又多一張。
 """
 
 from __future__ import annotations
@@ -80,11 +89,17 @@ class Step:
         actor: 誰。**依視角**,0 是自己。
         pai: 打出的牌。:attr:`Action.DAHAI` 才有;``None`` 表示這張牌從來沒被
             看到(一打出就被鳴走),或讀不出來。
+        guess: 沒有把握時的最佳猜測。Mortal 不收 ``?``,見 :mod:`mia.tracker.stream`。
+        target: :attr:`Action.CALL` 鳴的是誰的牌;``None`` 是暗槓。
+        serial: 這是打的人的第幾張捨牌。``None`` 是河裡從沒出現過的牌。
     """
 
     action: Action
     actor: int
     pai: str | None = None
+    guess: str | None = None
+    target: int | None = None
+    serial: int | None = None
 
 
 @dataclass(slots=True)
@@ -92,6 +107,8 @@ class _Pending:
     tick: int
     actor: int
     pai: str | None
+    guess: str | None
+    serial: int | None
     wall: int | None
 
 
@@ -109,6 +126,7 @@ class TurnTracker:
     _queue: list[_Pending] = field(default_factory=list, repr=False)
     _melds: list[tuple[int, int]] = field(default_factory=list, repr=False)
     _wall: int | None = field(default=None, repr=False)
+    _wall_tick: int = field(default=-1, repr=False)
 
     def __post_init__(self) -> None:
         self.last = (self.oya - 1) % _SEATS
@@ -116,29 +134,36 @@ class TurnTracker:
     def tick(
         self,
         tick: int,
-        discards: Sequence[tuple[int, str | None]] = (),
+        discards: Sequence[tuple[int, str | None, *tuple[str | int | None, ...]]] = (),
         melds: Sequence[int] = (),
         wall: int | None = None,
+        *,
+        hurry: bool = False,
     ) -> list[Step]:
         """收一輪的觀察,回傳這一輪可以確定的動作。
 
         Args:
             tick: 第幾輪。
-            discards: 這一輪新出現的捨牌 ``(座位, 牌)``。牌讀不出來給 ``None``。
+            discards: 這一輪新出現的捨牌 ``(座位, 牌)`` 或
+                ``(座位, 牌, 猜測, 第幾張)``。牌讀不出來給 ``None``。
             melds: 這一輪副露多了一組的座位,一組一筆。
             wall: 這一輪讀到的余牌,讀不到給 ``None``。
+            hurry: 輪到自己了,不必再等。見模組說明。
         """
         self._melds += [(tick, seat) for seat in melds]
         # 同一輪的並列照輪替排:誰離上一個打的人最近,誰先。
         anchor = self._queue[-1].actor if self._queue else self.last
-        for seat, pai in sorted(discards, key=lambda d: self._distance(anchor, d[0])):
-            self._queue.append(_Pending(tick, seat, pai, self._wall))
+        for seat, pai, *rest in sorted(discards, key=lambda d: self._distance(anchor, d[0])):
+            guess, serial = rest if rest else (None, None)
+            self._queue.append(_Pending(tick, seat, pai, guess, serial, self._wall))  # type: ignore[arg-type]
             anchor = seat
         if wall is not None:
             self._wall = wall
+            self._wall_tick = tick
         out: list[Step] = []
         while self._queue:
-            steps = self._resolve(self._queue[0], tick)
+            self._restore_turn()
+            steps = self._resolve(self._queue[0], tick + WAIT if hurry else tick)
             if steps is None:
                 break
             item = self._queue.pop(0)
@@ -146,6 +171,19 @@ class TurnTracker:
                 out += steps
                 self.last = item.actor
         return out
+
+    def _restore_turn(self) -> None:
+        """排頭跳家又沒有副露,而該輪到的那一家就在後面:河晚到了,換回來。"""
+        head = self._queue[0]
+        turn = (self.last + 1) % _SEATS
+        if head.actor == turn or self._has_meld(head.actor, head.tick):
+            return
+        for index, item in enumerate(self._queue):
+            if item.actor == turn:
+                # 它一定摸過牌:下家都打了。它讀到的余牌已經是之後的,不能拿來算。
+                item.wall = _FULL_WALL - self.drawn - 1
+                self._queue.insert(0, self._queue.pop(index))
+                return
 
     @staticmethod
     def _distance(anchor: int, seat: int) -> int:
@@ -166,7 +204,7 @@ class TurnTracker:
         seat = item.actor
         known = _FULL_WALL - self.drawn if item.wall is None else item.wall
         unseen = _FULL_WALL - self.drawn - known
-        drop = Step(Action.DAHAI, seat, item.pai)
+        drop = Step(Action.DAHAI, seat, item.pai, item.guess, serial=item.serial)
         following = seat == (self.last + 1) % _SEATS
         if following and unseen == 1:
             self.drawn += 1
@@ -175,16 +213,24 @@ class TurnTracker:
             return None
         if self._take_meld(seat, item.tick):
             if not following:
-                return [*self._hidden(seat, unseen), Step(Action.CALL, seat), drop]
+                # 第一張就被鳴走:桌上還沒有牌,一定是莊家打的,而開局沒有上一輪
+                # 的余牌可以比。
+                hidden = self._hidden(seat, max(unseen, 1) if self.drawn == 0 else unseen)
+                target = hidden[-1].actor if hidden else self.last
+                return [*hidden, Step(Action.CALL, seat, target=target), drop]
             if unseen <= 0:
-                return [Step(Action.CALL, seat), drop]
+                return [Step(Action.CALL, seat, target=self.last), drop]
             self.drawn += 2
             draw = Step(Action.TSUMO, seat)
             return [draw, Step(Action.CALL, seat), draw, drop]
         # 等完了還是沒有副露。余牌有減就是動作太快、摸牌沒趕上那一輪;沒減就不是真的牌。
         behind = _FULL_WALL - self.drawn - (known if self._wall is None else self._wall)
         if behind < 1:
-            return []
+            if self._wall_tick > item.tick:
+                return []
+            # 這張牌之後余牌都沒讀到:不知道有沒有摸,不能說它是假的。實測網頁版有一段
+            # 余牌整段讀不到,局的後半全部被這樣丟掉。
+            behind = 1
         if not following:
             # 跳家卻沒有副露,而余牌有減:中間漏看了。補上再接回去,不然 last 停在
             # 原地,之後每一張都變成「跳家且沒有副露」,整局後面一路被丟。
