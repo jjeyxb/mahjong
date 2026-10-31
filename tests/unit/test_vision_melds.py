@@ -6,10 +6,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import cv2
 import numpy as np
 
 from mia.utils.geometry import Rect
 from mia.vision.tiles.melds import (
+    _RED_MELD,
     CELL,
     COLUMNS,
     DEFAULT_VIEWS,
@@ -17,10 +21,12 @@ from mia.vision.tiles.melds import (
     GROUP_LENGTH,
     MeldStrip,
     MeldView,
+    _red_score,
     occupied_length,
     read_melds,
 )
 
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 TABLE = Rect(0, 0, 1000, 1000)
 #: 整個牌桌都是副露區,方便直接畫格子進去。
 WHOLE = MeldView(((0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0)))
@@ -131,3 +137,30 @@ class TestOccupiedLength:
     def test_four_daiminkan_fit(self) -> None:
         """四組大明槓約 17.3 張寬,13 格裝不下。"""
         assert EXTENT * 1.0 >= 4 * (3 + 1.33)
+
+
+class TestRedFiveInAMeld:
+    """顏色不必認牌:赤五常常是模板認不到的那一張。素材都是實際畫面裁下來的。"""
+
+    @staticmethod
+    def _score(name: str) -> float:
+        plane = cv2.imread(str(FIXTURES / f"{name}.png"))
+        height, width = plane.shape[:2]
+        inside = np.array(
+            [[45, 45], [width - 45, 45], [width - 45, height - 45], [45, height - 45]],
+            np.float32,
+        )
+        return _red_score(plane, inside)
+
+    def test_a_red_five_man(self) -> None:
+        assert self._score("meld_red_5m_own") >= _RED_MELD["m"]
+
+    def test_a_red_five_sou_on_a_far_seat(self) -> None:
+        assert self._score("meld_red_5s_shimocha") >= _RED_MELD["s"]
+
+    def test_a_plain_five_man(self) -> None:
+        assert self._score("meld_plain_5m_own") < _RED_MELD["m"]
+
+    def test_the_red_half_of_man_tiles_is_not_a_red_tile(self) -> None:
+        """萬字本來就是紅的,框滑到只蓋住牌的下半部時紅墨到得了 0.87。"""
+        assert self._score("meld_plain_123m_toimen") < _RED_MELD["m"]

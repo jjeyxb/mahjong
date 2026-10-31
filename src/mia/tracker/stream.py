@@ -70,6 +70,7 @@ __all__ = ["KyokuLog", "Stream", "compose"]
 _SEATS = 4
 _COPIES = 4
 _NUMBERS = range(1, 10)
+_FIVES = ("5m", "5p", "5s")
 
 #: 什麼都不知道時要填的牌,依序試。字牌與么九在前:開局多半打這些,也不會變成
 #: 別人的搭子。
@@ -90,6 +91,8 @@ class KyokuLog:
         doras: 寶牌指示牌 ``(翻開時已經排出幾步, 牌)``,第一張是開局的。
         steps: :class:`~mia.tracker.turns.TurnTracker` 排出來的順序。
         melds: 四家的副露,牌面認到多少算多少,依發生順序。
+        meld_reds: 副露裡看到赤五 ``(誰, 第幾組) -> 花色``。見
+            :attr:`~mia.vision.tiles.melds.MeldFaces.red_suits`。
         reaches: 別家立直 ``(誰, 他的第幾張捨牌是宣言牌)``。
         own_reach: 自己立直,宣言牌是自己第幾次打牌。與別家分開數:宣言牌一打出就
             被鳴走時,河裡從沒有過那一張,而手牌一定看得到。
@@ -106,6 +109,7 @@ class KyokuLog:
     melds: list[list[tuple[str, ...]]] = field(
         default_factory=lambda: [[] for _ in range(_SEATS)]
     )
+    meld_reds: dict[tuple[int, int], frozenset[str]] = field(default_factory=dict)
     reaches: list[tuple[int, int]] = field(default_factory=list)
     own_reach: int | None = None
     moves: list[OwnMove] = field(default_factory=list)
@@ -359,8 +363,11 @@ class _Composer:
         if not any(isinstance(event, Dahai) for event in self.events):
             # 被鳴的那張還沒排出來,可能是自己打的、手牌還沒跟上。
             return False
+        red_suits = self.log.meld_reds.get((step.actor, index), frozenset())
         self.events.append(
-            self._open_kan(step, known) if step.kan else self._open_meld(step, known)
+            self._open_kan(step, known)
+            if step.kan
+            else self._with_red(self._open_meld(step, known), red_suits)
         )
         return True
 
@@ -386,7 +393,7 @@ class _Composer:
             full = [t for t in _FILLERS if self.left[t] >= _COPIES]
             tile = full[0] if full else _FILLERS[0]
         self.left[normalize_red(tile)] -= _COPIES
-        return Ankan(actor=actor, consumed=[tile] * _COPIES)
+        return Ankan(actor=actor, consumed=self._red_in_kan([tile] * _COPIES))
 
     def _open_kan(self, step: Step, known: list[str]) -> Daiminkan:
         """別家的大明槓。四張一樣,所以認到一張就夠了。"""
@@ -395,10 +402,10 @@ class _Composer:
         plain = normalize_red(self.events[at].pai)  # type: ignore[attr-defined]
         tile = known[0] if known else plain
         pai = self._replace(at, tile)
-        consumed = [self._pick(tile) for _ in range(_COPIES - 1)]
+        consumed = self._red_in_kan([self._pick(tile) for _ in range(_COPIES - 1)], pai)
         return Daiminkan(actor=step.actor, target=step.target, pai=pai, consumed=consumed)
 
-    def _open_meld(self, step: Step, known: list[str]) -> MjaiEvent:
+    def _open_meld(self, step: Step, known: list[str]) -> Chi | Pon:
         """別家的吃碰。``pai`` 是剛打出來的牌;牌面說不是的話聽牌面的。"""
         assert step.target is not None
         at = self._last_dahai()
@@ -414,6 +421,48 @@ class _Composer:
         pai, others = self._run(at, plain, known)
         consumed = [self._pick(tile) for tile in others]
         return Chi(actor=step.actor, target=step.target, pai=pai, consumed=consumed)
+
+    def _with_red(self, meld: Chi | Pon, red_suits: frozenset[str]) -> Chi | Pon:
+        """畫面看到這組有赤五:把組裡的五換成赤的。
+
+        花色由事件流推:牌面常常認不全,而赤五本身又常常是認不到的那一張。
+        """
+        suit = meld.pai[1:2]
+        five = f"5{suit}"
+        red = f"{five}r"
+        if suit not in red_suits or self._red_seen(red):
+            return meld
+        if five in meld.consumed:
+            consumed = list(meld.consumed)
+            consumed[consumed.index(five)] = red
+            return replace(meld, consumed=consumed)
+        if meld.pai != five:
+            return meld
+        at = self._last_dahai()
+        event = self.events[at]
+        assert isinstance(event, Dahai)
+        self.events[at] = replace(event, pai=red)
+        return replace(meld, pai=red)
+
+    def _red_in_kan(self, tiles: list[str], called: str = "") -> list[str]:
+        """四張五裡一定有一張赤的:被鳴的那張不是,就在這幾張裡。不必看畫面。"""
+        plain = normalize_red(tiles[0])
+        red = f"{plain}r"
+        if plain not in _FIVES or called == red or self._red_seen(red):
+            return tiles
+        return [red, *tiles[1:]]
+
+    def _red_seen(self, red: str) -> bool:
+        """這張赤五已經在事件流裡了嗎。每種只有一張。"""
+        return any(
+            red in tiles
+            for event in self.events
+            for tiles in (
+                *getattr(event, "tehais", ())[:1],
+                getattr(event, "consumed", ()),
+                (getattr(event, "pai", ""),),
+            )
+        )
 
     def _last_dahai(self) -> int:
         for index in range(len(self.events) - 1, -1, -1):

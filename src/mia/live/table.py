@@ -78,7 +78,15 @@ from mia.utils.geometry import Rect
 from mia.utils.logging import logger
 from mia.vision.hud import Hud, HudDigits, read_hud, read_wall
 from mia.vision.roi import MissingRoiError, RoiSet
-from mia.vision.tiles.classify import DEFAULT_SKIN, MIN_BRIGHTNESS, TemplateSet
+from mia.vision.tiles.classify import (
+    DEFAULT_SKIN,
+    MIN_BRIGHTNESS,
+    WHOLE_RED,
+    TemplateSet,
+    classify,
+    red_ink,
+    settle_five,
+)
 from mia.vision.tiles.dora import read_dora
 from mia.vision.tiles.melds import DEFAULT_VIEWS as MELD_VIEWS
 from mia.vision.tiles.melds import (
@@ -94,6 +102,7 @@ from mia.vision.tiles.river import (
     SEATS,
     River,
     classify_river_tile,
+    face_patch,
     face_size,
     find_sideways,
     read_river,
@@ -200,6 +209,7 @@ class TableWorker(threading.Thread):
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._templates = templates
+        self._reds: TemplateSet | None = None
         self._digits: HudDigits | None = None
 
         self._table = TableTracker()
@@ -227,6 +237,7 @@ class TableWorker(threading.Thread):
         # 認牌面慢(一組 4 ~ 5 秒),放到另一條執行緒。見 _read_melds。
         self._faces = ThreadPoolExecutor(max_workers=1, thread_name_prefix="meld-faces")
         self._pending_faces: list[_PendingFaces] = []
+        self._meld_reds: dict[tuple[int, int], frozenset[str]] = {}
         self._known: list[list[str]] = [[] for _ in SEATS]
         # 每家每一格的最佳猜測,沒信心的也留著:Mortal 不收 ?。
         self._guess: list[dict[int, str]] = [{} for _ in SEATS]
@@ -374,6 +385,7 @@ class TableWorker(threading.Thread):
         known = self._known[position]
         filled = river.filled
         if len(filled) == len(known):
+            self._recheck_reds(position, flat, river, known)
             # 沒有新格子,不必重認 —— 但觀察照樣交出去:一口氣長了好幾張的
             # 河要靠**下一次**觀察確認才會發事件(過場動畫的白光,見
             # ``mia.tracker.rivers._JUMP``)。
@@ -408,8 +420,9 @@ class TableWorker(threading.Thread):
                 and match.margin >= CONFIDENT[1]
                 and match.brightness >= MIN_BRIGHTNESS
             )
-            pai = ms_to_mjai(match.label) if confident else UNKNOWN
-            self._guess[position][cell] = ms_to_mjai(match.label)
+            label = settle_five(match.label, face_patch(flat, river.cells[cell]))
+            pai = ms_to_mjai(label) if confident else UNKNOWN
+            self._guess[position][cell] = ms_to_mjai(label)
             if incremental and pai == _HAKU and self._haku[position] != cell:
                 # 白要看兩次才收。和了 / 立直的過場有一道白光橫過牌河,空白的
                 # 牌面模板對上白光,讀成**有信心的白** —— 而這裡每一格只認一次,
@@ -422,6 +435,39 @@ class TableWorker(threading.Thread):
             known.append(pai)
 
         self._emit(position, known)
+
+    def _recheck_reds(
+        self, position: int, flat: np.ndarray, river: River, known: list[str]
+    ) -> None:
+        """認不出來的格子如果整張紅,只拿赤五與中再認一次。
+
+        每一格只認一次,而剛打出來的牌還在動畫裡:實測一張赤 5 筒在第一幀被猜成白,
+        幾幀之後已經認得出來卻不會再認。其他牌沒有這麼便宜的訊號,看顏色只要幾十微秒,
+        所以每一輪都看得起。
+        """
+        assert self._templates is not None
+        if UNKNOWN not in known:
+            return
+        if self._reds is None:
+            self._reds = self._templates.only("0m", "0p", "0s", "7z")
+        sideways = self._sideways[position]
+        if sideways is not None:
+            scale = DEFAULT_CORNERS[SEATS[position]].sideways_scale
+            river = read_river(flat, sideways=sideways, scale=scale)
+        for cell, pai in enumerate(known):
+            if (
+                pai != UNKNOWN
+                or cell == sideways
+                or cell in river.clipped
+                or not river.occupied[cell]
+            ):
+                continue
+            if red_ink(face_patch(flat, river.cells[cell])) < WHOLE_RED:
+                continue
+            match = classify(search_window(flat, river.cells[cell]), self._reds, size=face_size())
+            if match.margin >= CONFIDENT[1]:
+                known[cell] = ms_to_mjai(match.label)
+                self._guess[position][cell] = known[cell]
 
     def _emit(self, position: int, known: list[str]) -> None:
         """把這一家看得見的河交給 :class:`RiverWatcher`,新的捨牌送進 tracker。"""
@@ -598,6 +644,8 @@ class TableWorker(threading.Thread):
                 (normalize_red(ms_to_mjai(face)) for face in faces.tiles),
                 repeated=(normalize_red(ms_to_mjai(face)) for face in faces.repeated),
             )
+            if faces.red_suits:
+                self._meld_reds[(job.position, job.index)] = faces.red_suits
         self._pending_faces = pending
 
     # ------------------------------------------------------------------ 寶牌
@@ -726,6 +774,7 @@ class TableWorker(threading.Thread):
                 doras=list(self._dora_marks),
                 steps=list(self.steps),
                 melds=[list(player.melds) for player in self._table.players],
+                meld_reds=dict(self._meld_reds),
                 reaches=list(self._reach_marks.items()),
                 own_reach=self._own_reach,
                 moves=list(self._own.moves),
@@ -765,6 +814,7 @@ class TableWorker(threading.Thread):
         if not keep_hand:
             self._own.reset()
         self._dora_marks = []
+        self._meld_reds = {}
         self._reach_marks = {}
         self._own_reach = None
         self._readings = {}
