@@ -78,8 +78,9 @@ class DoraTiming(Enum):
     """槓之後,新寶牌指示牌該在什麼時候翻開。
 
     麻將規則上暗槓是「即乗り」(立刻翻),加槓與大明槓是「後乗り」(打出牌後才翻)。
-    雀魂只是把新的指示牌塞在嶺上摸牌那則 ``ActionDealTile`` 的 ``doras`` 裡,
-    沒有告訴你該什麼時候翻,所以要自己記住剛才槓的種類。
+    雀魂的訊息也照這個順序:暗槓的新指示牌在嶺上摸牌那則 ``ActionDealTile``,
+    加槓與大明槓的在**下一個動作**,也就是 ``ActionDiscardTile``,嶺上摸到又開槓
+    就是那一則 ``ActionAnGangAddGang``。實測:四槓子與雙槓的牌譜、一場即時封包。
 
     ==========  ==========================================
     槓的種類     事件順序
@@ -88,6 +89,9 @@ class DoraTiming(Enum):
     加槓         ``kakan`` → 嶺上 ``tsumo`` → ``dora`` → ``dahai``
     大明槓       ``daiminkan`` → 嶺上 ``tsumo`` → ``dora`` → ``dahai``
     ==========  ==========================================
+
+    :attr:`AFTER_RINSHAN` 是保險:萬一新指示牌真的出現在嶺上摸牌那一則,還是留到
+    打牌之前才翻。
     """
 
     NONE = auto()
@@ -311,6 +315,8 @@ class MajsoulToMjai:
 
         new_doras = self._consume_new_doras(action)
         if new_doras:
+            # 嶺上摸到又開槓:上一張還沒等到打牌,下一張就來了。先翻,否則會被蓋掉。
+            events.extend(self._flip_deferred_dora())
             if state.dora_timing is DoraTiming.BEFORE_RINSHAN:
                 events.extend(Dora(dora_marker=d) for d in new_doras)
             elif state.dora_timing is DoraTiming.AFTER_RINSHAN:
@@ -330,12 +336,8 @@ class MajsoulToMjai:
     def _build_discard(self, action: Any) -> list[MjaiEvent]:
         """打牌。立直宣言與延後的寶牌都在這裡處理。"""
         state = self._state
-        events: list[MjaiEvent] = []
-
         # 加槓 / 大明槓的寶牌:在打牌之前才翻
-        if state.deferred_dora is not None:
-            events.append(Dora(dora_marker=state.deferred_dora))
-            state.deferred_dora = None
+        events = self._announced_doras(action)
 
         actor = int(getattr(action, "seat", 0))
         tile = getattr(action, "tile", "")
@@ -404,16 +406,18 @@ class MajsoulToMjai:
         if not raw_tile:
             raise TileError(f"ActionAnGangAddGang(seat={actor}) 沒有牌")
         tile = ms_to_mjai(raw_tile)
+        # 上一次加槓的寶牌:嶺上摸到就又開槓的話,等不到打牌。
+        doras = self._announced_doras(action)
 
         if kan_type == 3:  # 暗槓
             state.dora_timing = DoraTiming.BEFORE_RINSHAN
             state.last_revealed_by = actor  # 國士無雙可搶暗槓
-            return [Ankan(actor=actor, consumed=_ankan_consumed(tile))]
+            return [*doras, Ankan(actor=actor, consumed=_ankan_consumed(tile))]
 
         if kan_type == 2:  # 加槓
             state.dora_timing = DoraTiming.AFTER_RINSHAN
             state.last_revealed_by = actor  # 搶槓
-            return [Kakan(actor=actor, pai=tile, consumed=_kakan_consumed(tile))]
+            return [*doras, Kakan(actor=actor, pai=tile, consumed=_kakan_consumed(tile))]
 
         logger.warning("未知的槓型別 {},略過", kan_type)
         return []
@@ -476,6 +480,21 @@ class MajsoulToMjai:
         return [Ryukyoku(deltas=None), EndKyoku()]
 
     # ------------------------------------------------------------------ 工具
+
+    def _flip_deferred_dora(self) -> list[MjaiEvent]:
+        """翻開還壓著的那一張。沒有就是空的。"""
+        state = self._state
+        if state.deferred_dora is None:
+            return []
+        marker, state.deferred_dora = state.deferred_dora, None
+        return [Dora(dora_marker=marker)]
+
+    def _announced_doras(self, action: Any) -> list[MjaiEvent]:
+        """到這個動作為止該翻開的寶牌:壓著的那一張,加上這則訊息新帶來的。"""
+        return [
+            *self._flip_deferred_dora(),
+            *(Dora(dora_marker=marker) for marker in self._consume_new_doras(action)),
+        ]
 
     def _consume_new_doras(self, action: Any) -> list[str]:
         """比對動作裡的 ``doras`` 與已知的,回傳這次新增的指示牌。

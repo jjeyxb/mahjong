@@ -351,6 +351,88 @@ class TestDoraTiming:
         ]
         assert conv.state.deferred_dora == "1m"
 
+    def test_consecutive_kakan_keeps_every_dora(
+        self, conv: MajsoulToMjai, schema: LiqiSchema
+    ) -> None:
+        """嶺上摸到又加槓:上一張還沒翻就來了下一張,兩張都要留著。"""
+        act(conv, "ActionNewRound", new_round(schema))
+        act(conv, "ActionAnGangAddGang",
+            schema.message_class("lq.ActionAnGangAddGang")(seat=0, type=2, tiles="1m"))
+        act(conv, "ActionDealTile", self._rinshan(schema, 0, ["3p", "7z"]))
+        second = act(conv, "ActionAnGangAddGang",
+                     schema.message_class("lq.ActionAnGangAddGang")(seat=0, type=2, tiles="9m"))
+        assert types_of(second) == ["dora", "kakan"]
+
+        assert act(conv, "ActionDealTile", self._rinshan(schema, 0, ["3p", "7z", "1m"])) == [
+            Tsumo(actor=0, pai="9m"),
+        ]
+        assert types_of(act(conv, "ActionDiscardTile",
+                            schema.message_class("lq.ActionDiscardTile")(seat=0, tile="9m"))) == [
+            "dora",
+            "dahai",
+        ]
+
+    def test_ankan_right_after_kakan_flips_the_kakan_dora_first(
+        self, conv: MajsoulToMjai, schema: LiqiSchema
+    ) -> None:
+        act(conv, "ActionNewRound", new_round(schema))
+        act(conv, "ActionAnGangAddGang",
+            schema.message_class("lq.ActionAnGangAddGang")(seat=0, type=2, tiles="1m"))
+        act(conv, "ActionDealTile", self._rinshan(schema, 0, ["3p", "7z"]))
+        ankan = act(conv, "ActionAnGangAddGang",
+                    schema.message_class("lq.ActionAnGangAddGang")(seat=0, type=3, tiles="9m"))
+        assert types_of(ankan) == ["dora", "ankan"]
+
+        assert act(conv, "ActionDealTile", self._rinshan(schema, 0, ["3p", "7z", "1m"])) == [
+            Dora(dora_marker="1m"),
+            Tsumo(actor=0, pai="9m"),
+        ]
+
+    def test_daiminkan_dora_arrives_on_the_discard(
+        self, conv: MajsoulToMjai, schema: LiqiSchema
+    ) -> None:
+        """實際封包的形狀:嶺上摸牌還是舊清單,新的指示牌在打牌那一則。"""
+        act(conv, "ActionNewRound", new_round(schema))  # doras=["3p"]
+        act(conv, "ActionChiPengGang", schema.message_class("lq.ActionChiPengGang")(
+            seat=0, type=2, tiles=["2s"] * 4, froms=[0, 0, 0, 1]))
+        assert types_of(act(conv, "ActionDealTile", self._rinshan(schema, 0, ["3p"]))) == ["tsumo"]
+
+        discard = schema.message_class("lq.ActionDiscardTile")(
+            seat=0, tile="9m", doras=["3p", "7z"]
+        )
+
+        assert act(conv, "ActionDiscardTile", discard) == [
+            Dora(dora_marker="C"),
+            Dahai(actor=0, pai="9m", tsumogiri=False),
+        ]
+
+    def test_chained_kans_on_the_real_message_shape(
+        self, conv: MajsoulToMjai, schema: LiqiSchema
+    ) -> None:
+        """四槓子牌譜的順序:新的指示牌跟著下一次槓,暗槓的跟著嶺上摸牌。"""
+        kan = schema.message_class("lq.ActionAnGangAddGang")
+        act(conv, "ActionNewRound", new_round(schema))  # doras=["3p"]
+
+        assert types_of(act(conv, "ActionAnGangAddGang", kan(seat=0, type=2, tiles="1m"))) == [
+            "kakan"
+        ]
+        act(conv, "ActionDealTile", self._rinshan(schema, 0, ["3p"]))
+        assert types_of(act(conv, "ActionAnGangAddGang",
+                            kan(seat=0, type=2, tiles="9m", doras=["3p", "7z"]))) == [
+            "dora",
+            "kakan",
+        ]
+        act(conv, "ActionDealTile", self._rinshan(schema, 0, ["3p", "7z"]))
+        assert types_of(act(conv, "ActionAnGangAddGang",
+                            kan(seat=0, type=3, tiles="2s", doras=["3p", "7z", "1m"]))) == [
+            "dora",
+            "ankan",
+        ]
+        assert act(conv, "ActionDealTile", self._rinshan(schema, 0, ["3p", "7z", "1m", "2m"])) == [
+            Dora(dora_marker="2m"),
+            Tsumo(actor=0, pai="9m"),
+        ]
+
     def test_repeated_dora_list_is_not_re_emitted(
         self, conv: MajsoulToMjai, schema: LiqiSchema
     ) -> None:
