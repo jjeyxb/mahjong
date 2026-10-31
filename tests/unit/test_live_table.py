@@ -149,6 +149,22 @@ class TestTheWholeChain:
         assert worker._table.players[1].melds == []  # noqa: SLF001
         assert worker._pending_faces == []  # noqa: SLF001
 
+    def test_the_hud_gives_the_round_and_the_winds(
+        self, image: np.ndarray, calibration: Calibration, templates: TemplateSet
+    ) -> None:
+        """東 4 局,莊家是下家 —— 畫面這條路終於知道場風與自風了。"""
+        worker, _ = _worker(templates)
+        for _ in range(2):
+            worker.offer_frame(image, calibration)
+            worker.tick()
+        assert worker.round is not None
+        assert worker.round.kyoku == 4
+        assert worker._table.oya == 1  # noqa: SLF001
+        assert worker._table.bakaze == "E"  # noqa: SLF001
+        # 下家是莊家,自己坐他的上家 —— 北家。畫面左下角印的也是北。
+        assert "N" in worker._table.players[0].yakuhai  # noqa: SLF001
+        assert "S" in worker._table.players[2].yakuhai  # noqa: SLF001
+
     def test_without_a_hand_it_stays_quiet(
         self, image: np.ndarray, calibration: Calibration, templates: TemplateSet
     ) -> None:
