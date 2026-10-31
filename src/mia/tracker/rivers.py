@@ -75,13 +75,17 @@ class Discard:
         position: **依視角**的座位 0~3,與
             :data:`~mia.vision.tiles.river.SEATS` 同序(自己、下家、對家、上家)。
             不是絕對座位 —— 這一層只看得見畫面,換算成絕對座位是上層的事。
-        index: 這是他的第幾張捨牌(從 0 起算)。
+        index: 這張牌現在在河裡第幾格(從 0 起算)。被鳴走之後後面的牌會遞補,
+            所以它會變,見 :attr:`serial`。
         pai: 牌(雀魂記法),:data:`UNKNOWN` 表示還不知道。
+        serial: 這是他的第幾張捨牌(從 0 起算),不會變。之後重讀得到更好的答案時
+            靠它找回這一張,見 :attr:`RiverWatcher.serials`。
     """
 
     position: int
     index: int
     pai: str
+    serial: int = field(default=0, compare=False)
 
 
 @dataclass
@@ -186,21 +190,30 @@ class RiverWatcher:
     """
 
     rivers: list[list[str]] = field(default_factory=lambda: [[] for _ in range(4)])
+    #: 河裡每一格是他的第幾張捨牌。與 :attr:`rivers` 等長。
+    serials: list[list[int]] = field(default_factory=lambda: [[] for _ in range(4)])
     stats: WatchStats = field(default_factory=WatchStats)
     #: 上一次「少了一張但沒有證據」留下的假設,每家一個:
     #: ``(如果真的少了那張,河會長這樣, 當時看到的河)``。
     #: 下一次觀察就是這個假設的證據,見 :meth:`observe`。
-    _shrinking: list[tuple[tuple[str, ...], tuple[str, ...]] | None] = field(
+    _shrinking: list[tuple[tuple[str, ...], tuple[str, ...], int] | None] = field(
         default_factory=lambda: [None for _ in range(4)], repr=False
     )
     #: 上一次「一口氣長了好幾張」而先不發的那條河,每家一個。見 :data:`_JUMP`。
     _growing: list[tuple[str, ...] | None] = field(
         default_factory=lambda: [None for _ in range(4)], repr=False
     )
+    _thrown: list[int] = field(default_factory=lambda: [0 for _ in range(4)], repr=False)
+
+    def thrown(self, position: int) -> int:
+        """河裡看到這一家打過幾張,含後來被鳴走的。"""
+        return self._thrown[position]
 
     def reset(self) -> None:
         """新的一局。四家的河都清空。"""
         self.rivers = [[] for _ in range(4)]
+        self.serials = [[] for _ in range(4)]
+        self._thrown = [0 for _ in range(4)]
         self._shrinking = [None for _ in range(4)]
         self._growing = [None for _ in range(4)]
 
@@ -262,11 +275,12 @@ class RiverWatcher:
                 # 它現在只是從畫面上移到別人的副露去。
                 self.stats.calls += 1
                 self.rivers[position] = list(shorter)
+                del self.serials[position][cut]
                 self._fill(position, seen)
                 return []
             # 沒有證據就先不動,把「如果真的少了那張」記成一個假設。
             # 牌不會跑掉,下一次觀察再說。
-            self._shrinking[position] = (shorter, tuple(seen))
+            self._shrinking[position] = (shorter, tuple(seen), cut)
             self.stats.deferred += 1
             return []
 
@@ -283,6 +297,7 @@ class RiverWatcher:
             self._shrinking[position] = None
             self.stats.calls += 1
             self.rivers[position] = list(pending[0])
+            del self.serials[position][pending[2]]
             return self._advance(position, seen)
 
         self._shrinking[position] = None
@@ -298,9 +313,16 @@ class RiverWatcher:
         known = self.rivers[position]
         self._fill(position, seen[: len(known)])
         fresh = [
-            Discard(position=position, index=len(known) + offset, pai=pai)
+            Discard(
+                position=position,
+                index=len(known) + offset,
+                pai=pai,
+                serial=self._thrown[position] + offset,
+            )
             for offset, pai in enumerate(seen[len(known) :])
         ]
+        self._thrown[position] += len(fresh)
+        self.serials[position] += [discard.serial for discard in fresh]
         self.rivers[position] = [*self.rivers[position], *seen[len(known) :]]
         self.stats.emitted += len(fresh)
         return fresh

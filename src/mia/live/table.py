@@ -43,9 +43,9 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -53,20 +53,25 @@ from mia.analysis.danger import assess
 from mia.calibration.table import Calibration
 from mia.config.models import RoiConfig
 from mia.live.bus import Dangers, UpdateBus, WorkerStatus
-from mia.mjai.events import Dahai, Dora, Reach
+from mia.mjai.events import Dahai, Dora, Reach, Tsumo
 from mia.mjai.table import TableTracker
 from mia.mjai.tiles import ms_to_mjai, normalize_red
 from mia.tracker import (
     UNKNOWN,
     DoraWatcher,
+    HandWatcher,
+    KyokuLog,
     KyokuSignal,
     KyokuWatcher,
     MeldWatcher,
+    Move,
     ReachWatcher,
     RiverWatcher,
     RoundWatcher,
     Step,
+    Stream,
     TurnTracker,
+    compose,
     guess_meld,
 )
 from mia.utils.geometry import Rect
@@ -111,8 +116,18 @@ _MELD_QUORUM = 2
 #: 白(雀魂記法 ``5z`` 經 :func:`ms_to_mjai` 之後)。見 ``_read_seat``。
 _HAKU = "P"
 
-#: 一張捨牌:誰打的、什麼牌(讀不出來是 ``None``)。
-_Seen = tuple[int, str | None]
+#: 一張捨牌:誰打的、什麼牌(讀不出來是 ``None``)、猜是什麼牌、是他的第幾張。
+_Seen = tuple[int, str | None, str | None, int]
+
+#: 開局余牌:配牌之後是 70,莊家摸完 69。見 ``_read_round``。
+_OPENING_WALL = (70, 69)
+
+#: 連續幾副不同的手牌解釋不了,就算事件流對不上了。見 ``stream``。
+_HAND_LOST = 3
+
+#: 排出來的摸牌數與余牌差到幾張,就算事件流對不上了。排序本來就會落後幾步,
+#: 而加槓的嶺上看不見。
+_WALL_LOST = 5
 
 #: 一輪湧進這麼多張捨牌,代表是中途接上、一次看到滿河。出牌順序已經無從得知,
 #: 這一局不出事件流。CPU 對局一秒最多兩個動作,實測一輪最多 3 張。
@@ -144,12 +159,12 @@ class TableWorker(threading.Thread):
         link: 轉接點,收尾時會從它身上拔掉自己。
         templates: 先載好的模板集。``None`` 就在執行緒裡自己載 ——
             載模板要讀 37 個檔,不該卡住造物件的那一方。
+        on_stream: 每一輪結束時收 ``(第幾局, 事件流)``。要事件流的人才給:
+            沒有人要的話不必組。
 
     Note:
-        **這條路的狀態比封包那條路少。** 沒有 ``start_kyoku`` 就不知道場風
-        與莊家,所以役牌只剩三元牌 —— 那是 :class:`~mia.mjai.table.Player`
-        的預設值,方向是保守的。HUD 上讀得到局數與莊家(``round_info``),
-        但那還沒做。
+        **座位是依視角的**,自己永遠是 0。Mortal 看的是相對座位,所以事件流也這樣
+        送(``start_game`` 的 ``id`` 是 0),不必換算成絕對座位。
     """
 
     #: 給人看的「這份危險度從哪來」。見 :data:`~mia.live.danger.DangerWorker.SOURCE`。
@@ -164,8 +179,10 @@ class TableWorker(threading.Thread):
         interval: float = _INTERVAL,
         link: TableLink | None = None,
         templates: TemplateSet | None = None,
+        on_stream: Callable[[int, Stream], None] | None = None,
     ) -> None:
         super().__init__(name="table", daemon=True)
+        self._on_stream = on_stream
         self._link = link
         self._bus = bus
         self._config = config
@@ -175,6 +192,8 @@ class TableWorker(threading.Thread):
         self._lock = threading.Lock()
         self._frame: tuple[np.ndarray, Calibration] | None = None
         self._hand: tuple[str, ...] = ()
+        # 兩輪之間手牌可能變了好幾次(摸、打),一次都不能漏,所以是佇列。
+        self._hands: list[tuple[tuple[str, ...], str | None]] = []
         self._stop = threading.Event()
         self._templates = templates
         self._digits: HudDigits | None = None
@@ -194,15 +213,25 @@ class TableWorker(threading.Thread):
         self._turn_melds: list[int] = []
         self._joined_late = False
         self.steps: list[Step] = []
+        self._own = HandWatcher()
+        self._dora_marks: list[tuple[int, str]] = []
+        self._reach_marks: dict[int, int] = {}
+        self._own_reach: int | None = None
+        self._readings: dict[tuple[int, int], tuple[str | None, str | None]] = {}
         self._melds = MeldWatcher(units=tuple(GROUP_LENGTH[seat] for seat in SEATS))
         # 認牌面慢(一組 4 ~ 5 秒),放到另一條執行緒。見 _read_melds。
         self._faces = ThreadPoolExecutor(max_workers=1, thread_name_prefix="meld-faces")
         self._pending_faces: list[_PendingFaces] = []
         self._known: list[list[str]] = [[] for _ in SEATS]
+        # 每家每一格的最佳猜測,沒信心的也留著:Mortal 不收 ?。
+        self._guess: list[dict[int, str]] = [{} for _ in SEATS]
         self._sideways: list[int | None] = [None for _ in SEATS]
         # 每家「上一輪讀成白、還沒收下」的那一格。見 _read_seat。
         self._haku: list[int | None] = [None for _ in SEATS]
         self._last: tuple | None = None
+        self._wall: int | None = None
+        #: 第幾局,每清空一次桌面加一。事件流靠它知道換局了。
+        self.kyoku = 0
 
         self.status = WorkerStatus("牌桌")
         self.reads = 0
@@ -219,10 +248,14 @@ class TableWorker(threading.Thread):
         with self._lock:
             self._frame = (image, calibration)
 
-    def offer_hand(self, tiles: Sequence[str]) -> None:
-        """收一副手牌(雀魂記法)。危險度要知道自己手上有什麼才算得出來。"""
+    def offer_hand(self, tiles: Sequence[str], drawn: str | None = None) -> None:
+        """收一副手牌(雀魂記法,含 ``drawn``)。
+
+        危險度要知道自己手上有什麼才算得出來,事件流要靠它知道自己摸打了什麼。
+        """
         with self._lock:
             self._hand = tuple(tiles)
+            self._hands.append((tuple(tiles), drawn))
 
     def stop(self) -> None:
         self._stop.set()
@@ -258,6 +291,8 @@ class TableWorker(threading.Thread):
         with self._lock:
             frame = self._frame
             hand = self._hand
+            hands = self._hands
+            self._hands = []
             self._frame = None
         if frame is None:
             # **不要安靜地 return。** 使用者回報過:只打開放銃分析的話畫面
@@ -271,6 +306,8 @@ class TableWorker(threading.Thread):
 
         image, calibration = frame
         self.reads += 1
+        if not self._load_digits():
+            return
         if self._rois is None or not self._rois.matches(calibration):
             self._rois = RoiSet(self._config, calibration)
 
@@ -280,10 +317,14 @@ class TableWorker(threading.Thread):
 
         signal = self._kyoku.observe(rivers)
         if signal is not KyokuSignal.NONE:
-            self._new_kyoku()
+            # 開局訊號要等第一張牌,而自己是莊家時那已經太晚了:配牌、寶牌、HUD
+            # 在那之前就收好了,要留著。清空的時候已經重設過一次。
+            if signal is KyokuSignal.ENDED or self._round.settled is None:
+                self._new_kyoku(keep_hand=signal is KyokuSignal.STARTED)
             self.status.say(
                 "新的一局" if signal is KyokuSignal.STARTED else "牌桌清空了"
             )
+
 
         # **局還沒開始就不讀牌河。** 開始要四家都連續,而讀牌只看那一家:第一張牌
         # 剛好遇上別家不連續的那一輪,牌會先被收下,下一輪開局訊號到了又整個重設,
@@ -294,6 +335,7 @@ class TableWorker(threading.Thread):
                     continue
                 self._read_seat(position, flat, river)
 
+        self._read_hands(hands, image, table)
         self._read_melds(image, table, rivers)
         self._read_dora(image)
         self._read_round(image, table, rivers)
@@ -306,6 +348,8 @@ class TableWorker(threading.Thread):
         # 牌河照常讀下去,等手牌來了才算得出來。
         self.status.say("" if hand else "等讀到自己的手牌")
         self._publish(hand)
+        if self._on_stream is not None:
+            self._on_stream(self.kyoku, self.stream())
 
     # -------------------------------------------------------------------- 一家
 
@@ -350,6 +394,7 @@ class TableWorker(threading.Thread):
                 and match.brightness >= MIN_BRIGHTNESS
             )
             pai = ms_to_mjai(match.label) if confident else UNKNOWN
+            self._guess[position][cell] = ms_to_mjai(match.label)
             if incremental and pai == _HAKU and self._haku[position] != cell:
                 # 白要看兩次才收。和了 / 立直的過場有一道白光橫過牌河,空白的
                 # 牌面模板對上白光,讀成**有信心的白** —— 而這裡每一格只認一次,
@@ -367,10 +412,34 @@ class TableWorker(threading.Thread):
         """把這一家看得見的河交給 :class:`RiverWatcher`,新的捨牌送進 tracker。"""
         for discard in self._rivers.observe(position, known):
             self._turn_discards.append(
-                (position, None if discard.pai == UNKNOWN else discard.pai)
+                (
+                    position,
+                    None if discard.pai == UNKNOWN else discard.pai,
+                    self._guess[position].get(discard.index),
+                    discard.serial,
+                )
             )
             if discard.pai != UNKNOWN:
                 self._table.handle(Dahai(actor=position, pai=discard.pai, tsumogiri=False))
+        self._update_readings(position, known)
+
+    def _update_readings(self, position: int, known: list[str]) -> None:
+        """重讀之後的答案記回去,事件流會用。
+
+        河少一張而鳴牌還沒確定的那一輪,格子與第幾張對不上,就先不記。已經有信心的
+        不會被蓋掉 —— 與 ``RiverWatcher._fill`` 同一個理由。
+        """
+        serials = self._rivers.serials[position]
+        if len(serials) != len(known):
+            return
+        for cell, (serial, pai) in enumerate(zip(serials, known, strict=True)):
+            old = self._readings.get((position, serial))
+            if old is not None and old[0] is not None:
+                continue
+            self._readings[(position, serial)] = (
+                None if pai == UNKNOWN else pai,
+                self._guess[position].get(cell),
+            )
 
     def _look_for_sideways(
         self, position: int, flat: np.ndarray, river: River, known: list[str]
@@ -401,10 +470,35 @@ class TableWorker(threading.Thread):
         if found is None:
             return None
         self._sideways[position] = found
-        self._declare_reach(position)
+        serials = self._rivers.serials[position]
+        self._declare_reach(position, serials[found] if found < len(serials) else None)
         # 格線整個挪過,這一家要重認。
         known.clear()
         return found
+
+    # ------------------------------------------------------------------ 手牌
+
+    def _read_hands(
+        self,
+        hands: Sequence[tuple[tuple[str, ...], str | None]],
+        image: np.ndarray,
+        table: Rect,
+    ) -> None:
+        """這一輪收到的手牌交給 :class:`HandWatcher`。
+
+        **牌局進行中才收。** 開局前的介面實測被讀成一副手牌,而結算畫面上留著的是
+        上一局的手牌。桌上有牌,或余牌是開局的數字,才算進行中。
+        """
+        if not hands or self._digits is None:
+            return
+        if self._kyoku.empty and read_wall(image, table, self._digits) not in _OPENING_WALL:
+            return
+        for tiles, drawn in hands:
+            self._own.observe(
+                [ms_to_mjai(tile) for tile in tiles],
+                None if drawn is None else ms_to_mjai(drawn),
+                thrown=self._rivers.thrown(0),
+            )
 
     # ------------------------------------------------------------------ 副露
 
@@ -500,12 +594,28 @@ class TableWorker(threading.Thread):
         except (MissingRoiError, ValueError):
             return
         for fresh in self._dora.observe(read_dora(panel, self._templates)):
-            self._table.handle(Dora(dora_marker=ms_to_mjai(fresh.indicator)))
+            marker = ms_to_mjai(fresh.indicator)
+            self._table.handle(Dora(dora_marker=marker))
+            self._dora_marks.append((len(self.steps), marker))
 
     # ------------------------------------------------------------------ 其他
 
-    def _declare_reach(self, position: int) -> None:
-        """記下這一家立直了。橫放牌與點數兩條路都會走到這裡,只算一次。"""
+    def _declare_reach(self, position: int, serial: int | None = None) -> None:
+        """記下這一家立直了。橫放牌與點數兩條路都會走到這裡,只算一次。
+
+        Args:
+            serial: 宣言牌是他的第幾張捨牌。橫放牌知道確切是哪一張;點數只知道
+                「剛剛」,先當成最後一張,橫放牌之後找到會蓋過去。
+        """
+        if position == 0:
+            if self._own_reach is None:
+                thrown = sum(move.move is Move.DISCARD for move in self._own.moves)
+                self._own_reach = thrown - 1
+        elif serial is not None:
+            self._reach_marks[position] = serial
+        elif position not in self._reach_marks:
+            serials = self._rivers.serials[position]
+            self._reach_marks[position] = serials[-1] if serials else 0
         if self._table.players[position].reach:
             return
         self._table.handle(Reach(actor=position))
@@ -523,15 +633,15 @@ class TableWorker(threading.Thread):
         檢查碼擋不住。第一張牌出現的時候它一定已經換完了。
 
         讀穩之後還是每一輪都讀(1.5 毫秒):點數變了就是有人立直。
+
+        **自己是莊家時等不到第一張牌**:Mortal 要在打第一張之前回答。所以配牌
+        讀到了、余牌也是開局的數字,就算開始了 —— 手牌發下來的時候 HUD 已經換完。
         """
-        if not any(river.count for river in rivers if river.is_plausible()):
+        assert self._digits is not None
+        if not any(river.count for river in rivers if river.is_plausible()) and (
+            not self._own.tehai or read_wall(image, table, self._digits) not in _OPENING_WALL
+        ):
             return
-        if self._digits is None:
-            try:
-                self._digits = HudDigits.load()
-            except (FileNotFoundError, ValueError) as exc:
-                self.status.say(f"載不到 HUD 模板:{exc}")
-                return
         hud = read_hud(image, table, self._digits)
         if self._round.settled is not None:
             for position in self._reach.observe(hud):
@@ -541,6 +651,15 @@ class TableWorker(threading.Thread):
         if settled is not None and settled.dealer is not None:
             self._table.set_round(settled.bakaze, settled.dealer)
             self._reach.start(settled)
+
+    def _load_digits(self) -> bool:
+        if self._digits is None:
+            try:
+                self._digits = HudDigits.load()
+            except (FileNotFoundError, ValueError) as exc:
+                self.status.say(f"載不到 HUD 模板:{exc}")
+                return False
+        return True
 
     def _read_turns(self, image: np.ndarray, table: Rect) -> None:
         """這一輪的捨牌、副露、余牌交給 :class:`TurnTracker`,排出先後順序。
@@ -557,6 +676,8 @@ class TableWorker(threading.Thread):
             self._turn_buffer = []
             return
         wall = read_wall(image, table, self._digits)
+        self._wall = wall if wall is not None else self._wall
+        own_turn = bool(self._own.hand) and len(self._own.hand) % 3 == 2
         if self._turns is None:
             self._turn_buffer.append((self.reads, discards, melds, wall))
             settled = self._round.settled
@@ -567,18 +688,52 @@ class TableWorker(threading.Thread):
                 self.steps += self._turns.tick(tick, buffered, called, seen)
             self._turn_buffer = []
             return
-        self.steps += self._turns.tick(self.reads, discards, melds, wall)
+        self.steps += self._turns.tick(self.reads, discards, melds, wall, hurry=own_turn)
 
     @property
     def round(self) -> Hud | None:
         """這一局的開局資訊。HUD 還沒讀穩就是 ``None``。"""
         return self._round.settled
 
-    def _new_kyoku(self) -> None:
+    def stream(self) -> Stream:
+        """這一局到目前為止的事件流。見 :mod:`mia.tracker.stream`。"""
+        settled = self._round.settled
+        if settled is None or self._joined_late:
+            return Stream()
+        stream = compose(
+            KyokuLog(
+                hud=settled,
+                tehai=self._own.tehai,
+                doras=list(self._dora_marks),
+                steps=list(self.steps),
+                melds=[list(player.melds) for player in self._table.players],
+                reaches=list(self._reach_marks.items()),
+                own_reach=self._own_reach,
+                moves=list(self._own.moves),
+                readings=dict(self._readings),
+            )
+        )
+        return replace(stream, doubt=self._doubt(stream))
+
+    def _doubt(self, stream: Stream) -> str | None:
+        """事件流還對得上畫面嗎。對不上就說為什麼。"""
+        if self._own.stuck >= _HAND_LOST:
+            return "手牌對不上"
+        if self._wall is not None and stream.events:
+            drawn = sum(isinstance(event, Tsumo) for event in stream.events)
+            if abs(_OPENING_WALL[0] - self._wall - drawn) >= _WALL_LOST and not stream.stalled:
+                return "余牌對不上"
+        return None
+
+    def _new_kyoku(self, *, keep_hand: bool = False) -> None:
         """清掉所有跟局有關的狀態。
 
         **上一局的安全牌在這一局毫無意義**,而留著不會有任何症狀,
         只會安靜地把危險牌說成安全 —— 與 ``TableTracker._reset`` 同一個理由。
+
+        Args:
+            keep_hand: 配牌留著。開局訊號要等第一張牌,而自己是莊家時,那一張
+                就是自己打的:配牌與第一次摸牌都已經收過了。
         """
         self._table = TableTracker()
         self._table.seat = 0
@@ -587,6 +742,13 @@ class TableWorker(threading.Thread):
         self._melds.reset()
         self._round.reset()
         self._reach.reset()
+        self.kyoku += 1
+        if not keep_hand:
+            self._own.reset()
+        self._dora_marks = []
+        self._reach_marks = {}
+        self._own_reach = None
+        self._readings = {}
         self._turns = None
         self._turn_buffer = []
         self._turn_discards = []
@@ -594,9 +756,11 @@ class TableWorker(threading.Thread):
         self._joined_late = False
         self.steps = []
         self._known = [[] for _ in SEATS]
+        self._guess = [{} for _ in SEATS]
         self._sideways = [None for _ in SEATS]
         self._haku = [None for _ in SEATS]
         self._last = None
+        self._wall = None
 
     def _publish(self, hand: Sequence[str]) -> None:
         """算一次並投出去 —— 但只在結果真的變了的時候。
@@ -635,26 +799,23 @@ class TableLink:
     """
 
     def __init__(self) -> None:
-        self._worker: TableWorker | None = None
+        # 放銃分析與 AI 建議各有一個 worker,兩個都開時畫面要送給兩邊。
+        self._workers: tuple[TableWorker, ...] = ()
 
     def attach(self, worker: TableWorker) -> None:
-        self._worker = worker
+        self._workers = (*self._workers, worker)
 
     def detach(self, worker: TableWorker) -> None:
-        """只有自己還在位子上才拔掉 —— 後來的那個不該被前一個的收尾清掉。"""
-        if self._worker is worker:
-            self._worker = None
+        self._workers = tuple(w for w in self._workers if w is not worker)
 
     @property
     def attached(self) -> bool:
-        return self._worker is not None
+        return bool(self._workers)
 
     def offer_frame(self, image: np.ndarray, calibration: Calibration) -> None:
-        worker = self._worker
-        if worker is not None:
+        for worker in self._workers:
             worker.offer_frame(image, calibration)
 
-    def offer_hand(self, tiles: Sequence[str]) -> None:
-        worker = self._worker
-        if worker is not None:
-            worker.offer_hand(tiles)
+    def offer_hand(self, tiles: Sequence[str], drawn: str | None = None) -> None:
+        for worker in self._workers:
+            worker.offer_hand(tiles, drawn)
