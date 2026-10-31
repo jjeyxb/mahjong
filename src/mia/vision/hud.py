@@ -32,7 +32,7 @@ import numpy as np
 from mia.utils.geometry import Rect
 from mia.utils.paths import ASSETS_DIR
 
-__all__ = ["DEALER_SEATS", "Hud", "HudDigits", "read_hud"]
+__all__ = ["DEALER_SEATS", "Hud", "HudDigits", "read_hud", "read_wall"]
 
 #: 中央面板在牌桌矩形裡的位置。下面的欄位都用「面板座標」量,較好對照截圖。
 _PANEL = (0.4142, 0.2948, 0.175, 0.2)
@@ -252,6 +252,11 @@ def _dealer(image: np.ndarray, table: Rect) -> int | None:
         red.append(float(mask.mean()))
     lit = [position for position, share in enumerate(red) if share >= _RED]
     return lit[0] if len(lit) == 1 else None
+
+
+def read_wall(image: np.ndarray, table: Rect, digits: HudDigits) -> int | None:
+    """只讀余牌。一次約 0.13 毫秒,每一輪都讀也無所謂。"""
+    return _number(_crop(image, table, _WALL), digits, "wall")
 
 
 def read_hud(image: np.ndarray, table: Rect, digits: HudDigits) -> Hud:
