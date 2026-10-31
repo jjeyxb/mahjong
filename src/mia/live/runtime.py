@@ -251,6 +251,8 @@ class LiveRuntime:
             if not self._platform.supports(key):
                 self.set_enabled(key, False)
         self._restart(features.VISION)
+        # AI 建議兩版走不同的路:網頁版讀封包,Steam 版看畫面。走哪條是建構時決定的。
+        self._restart(features.ADVICE)
         self.pump()
 
     # ------------------------------------------------------- 放銃分析走哪條路
@@ -521,7 +523,7 @@ class LiveRuntime:
         self.pump()
 
     def _ensure_vision_for(self, feature: Feature) -> None:
-        """圖像辨識那條路的放銃分析**需要畫面辨識開著** —— 一起打開。
+        """圖像辨識那條路的放銃分析與 AI 建議**需要畫面辨識開著** —— 一起打開。
 
         它要兩樣東西,兩樣都來自 :class:`~mia.live.vision.VisionWorker`:
 
@@ -543,8 +545,6 @@ class LiveRuntime:
         封包那條路不需要這些,所以只在真的走圖像辨識時才做。問的是**實際
         在跑的那個 worker**,不是設定 —— 沒有封包來源時本來就走圖像辨識。
         """
-        if feature.key != features.DANGER:
-            return
         if getattr(feature.worker, "SOURCE", None) != _SCREEN_SOURCE:
             return
         vision = self._features.get(features.VISION)

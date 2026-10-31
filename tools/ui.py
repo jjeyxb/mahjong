@@ -448,6 +448,7 @@ def build_live_runtime(
     from mia import features
     from mia.config.loader import load_config
     from mia.live import PacketWorker, UpdateBus, VisionWorker, capture_command
+    from mia.live.advice import VisionAdviceWorker
     from mia.live.danger import DangerWorker
     from mia.live.runtime import Feature, Worker
     from mia.live.source import CaptureLauncher
@@ -498,6 +499,15 @@ def build_live_runtime(
             #
             # 權重在**這裡**才從 style 讀,不是在外面先取出來存著 —— 使用者
             # 換風格靠的正是「關掉再開」,先取出來的話第二次開起來還是舊的。
+            if screen_for_danger is not None and platform is not None and platform.value != WEB:
+                # 這一版沒有封包,事件流只能從畫面組。
+                return VisionAdviceWorker(
+                    bus,
+                    config=load_config().roi,
+                    engines=build_engines(args, style.named_weights if style else ()),
+                    link=screen_for_danger,
+                    skin=args.skin or DEFAULT_SKIN,
+                )
             return PacketWorker(
                 bus,
                 dump=dump_path(),

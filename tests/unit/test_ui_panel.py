@@ -1196,12 +1196,13 @@ class TestPlatformPicker:
         combo.setCurrentIndex(list(platforms.PLATFORMS).index(platforms.STEAM))
         assert picker.asked == [platforms.STEAM]
 
-    def test_steam_disables_the_switches_it_cannot_feed(self, qtbot) -> None:
-        """使用者要看到的是「停用」,不是一個撥了會自己彈回去的開關。
-
-        Steam 版沒有封包,所以 AI 建議停用。**放銃分析沒有停用** ——
-        它有兩條路,而純畫面那條不需要封包(2026-10-25 接上的)。
-        """
+    def test_a_platform_disables_the_switches_it_cannot_feed(
+        self, qtbot, monkeypatch
+    ) -> None:
+        """使用者要看到的是「停用」,不是一個撥了會自己彈回去的開關。"""
+        monkeypatch.setitem(
+            platforms.SUPPORTED, platforms.STEAM, (features.VISION, features.DANGER)
+        )
         window, _, _ = self._window(qtbot)
         combo = window._platform_picker  # noqa: SLF001
         combo.setCurrentIndex(list(platforms.PLATFORMS).index(platforms.STEAM))
@@ -1210,13 +1211,23 @@ class TestPlatformPicker:
         assert switches[features.DANGER].isEnabled()
         assert not switches[features.ADVICE].isEnabled()
 
-    def test_the_disabled_switch_says_why(self, qtbot) -> None:
+    def test_the_disabled_switch_says_why(self, qtbot, monkeypatch) -> None:
         """「不支援」會讓人去找一個不存在的開關,所以要講為什麼。"""
+        monkeypatch.setitem(
+            platforms.SUPPORTED, platforms.STEAM, (features.VISION, features.DANGER)
+        )
         window, _, _ = self._window(qtbot)
         combo = window._platform_picker  # noqa: SLF001
         combo.setCurrentIndex(list(platforms.PLATFORMS).index(platforms.STEAM))
         tip = window._switches[features.ADVICE].toolTip()  # noqa: SLF001
-        assert "封包" in tip
+        assert "資料來源" in tip
+
+    def test_steam_can_turn_advice_on(self, qtbot) -> None:
+        """Steam 版的 AI 建議走畫面,開關要能按。"""
+        window, _, _ = self._window(qtbot)
+        combo = window._platform_picker  # noqa: SLF001
+        combo.setCurrentIndex(list(platforms.PLATFORMS).index(platforms.STEAM))
+        assert window._switches[features.ADVICE].isEnabled()  # noqa: SLF001
 
     def test_no_picker_means_the_menu_is_disabled(self, qtbot) -> None:
         """重播與示範模式裡「現在玩哪一版」是錄的時候就定了的。"""
