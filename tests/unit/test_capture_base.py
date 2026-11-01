@@ -144,6 +144,52 @@ class TestFindWindow:
         assert FakeBackend([]).score_window(window, ["雀魂"], ["majsoul"]) == 0
 
 
+class SpacesBackend(FakeBackend):
+    """眼前的桌面之外還有別的桌面,就像 macOS。"""
+
+    def __init__(self, visible: list[WindowInfo], elsewhere: list[WindowInfo]) -> None:
+        super().__init__(visible)
+        self._elsewhere = elsewhere
+
+    def list_windows_everywhere(self) -> list[WindowInfo]:
+        return [*self._windows, *self._elsewhere]
+
+
+class TestWindowOnAnotherDesktop:
+    def test_fullscreen_game_is_found_from_another_desktop(self) -> None:
+        """迴歸測試:實機上 Steam 全螢幕,App 開在另一個桌面,一直說找不到視窗。"""
+        backend = SpacesBackend(
+            [_win(1, "執行程式進行測試 — mahjong", "Code", 1512, 870)],
+            [_win(2, "雀魂麻將", "雀魂麻將", 1512, 949)],
+        )
+        chosen = backend.find_window(["雀魂"], ["雀魂"], host=HOST_EXCLUDE)
+        assert chosen.handle == 2
+
+    def test_visible_window_wins_over_a_bigger_one_elsewhere(self) -> None:
+        backend = SpacesBackend(
+            [_win(1, "雀魂", "Google Chrome", 1280, 720)],
+            [_win(2, "雀魂", "Google Chrome", 1920, 1080)],
+        )
+        assert backend.find_window(["雀魂"]).handle == 1
+
+    def test_small_windows_elsewhere_do_not_count(self) -> None:
+        """遊戲的選單列也掛在遊戲名下:1512x44,不能被當成遊戲。"""
+        backend = SpacesBackend([], [_win(1, "", "雀魂麻將", 1512, 44)])
+        with pytest.raises(WindowNotFoundError):
+            backend.find_window(["雀魂"], ["雀魂"], min_width=640, min_height=360)
+
+    def test_the_report_lists_only_what_is_on_screen(self) -> None:
+        """其他桌面有一百多個系統小視窗,全印出來就看不到重點了。"""
+        backend = SpacesBackend(
+            [_win(1, "瀏覽器", "Safari", 800, 600)],
+            [_win(2, "系統浮層", "Dock", 800, 600)],
+        )
+        with pytest.raises(WindowNotFoundError) as caught:
+            backend.find_window(["雀魂"])
+        assert "瀏覽器" in str(caught.value)
+        assert "系統浮層" not in str(caught.value)
+
+
 class TestBrowserHostedWindow:
     """網頁版雀魂跑在瀏覽器裡,程式名是瀏覽器而不是遊戲。"""
 

@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from mia.engine.dummy import DummyEngine
-from mia.live.bus import Advices, PacketHand, UpdateBus
+from mia.live.bus import Advices, EventStream, PacketHand, UpdateBus
 from mia.live.packets import DumpTail, PacketWorker
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "real_game_full.jsonl"
@@ -300,6 +300,34 @@ class TestPacketWorker:
         worker._handle(parse_event(start_game))  # noqa: SLF001
         assert worker._tracker.tiles == []  # noqa: SLF001
 
+    def test_the_log_gets_the_round_so_far(self, tmp_path: Path, raw_lines) -> None:
+        """每次都是這一局的全部:郵箱只留最新一筆,投新增的那幾則會掉事件。"""
+        from mia.mjai import parse_event
+
+        events = _mjai_events_of(raw_lines)
+        bus = UpdateBus()
+        worker = PacketWorker(bus, dump=tmp_path / "unused.jsonl", engines=[])
+        opening = next(i for i, e in enumerate(events) if e["type"] == "start_kyoku")
+        for event in events[: opening + 5]:
+            worker._handle(parse_event(event))  # noqa: SLF001
+        stream = next(u for u in bus.drain() if isinstance(u, EventStream))
+        assert stream.source == "封包"
+        assert stream.seat == worker.seat
+        assert stream.events[0].TYPE == "start_kyoku"
+        assert len(stream.events) == 5
+
+    def test_a_new_round_starts_the_log_over(self, tmp_path: Path, raw_lines) -> None:
+        from mia.mjai import parse_event
+
+        events = _mjai_events_of(raw_lines)
+        bus = UpdateBus()
+        worker = PacketWorker(bus, dump=tmp_path / "unused.jsonl", engines=[])
+        openings = [i for i, e in enumerate(events) if e["type"] == "start_kyoku"]
+        for event in events[: openings[1] + 1]:
+            worker._handle(parse_event(event))  # noqa: SLF001
+        stream = next(u for u in bus.drain() if isinstance(u, EventStream))
+        assert len(stream.events) == 1
+
     def test_only_posts_a_hand_when_it_actually_changed(
         self, tmp_path: Path, raw_lines
     ) -> None:
@@ -313,7 +341,6 @@ class TestPacketWorker:
             worker._handle(parse_event(event))  # noqa: SLF001
             bus.drain()
 
-        posted_before = bus.stats.posted
         # 別家的打牌事件
         other = next(
             e
@@ -321,7 +348,7 @@ class TestPacketWorker:
             if e["type"] == "dahai" and e.get("actor") != worker.seat
         )
         worker._handle(parse_event(other))  # noqa: SLF001
-        assert bus.stats.posted == posted_before
+        assert not any(isinstance(update, PacketHand) for update in bus.drain())
 
 
 def _one_line() -> str:

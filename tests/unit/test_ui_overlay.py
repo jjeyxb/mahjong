@@ -114,6 +114,16 @@ class TestVisibility:
         assert window.isHidden()
         assert UiState.load(window._ui_state.path).overlay_visible is False  # noqa: SLF001
 
+    def test_showing_it_asks_to_follow_into_fullscreen(self, overlay, monkeypatch) -> None:
+        """迴歸測試:沒有這一步,Mac 全螢幕時 Overlay 開著卻完全看不到。"""
+        _, window = overlay
+        followed = []
+        monkeypatch.setattr(
+            "mia.ui.overlay.hud.follow_into_fullscreen", followed.append
+        )
+        window.set_shown(True)
+        assert followed == [window]
+
     def test_a_hidden_overlay_catches_up_when_shown(self, overlay) -> None:
         """隱藏期間不重畫(即時模式一秒 10 次,沒在看時是白花的),所以顯示
         之前一定要補畫 —— 少了那一步,勾開會看到上一次的殘影。

@@ -18,10 +18,12 @@ import pytest
 from mia.calibration.manual import HandRoiChoice
 from mia.capture.base import CaptureBackend, CaptureFailedError, Frame, WindowInfo
 from mia.config.models import AppConfig, CalibrationConfig, CaptureConfig, RoiConfig
+from mia.live import vision
 from mia.live.bus import CvHand, UpdateBus
 from mia.live.vision import VisionWorker
 from mia.platforms import STEAM
 from mia.utils.geometry import Rect
+from mia.vision.tiles.classify import Match, TemplateSet
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
@@ -117,6 +119,95 @@ def _run_until(worker: VisionWorker, predicate, *, timeout: float = 5.0) -> None
         time.sleep(0.01)
     worker.stop()
     worker.join(2)
+
+
+class _Sink:
+    def __init__(self) -> None:
+        self.hands: list[list[str]] = []
+
+    def offer_frame(self, image: np.ndarray, calibration: object) -> None:  # noqa: ARG002
+        return
+
+    def offer_hand(self, tiles: list[str], drawn: str | None = None) -> None:  # noqa: ARG002
+        self.hands.append(list(tiles))
+
+
+class TestWhatTheTableGets:
+    TILE = Match(label="1m", score=0.9, runner_up="2m", runner_up_score=0.1, brightness=1.0)
+    FUZZY = Match(label="5s", score=0.3, runner_up="2m", runner_up_score=0.29, brightness=1.0)
+
+    def _offered(
+        self, window: WindowInfo, drawn: Match, monkeypatch: pytest.MonkeyPatch
+    ) -> list[list[str]]:
+        hand = _hand_image("hand_14_with_draw.png")
+        frame, roi = _frame_with_hand(window, hand)
+        sink = _Sink()
+        worker = VisionWorker(
+            UpdateBus(),
+            config=_config(roi),
+            backend=FakeBackend(window, [frame]),
+            window=window,
+            sink=sink,
+        )
+        worker._templates = TemplateSet.load()  # noqa: SLF001
+        monkeypatch.setattr(
+            vision, "classify_hand", lambda *_, **__: ((self.TILE,) * 13, drawn)
+        )
+        worker._read(hand, 0)  # noqa: SLF001
+        return sink.hands
+
+    def test_a_fuzzy_drawn_tile_is_not_a_draw(
+        self, window: WindowInfo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """打牌的特效飄過摸牌那格,實測被讀成一張低信心的牌。"""
+        assert self._offered(window, self.FUZZY, monkeypatch) == []
+
+    def test_a_clear_drawn_tile_goes_through(
+        self, window: WindowInfo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert len(self._offered(window, self.TILE, monkeypatch)) == 1
+
+    def _doubtful_worker(
+        self, window: WindowInfo, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[VisionWorker, _Sink]:
+        """手牌裡有一張沒把握,摸牌那張有把握。"""
+        hand = _hand_image("hand_14_with_draw.png")
+        frame, roi = _frame_with_hand(window, hand)
+        sink = _Sink()
+        worker = VisionWorker(
+            UpdateBus(),
+            config=_config(roi),
+            backend=FakeBackend(window, [frame]),
+            window=window,
+            sink=sink,
+        )
+        worker._templates = TemplateSet.load()  # noqa: SLF001
+        tiles = (self.FUZZY, *(self.TILE,) * 12)
+        monkeypatch.setattr(vision, "classify_hand", lambda *_, **__: (tiles, self.TILE))
+        worker._read(hand, 0)  # noqa: SLF001
+        return worker, sink
+
+    def test_a_doubtful_hand_waits_for_the_screen_to_stay_still(
+        self, window: WindowInfo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        worker, sink = self._doubtful_worker(window, monkeypatch)
+        assert sink.hands == []
+        for _ in range(vision._STILL_FRAMES - 1):  # noqa: SLF001
+            worker._offer_doubtful()  # noqa: SLF001
+        assert sink.hands == []
+        worker._offer_doubtful()  # noqa: SLF001
+        assert len(sink.hands) == 1
+
+    def test_a_doubtful_hand_is_dropped_when_the_screen_moves(
+        self, window: WindowInfo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        worker, sink = self._doubtful_worker(window, monkeypatch)
+        moved = np.zeros((20, 20, 3), dtype=np.uint8)
+        worker._previous = None  # noqa: SLF001
+        worker._settle_and_read(moved, 0)  # noqa: SLF001
+        for _ in range(vision._STILL_FRAMES):  # noqa: SLF001
+            worker._offer_doubtful()  # noqa: SLF001
+        assert sink.hands == []
 
 
 class TestReadingAHand:

@@ -99,6 +99,8 @@ _CORNERS = (
     _on_panel(5, 0, 60, 45),
 )
 #: 左上角面板下緣,緊貼著 ``x`` 後面的那一位數。
+#: 左上角面板在牌桌矩形裡的位置。與 ROI 設定的 ``dora_indicators`` 同一塊。
+_CORNER_PANEL = (0.0133, 0.0385, 0.1475, 0.1319)
 _KYOTAKU = (0.058, 0.128, 0.040, 0.038)
 _HONBA = (0.128, 0.128, 0.024, 0.038)
 
@@ -110,8 +112,8 @@ class HudDigits:
     """HUD 用的模板。一套數字一個子目錄,``assets/hud/<set>/<字>.png``。
 
     * ``score`` 四邊的金色點數。
-    * ``wall`` 余幾張的青色數字。**有兩種字形**:Steam 與網頁版的字寬不同,
-      只有 Steam 的模板時,網頁版的 3 與 8 分不開(差距 0.03),30 幾張整段讀不到。
+    * ``wall`` 余幾張的青色數字。**有兩種字形**:即時對局與牌譜畫面的字寬不同,
+      只有即時對局的模板時,牌譜畫面的 3 與 8 分不開(差距 0.03),30 幾張整段讀不到。
       同一個字可以有多份,檔名寫成 ``3_web.png``,底線之前才是字。
     * ``round`` 第幾局的青色斜體。
     * ``stick`` 本場與供託的白色斜體。**只有 0 ~ 4**:素材裡沒見過更大的。
@@ -294,19 +296,36 @@ def read_wall(image: np.ndarray, table: Rect, digits: HudDigits) -> int | None:
     return _number(_crop(image, table, _WALL), digits, "wall")
 
 
-def read_hud(image: np.ndarray, table: Rect, digits: HudDigits) -> Hud:
+def _on_corner_panel(table: Rect, panel: Rect | None) -> Rect:
+    """本場與供託要相對哪個矩形切。
+
+    這兩個數字在左上角面板裡,而面板貼著視窗角落、不跟著牌桌走。給了 ``panel`` 就反推
+    一個「面板落在標準位置」的矩形,座標不必另外量一份。
+    """
+    if panel is None:
+        return table
+    x, y, width, height = _CORNER_PANEL
+    wide = panel.width / width
+    tall = panel.height / height
+    return Rect(round(panel.x - x * wide), round(panel.y - y * tall), round(wide), round(tall))
+
+
+def read_hud(
+    image: np.ndarray, table: Rect, digits: HudDigits, *, panel: Rect | None = None
+) -> Hud:
     """讀一張畫面的 HUD。讀不到的欄位是 ``None``。"""
     wind = cv2.resize(
         cv2.cvtColor(_crop(image, table, _WIND), cv2.COLOR_BGR2GRAY),
         _DIGIT,
         interpolation=cv2.INTER_AREA,
     )
+    corner = _on_corner_panel(table, panel)
     return Hud(
         bakaze=digits.best("wind", wind, floor=_WIND_SCORE),
         kyoku=_number(_crop(image, table, _ROUND), digits, "round"),
         wall=_number(_crop(image, table, _WALL), digits, "wall"),
-        honba=_number(_crop(image, table, _HONBA), digits, "stick"),
-        kyotaku=_number(_crop(image, table, _KYOTAKU), digits, "stick"),
+        honba=_number(_crop(image, corner, _HONBA), digits, "stick"),
+        kyotaku=_number(_crop(image, corner, _KYOTAKU), digits, "stick"),
         scores=tuple(_score(image, table, position, digits) for position in range(4)),
         dealer=_dealer(image, table),
     )

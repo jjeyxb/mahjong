@@ -54,9 +54,11 @@ disallow_untyped_defs = true
 [[tool.mypy.overrides]]
 # 這些第三方套件沒有型別存根
 module = [
+    "AppKit.*",
     "cv2.*",
     "Foundation.*",
     "mss.*",
+    "objc.*",
     "Quartz.*",
     "win32api",
     "win32con",

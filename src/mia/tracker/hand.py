@@ -16,7 +16,7 @@
 -2         少 2              吃、碰
 -2         少 3 多 1         大明槓 + 嶺上
 -3         少 4 多 1         暗槓 + 嶺上
-0          少 1 多 1         河多一張:摸打都沒看到。沒有:加槓 + 嶺上
+0          少 1 多 1         河多一張:摸打都沒看到。少的是碰過的牌:加槓 + 嶺上
 =========  ================  ==================
 
 一張認錯不能變成一個動作
@@ -25,10 +25,18 @@
 
 * 張數對得上但差太多的讀數不收,等下一次;收下的是**推出來的**手牌,不是這次讀到的。
 * 同一種牌超過四張的讀數不收。開局前的介面實測被讀成 14 張、裡面有 5 張白。
-* 摸到的牌讀錯了,下一次打牌時會多差一張。這時候改回去,不然那張假牌留在手上,
-  之後每一手都解釋不了,整局就斷了。
-* 13 張換了一張,可能是兩次讀取之間摸打完了,也可能只是認錯。自己的河多一張才算
-  (:data:`_STUBBORN` 次讀到一樣的也算:打出去馬上被鳴走的牌進不了河)。
+* 認錯的牌留在手上的話,下一次摸打會多差一張,而且之後每一手都解釋不了,整局就斷了
+  (實測 6 索認成 3 索,建議卡到局尾)。所以動作對得上、只差一張時就地改回去,不管
+  認錯的是剛摸的還是配牌。連續解釋不了時放寬到 :data:`_MAX_FIXES` 張。
+* 13 張換了一張,可能是兩次讀取之間摸打完了,也可能只是認錯。自己的河多一張才算。
+  打出去馬上被鳴走的牌進不了河,但別家的副露會多一組,:data:`_STUBBORN` 次讀到一樣
+  的又有這個證據也算。只看讀到幾次的話,一張認錯就會變成自己多打一手。
+
+加槓不靠連續讀到
+----------------
+畫面沒變就不會重讀,同一副手牌要連讀好幾次實戰裡幾乎不會發生。分得開的是**不見的那張
+是自己碰過的牌**:別的牌換掉是認錯,碰過的牌不見了才是加槓。只少一張、嶺上還沒來時先
+等,也可能是真的把第四張打掉了,河裡多一張才算打牌(:meth:`HandWatcher.catch_up`)。
 """
 
 from __future__ import annotations
@@ -48,6 +56,27 @@ _COPIES = 4
 #: 解釋不了的同一副手牌連續讀到幾次,就相信它。
 _STUBBORN = 3
 
+#: 手牌一直解釋不了時,一次最多改回幾張。
+_MAX_FIXES = 3
+
+#: 兩張牌湊不成順子時的距離,比任何真的距離都大。
+_FAR = 99
+
+
+def _is_kan(tiles: Sequence[str]) -> bool:
+    """手上拿出去的三張是不是一樣的。"""
+    return len({normalize_red(tile) for tile in tiles}) == 1
+
+
+def _gap(a: str, b: str) -> int:
+    """兩張牌離多遠。不同花色與字牌湊不成順子,給一個很大的數。"""
+    a, b = normalize_red(a), normalize_red(b)
+    if a == b:
+        return 0
+    if len(a) != len(b) or len(a) == 1 or a[1] != b[1]:
+        return _FAR
+    return abs(int(a[0]) - int(b[0]))
+
 
 class Move(Enum):
     """自己的一個動作。"""
@@ -63,6 +92,7 @@ class _Swap(Enum):
     NO = "no"
     THROWN = "thrown"
     STUBBORN = "stubborn"
+    CALLED = "called"
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +133,7 @@ class HandWatcher:
     _doubted: tuple[str, ...] = ()
     _doubts: int = 0
     _unexplained: tuple[str, ...] = ()
+    _called: int = 0
 
     def reset(self) -> None:
         self.tehai = ()
@@ -114,9 +145,15 @@ class HandWatcher:
         self._doubted = ()
         self._doubts = 0
         self._unexplained = ()
+        self._called = 0
 
     def observe(
-        self, tiles: Sequence[str], drawn: str | None = None, *, thrown: int | None = None
+        self,
+        tiles: Sequence[str],
+        drawn: str | None = None,
+        *,
+        thrown: int | None = None,
+        called: int = 0,
     ) -> list[OwnMove]:
         """收一副手牌(MJAI 記法,含 ``drawn``),回傳新的動作。
 
@@ -124,6 +161,7 @@ class HandWatcher:
             tiles: 手上全部的牌。
             drawn: 其中剛摸到、擺在旁邊的那一張。
             thrown: 河裡看到自己打過幾張。``None`` 表示不知道。
+            called: 別家總共鳴過幾組。
         """
         if max(Counter(normalize_red(tile) for tile in tiles).values(), default=0) > _COPIES:
             self.rejected += 1
@@ -139,7 +177,7 @@ class HandWatcher:
             # 還沒動過手:上一局留在畫面上的手牌,或發牌動畫中途的牌面。
             self.reset()
             return self._deal(tiles, drawn)
-        fresh = self._explain(change, lost, gained, drawn, self._swap(tiles, thrown))
+        fresh = self._explain(change, lost, gained, drawn, self._swap(tiles, thrown, called))
         if fresh is None:
             if lost or gained:
                 self.rejected += 1
@@ -151,6 +189,32 @@ class HandWatcher:
             return []
         self._doubts = 0
         self.stuck = 0
+        if fresh:
+            self._called = called
+        for move in fresh:
+            self._apply(move)
+        return fresh
+
+    def catch_up(self, thrown: int, tile: str | None) -> list[OwnMove]:
+        """河裡多了一張,手牌卻沒動:摸切快到手牌從來沒讀到 14 張。
+
+        立直之後是自動摸切,一定會這樣。漏掉的話自己的動作少一組,之後每一手都晚一輪。
+        呼叫端要等手牌有時間跟上才叫,不然正常打牌也會走到這裡。
+
+        Args:
+            thrown: 河裡看到自己打過幾張。
+            tile: 河裡最新的那一張。認不出來給 ``None``,這一次就不補。
+        """
+        count = sum(move.move is Move.DISCARD for move in self.moves)
+        if not self.tehai or tile is None or thrown <= count:
+            return []
+        if len(self.hand) % 3 == 1:
+            fresh = [OwnMove(Move.DRAW, (tile,)), OwnMove(Move.DISCARD, (tile,), tsumogiri=True)]
+        elif tile in self.hand and self._can_add_kan(tile):
+            # 手牌少了碰過的那張,一直在等嶺上:河裡有它,原來是打掉了。
+            fresh = [self._discard(tile)]
+        else:
+            return []
         for move in fresh:
             self._apply(move)
         return fresh
@@ -174,7 +238,7 @@ class HandWatcher:
     def _only_dealt(self) -> bool:
         return all(move.move is Move.DRAW for move in self.moves) and len(self.moves) <= 1
 
-    def _swap(self, tiles: Sequence[str], thrown: int | None) -> _Swap:
+    def _swap(self, tiles: Sequence[str], thrown: int | None, called: int) -> _Swap:
         """張數一樣、換了一張,憑什麼相信它。"""
         count = sum(move.move is Move.DISCARD for move in self.moves)
         if thrown is not None and thrown > count:
@@ -182,7 +246,9 @@ class HandWatcher:
         current = tuple(sorted(tiles))
         self._doubts = self._doubts + 1 if current == self._doubted else 1
         self._doubted = current
-        return _Swap.STUBBORN if self._doubts >= _STUBBORN else _Swap.NO
+        if self._doubts < _STUBBORN:
+            return _Swap.NO
+        return _Swap.CALLED if called > self._called else _Swap.STUBBORN
 
     def _explain(
         self, change: int, lost: list[str], gained: list[str], drawn: str | None, swap: _Swap
@@ -192,43 +258,100 @@ class HandWatcher:
         if change == 1 and waiting:
             if len(gained) == 1 and not lost:
                 return [OwnMove(Move.DRAW, (gained[0],))]
-            # 舊的有一張這次認錯了:摸到的是擺在旁邊的那張。
-            if len(gained) == 2 and len(lost) == 1 and drawn in gained:
+            # 舊的有一張這次認對了:摸到的是擺在旁邊的那張,其他的是改回來。
+            if drawn in gained and len(gained) == len(lost) + 1 and self._may_fix(lost):
+                rest = list(gained)
+                rest.remove(drawn)
+                self._fix(list(lost), rest)
                 return [OwnMove(Move.DRAW, (drawn,))]
             return None
         if change == -1 and not waiting:
             if len(lost) == 1 and not gained:
+                if self._can_add_kan(lost[0]) and swap is not _Swap.THROWN:
+                    return []
                 return [self._discard(lost[0])]
-            if len(lost) == 2 and len(gained) == 1 and self._repair(lost, gained[0]):
-                return [self._discard(lost[0])]
+            if len(lost) == len(gained) + 1 and self._may_fix(gained):
+                left = list(lost)
+                self._fix(left, gained)
+                return [self._discard(left[0])]
             return None
         if change == -2 and waiting:
             if len(lost) == 2 and not gained:
                 return [OwnMove(Move.CALL, tuple(lost))]
             if len(lost) == 3 and len(gained) == 1:
-                return [OwnMove(Move.CALL, tuple(lost)), OwnMove(Move.DRAW, (gained[0],))]
+                draw = OwnMove(Move.DRAW, (gained[0],))
+                if _is_kan(lost):
+                    return [OwnMove(Move.CALL, tuple(lost)), draw]
+                # 鳴完打一張,下一巡又摸了一張,都在兩次讀取之間。
+                return [*self._call_and_discard(lost), draw]
             return None
+        if change == -3 and waiting and len(lost) == 3 and not gained and not _is_kan(lost):
+            return self._call_and_discard(lost)
         if change == -3 and not waiting and len(lost) == 4 and len(gained) == 1:
             return [OwnMove(Move.CALL, tuple(lost)), OwnMove(Move.DRAW, (gained[0],))]
         if change == 0 and len(lost) == 1 and len(gained) == 1:
-            if swap is _Swap.NO:
-                return None
-            if waiting:
+            if waiting and swap in (_Swap.THROWN, _Swap.CALLED):
                 # 摸打都發生在兩次讀取之間。
                 return [OwnMove(Move.DRAW, (gained[0],)), self._discard(lost[0])]
             if swap is _Swap.THROWN:
                 return [self._discard(lost[0]), OwnMove(Move.DRAW, (gained[0],))]
-            if any(move.move is Move.CALL for move in self.moves):
+            if not waiting and self._can_add_kan(lost[0]):
                 return [OwnMove(Move.CALL, (lost[0],)), OwnMove(Move.DRAW, (gained[0],))]
-            # 沒有副露就不可能加槓:是之前認錯了一張。
+            if swap is _Swap.NO:
+                return None
+            # 河沒有多,碰過的牌也沒少:是之前認錯了一張。
             self._correct(lost[0], gained[0])
             return []
+        if change == 0 and len(lost) == len(gained) > 1 and self._may_fix(gained):
+            self._fix(list(lost), gained)
+            return []
         return None
+
+    def _can_add_kan(self, tile: str) -> bool:
+        """這張是自己碰過、還沒加槓的牌嗎。"""
+        plain = normalize_red(tile)
+        calls = [move.tiles for move in self.moves if move.move is Move.CALL]
+        pon = any(len(t) == 2 and _is_kan(t) and normalize_red(t[0]) == plain for t in calls)
+        added = any(len(t) == 1 and normalize_red(t[0]) == plain for t in calls)
+        return pon and not added
+
+    def _may_fix(self, rights: list[str]) -> bool:
+        """差這幾張能不能當成認錯。一張直接改;更多張要連續兩副手牌都解釋不了才改。
+
+        同一副重讀不算:那只是畫面沒變。
+        """
+        return len(rights) == 1 or (self.stuck >= 2 and len(rights) <= _MAX_FIXES)
+
+    def _fix(self, wrongs: list[str], rights: list[str]) -> None:
+        """把認錯的牌改回去,改掉的從 ``wrongs`` 拿掉,剩下的才是真的動作。
+
+        先懷疑剛摸的那張,再找最像的:認錯多半是同花色的牌。
+        """
+        for right in rights:
+            wrong = min(wrongs, key=lambda tile: (tile != self._drawn, _gap(tile, right)))
+            wrongs.remove(wrong)
+            self._correct(wrong, right)
+
+    def _call_and_discard(self, lost: list[str]) -> list[OwnMove]:
+        """手上少了三張,不是大明槓:鳴牌拿出去兩張,再打掉一張。
+
+        碰是兩張一樣的;吃是兩張最接近的。打掉的是剩下那一張。
+        """
+        meld = min(
+            ((i, j) for i in range(len(lost)) for j in range(i + 1, len(lost))),
+            key=lambda pair: _gap(lost[pair[0]], lost[pair[1]]),
+        )
+        tiles = tuple(lost[index] for index in meld)
+        rest = next(tile for index, tile in enumerate(lost) if index not in meld)
+        return [OwnMove(Move.CALL, tiles), OwnMove(Move.DISCARD, (rest,))]
 
     def _correct(self, wrong: str, right: str) -> None:
         """之前收下的一張牌認錯了:連同它的來源一起改掉。"""
         self.hand[self.hand.index(wrong)] = right
-        for index, move in enumerate(self.moves):
+        if self._drawn == wrong:
+            self._drawn = right
+        for index in range(len(self.moves) - 1, -1, -1):
+            move = self.moves[index]
             if move.move is Move.DRAW and move.tiles[0] == wrong:
                 self.moves[index] = OwnMove(Move.DRAW, (right,))
                 return
@@ -236,18 +359,6 @@ class HandWatcher:
         if wrong in tehai:
             tehai[tehai.index(wrong)] = right
             self.tehai = tuple(tehai)
-
-    def _repair(self, lost: list[str], right: str) -> bool:
-        """上一次摸到的牌讀錯了:改回去。``lost`` 裡留下真的打掉的那一張。"""
-        last = self.moves[-1] if self.moves else None
-        if last is None or last.move is not Move.DRAW or last.tiles[0] not in lost:
-            return False
-        wrong = last.tiles[0]
-        self.moves[-1] = OwnMove(Move.DRAW, (right,))
-        self.hand[self.hand.index(wrong)] = right
-        self._drawn = right
-        lost.remove(wrong)
-        return True
 
     def _discard(self, tile: str) -> OwnMove:
         return OwnMove(Move.DISCARD, (tile,), tsumogiri=tile == self._drawn)

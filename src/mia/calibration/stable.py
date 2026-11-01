@@ -172,9 +172,10 @@ class StableCalibrator:
         *,
         canvas: CanvasChoice | None = None,
         manual: TableRectChoice | None = None,
+        unity: bool = False,
     ) -> None:
         self.config = config or CalibrationConfig()
-        self._calibrator = TableCalibrator(self.config, canvas=canvas, manual=manual)
+        self._calibrator = TableCalibrator(self.config, canvas=canvas, manual=manual, unity=unity)
         self._samples: list[Rect] = []
         self._rejected = 0
         self._recent: deque[bool] = deque(

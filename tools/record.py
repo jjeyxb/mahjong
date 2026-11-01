@@ -54,11 +54,11 @@ def _resolve_window(backend: CaptureBackend, spec: str | None, config: AppConfig
         )
     if spec.startswith("#"):
         handle = int(spec[1:])
-        for window in backend.list_windows():
+        for window in backend.list_windows_everywhere():
             if window.handle == handle:
                 return window
         raise SystemExit(f"找不到 handle 為 {handle} 的視窗")
-    matched = [w for w in backend.list_windows() if w.matches([spec])]
+    matched = [w for w in backend.list_windows_everywhere() if w.matches([spec])]
     if not matched:
         raise SystemExit(f"沒有視窗符合 {spec!r}")
     return max(matched, key=lambda w: w.bounds.area)
@@ -127,6 +127,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--jpeg-quality", type=int, default=95, help="JPEG 品質,不建議低於 90")
     parser.add_argument(
+        "--no-calibrate",
+        action="store_true",
+        help="不偵測牌桌範圍。Steam 版要這樣錄:畫布不是 16:9,校正每一幀都重試,一幀要 400 毫秒",
+    )
+    parser.add_argument(
         "--change-threshold", type=float, default=1.5,
         help="縮圖平均絕對差超過此值才存檔。設 0 表示每幀都存",
     )
@@ -159,13 +164,15 @@ def main(argv: list[str] | None = None) -> int:
                 notes=args.notes,
             )
             with writer:
+                print(f"開始錄製:{window}")
+                print(f"存到 {writer.path},結束請按 Ctrl-C", flush=True)
                 stats = record_session(
                     backend,
                     window,
                     writer,
                     target_fps=args.fps or config.capture.target_fps,
                     duration=args.duration,
-                    calibrator=StableCalibrator(config.calibration),
+                    calibrator=None if args.no_calibrate else StableCalibrator(config.calibration),
                 )
     except CaptureError as exc:
         print(f"\n擷取失敗:\n{exc}", file=sys.stderr)

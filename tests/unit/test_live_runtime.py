@@ -15,9 +15,10 @@ from mia import features, platforms
 from mia.calibration.canvas import Canvas, CanvasChoice
 from mia.engine.base import Advice, EngineError
 from mia.engine.styles import StyleChoice, StyleProfile
-from mia.live.bus import Advices, CvHand, PacketHand, UpdateBus, WorkerStatus
+from mia.features import AdviceSourceChoice
+from mia.live.bus import Advices, CvHand, EventStream, PacketHand, UpdateBus, WorkerStatus
 from mia.live.control import ControlFile
-from mia.live.runtime import Feature, LiveRuntime
+from mia.live.runtime import _SCREEN_SOURCE, Feature, LiveRuntime
 from mia.live.source import (
     STARTUP_HINT,
     CaptureLauncher,
@@ -26,6 +27,7 @@ from mia.live.source import (
 )
 from mia.mjai import Dahai
 from mia.platforms import STEAM, WEB, PlatformChoice
+from mia.ui.eventlog import EventLog
 from mia.ui.viewmodel import ViewModel
 
 
@@ -1026,6 +1028,119 @@ class TestGamePlatform:
     def test_the_default_is_the_web_version(self, model, bus) -> None:
         """省略時當網頁版 —— 那是功能完整的那一個,也是既有行為。"""
         assert LiveRuntime(model, bus).platform() == WEB
+
+
+class TestEventLog:
+    def _runtime(self, model, bus) -> tuple[LiveRuntime, EventLog, Spy]:
+        log = EventLog()
+        feature, spy = _feature(features.ADVICE)
+        return LiveRuntime(model, bus, features=[feature], event_log=log), log, spy
+
+    def test_the_stream_reaches_the_log(self, model, bus) -> None:
+        runtime, log, _ = self._runtime(model, bus)
+        runtime.start()
+        bus.post(EventStream("封包", 0, (Dahai(actor=1, pai="3p", tsumogiri=True),)))
+        runtime.pump()
+        assert log.lines[0].text == "下家 摸切 三筒"
+        runtime.stop()
+
+    def test_the_stream_does_not_redraw_the_view_model(self, model, bus) -> None:
+        """Log 與 Overlay 互不干擾:事件流進來,訂閱 ViewModel 的不該被叫。"""
+        runtime, _, _ = self._runtime(model, bus)
+        runtime.start()
+        calls: list[object] = []
+        model.subscribe(calls.append)
+        bus.post(EventStream("封包", 0, (Dahai(actor=1, pai="3p", tsumogiri=True),)))
+        runtime.pump()
+        assert calls == []
+        runtime.stop()
+
+    def test_without_a_log_the_stream_is_dropped(self, model, bus) -> None:
+        runtime = LiveRuntime(model, bus)
+        runtime.start()
+        bus.post(EventStream("封包", 0, ()))
+        runtime.pump()
+        runtime.stop()
+
+    def test_turning_advice_off_clears_it(self, model, bus) -> None:
+        """重開時封包會從頭再讀一遍,留著會整段重複。"""
+        runtime, log, _ = self._runtime(model, bus)
+        runtime.start()
+        runtime.set_enabled(features.ADVICE, True)
+        bus.post(EventStream("封包", 0, (Dahai(actor=1, pai="3p", tsumogiri=True),)))
+        runtime.pump()
+        runtime.set_enabled(features.ADVICE, False)
+        assert log.lines == ()
+        runtime.stop()
+
+
+class TestAdviceSource:
+    """AI 建議走不走圖像辨識。玩家選的,而且只有網頁版有得選。"""
+
+    @staticmethod
+    def _runtime(
+        model: ViewModel, bus: UpdateBus, *, platform: str = WEB, vision: bool = True
+    ) -> tuple[LiveRuntime, Spy, Spy]:
+        choice = AdviceSourceChoice()
+
+        class Screen(Spy):
+            def __call__(self) -> FakeWorker:
+                worker = super().__call__()
+                if choice.vision_only:
+                    worker.SOURCE = _SCREEN_SOURCE  # type: ignore[attr-defined]
+                return worker
+
+        advice, screen = Screen("建議"), Spy("畫面")
+        found = [Feature(features.ADVICE, advice)]
+        if vision:
+            found.append(Feature(features.VISION, screen))
+        runtime = LiveRuntime(
+            model, bus, features=found, platform=PlatformChoice(platform), advice_source=choice
+        )
+        return runtime, advice, screen
+
+    def test_the_web_version_has_a_choice(self, model, bus) -> None:
+        runtime, _, _ = self._runtime(model, bus)
+        assert runtime.can_pick_advice_source()
+        assert not runtime.advice_uses_screen()
+
+    def test_steam_has_no_choice_and_is_always_on_screen(self, model, bus) -> None:
+        runtime, _, _ = self._runtime(model, bus, platform=STEAM)
+        assert not runtime.can_pick_advice_source()
+        assert runtime.advice_uses_screen()
+        assert not runtime.advice_vision_only()
+
+    def test_without_the_screen_there_is_no_choice(self, model, bus) -> None:
+        runtime, _, _ = self._runtime(model, bus, vision=False)
+        assert not runtime.can_pick_advice_source()
+
+    def test_picking_it_restarts_advice_and_opens_the_screen(self, model, bus) -> None:
+        runtime, advice, screen = self._runtime(model, bus)
+        runtime.start()
+        runtime.set_enabled(features.ADVICE, True)
+        assert len(screen.made) == 0
+        runtime.set_advice_vision_only(True)
+        assert len(advice.made) == 2
+        assert advice.made[0].stopped
+        assert runtime.is_enabled(features.VISION)
+        assert runtime.advice_uses_screen()
+        runtime.stop()
+
+    def test_picking_the_same_thing_does_not_restart(self, model, bus) -> None:
+        runtime, advice, _ = self._runtime(model, bus)
+        runtime.start()
+        runtime.set_enabled(features.ADVICE, True)
+        runtime.set_advice_vision_only(False)
+        assert len(advice.made) == 1
+        runtime.stop()
+
+    def test_nothing_starts_while_the_switch_is_off(self, model, bus) -> None:
+        runtime, advice, screen = self._runtime(model, bus)
+        runtime.start()
+        runtime.set_advice_vision_only(True)
+        assert advice.made == []
+        assert screen.made == []
+        runtime.stop()
 
 
 class TestTheScreenPathNeedsTheScreen:

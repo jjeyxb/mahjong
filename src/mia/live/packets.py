@@ -36,7 +36,7 @@ from mia.engine.base import Advice, AIEngine, EngineError
 from mia.engine.multiplex import EngineGroup
 from mia.groundtruth.dump import DumpFrame
 from mia.groundtruth.stream import MjaiDecoder
-from mia.live.bus import Advices, PacketHand, UpdateBus, WorkerStatus
+from mia.live.bus import Advices, EventStream, PacketHand, UpdateBus, WorkerStatus
 from mia.mjai import MjaiEvent
 from mia.mjai.handstate import HandTracker, UnknownSeatError
 from mia.utils.logging import logger
@@ -137,6 +137,8 @@ class PacketWorker(threading.Thread):
         self._tracker = HandTracker(_name="live")
         self._stop = threading.Event()
         self.status = WorkerStatus("封包")
+        #: 這一局到目前的事件,給 Log 視窗。
+        self._round: list[MjaiEvent] = []
 
         #: 見過 ``start_game`` 了嗎。MJAI 引擎要靠它才知道自己是誰,在那之前
         #: 送任何事件進去都會讓引擎報錯、然後被整組移出這一場。
@@ -208,12 +210,16 @@ class PacketWorker(threading.Thread):
             return
 
         self.events += 1
+        if event.TYPE == "start_kyoku":
+            self._round = []
+        self._round.append(event)
         before = (tuple(self._tracker.tiles), self._tracker.drawn)
         try:
             self._tracker.feed(event)
         except UnknownSeatError as exc:
             logger.warning("手牌追蹤:{}", exc)
 
+        self._bus.post(EventStream("封包", self._tracker.seat, tuple(self._round)))
         after = (tuple(self._tracker.tiles), self._tracker.drawn)
         if after != before:
             # 只在真的變了才投。別家打牌的事件佔多數,那些不會動到自己的手牌,

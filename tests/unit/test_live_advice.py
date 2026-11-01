@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from mia.config.loader import load_config
 from mia.engine.base import Advice
 from mia.engine.multiplex import EngineGroup
-from mia.live.advice import StreamFeeder
+from mia.live.advice import StreamFeeder, VisionAdviceWorker
+from mia.live.bus import EventStream, UpdateBus
+from mia.live.table import TableLink
 from mia.mjai.events import Dahai, EndKyoku, MjaiEvent, StartGame, Tsumo
+from mia.tracker import Stream
 
 
 class Recorder:
@@ -99,3 +103,43 @@ class TestKyoku:
         stream.update(1, [])
         stream.update(2, [DRAW])
         assert engine.seen == [StartGame(id=0), DRAW]
+
+
+class TestLog:
+    """Log 視窗要看得到事件流,對不上而不給建議的時候尤其要看得到。"""
+
+    @staticmethod
+    def _worker() -> tuple[VisionAdviceWorker, UpdateBus]:
+        bus = UpdateBus()
+        link = TableLink()
+        worker = VisionAdviceWorker(bus, config=load_config().roi, engines=[], link=link)
+        return worker, bus
+
+    def test_the_stream_is_posted(self) -> None:
+        worker, bus = self._worker()
+        events = (Tsumo(actor=1, pai="?"),)
+        worker._log(Stream(events=events))  # noqa: SLF001
+        update = bus.drain()[0]
+        assert update == EventStream("圖像辨識", 0, events)
+
+    def test_why_it_stopped_goes_with_it(self) -> None:
+        worker, bus = self._worker()
+        worker._log(Stream(events=(Tsumo(actor=1, pai="?"),), stalled=True))  # noqa: SLF001
+        assert bus.drain()[0].note == "等手牌"  # type: ignore[union-attr]
+
+    def test_a_doubt_outranks_a_stall(self) -> None:
+        worker, bus = self._worker()
+        stream = Stream(events=(Tsumo(actor=1, pai="?"),), stalled=True, doubt="余牌對不上")
+        worker._log(stream)  # noqa: SLF001
+        assert bus.drain()[0].note == "余牌對不上"  # type: ignore[union-attr]
+
+    def test_it_is_posted_even_when_advice_stays_quiet(self) -> None:
+        worker, bus = self._worker()
+        stream = Stream(events=(Tsumo(actor=1, pai="?"),), doubt="手牌對不上")
+        worker._feed(1, stream)  # noqa: SLF001
+        assert any(isinstance(update, EventStream) for update in bus.drain())
+
+    def test_an_empty_stream_says_nothing(self) -> None:
+        worker, bus = self._worker()
+        worker._log(Stream())  # noqa: SLF001
+        assert bus.drain() == ()

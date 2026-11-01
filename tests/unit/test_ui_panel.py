@@ -1236,6 +1236,148 @@ class TestPlatformPicker:
         assert not window._platform_picker.isEnabled()  # noqa: SLF001
 
 
+class FakeAdviceSourcePicker:
+    """滿足 :class:`~mia.ui.switchboard.AdviceSourcePicker`。跟著版本選單走。"""
+
+    def __init__(self, platform: FakePlatformPicker) -> None:
+        self._platform = platform
+        self.on = False
+        self.asked: list[bool] = []
+
+    def can_pick_advice_source(self) -> bool:
+        return self._platform.platform() == platforms.WEB
+
+    def advice_vision_only(self) -> bool:
+        return self.on
+
+    def advice_uses_screen(self) -> bool:
+        return self.on or self._platform.platform() != platforms.WEB
+
+    def set_advice_vision_only(self, on: bool) -> None:
+        self.asked.append(on)
+        self.on = on
+
+
+class TestAdviceSourcePicker:
+    def _window(self, qtbot, value: str = platforms.WEB):
+        board = FakeSwitchboard()
+        platform = FakePlatformPicker(board, value)
+        picker = FakeAdviceSourcePicker(platform)
+        window = PanelWindow(
+            ViewModel(), switchboard=board, platform=platform, advice_source=picker
+        )
+        qtbot.addWidget(window)
+        return window, picker
+
+    def test_the_web_version_starts_on_packets(self, qtbot) -> None:
+        window, _ = self._window(qtbot)
+        box = window._advice_vision_only  # noqa: SLF001
+        assert box.isEnabled()
+        assert not box.isChecked()
+        assert "封包" in box.toolTip()
+
+    def test_ticking_it_goes_through_the_picker(self, qtbot) -> None:
+        window, picker = self._window(qtbot)
+        window._advice_vision_only.setChecked(True)  # noqa: SLF001
+        assert picker.asked == [True]
+
+    def test_a_remembered_choice_does_not_count_as_a_click(self, qtbot) -> None:
+        board = FakeSwitchboard()
+        platform = FakePlatformPicker(board)
+        picker = FakeAdviceSourcePicker(platform)
+        picker.on = True
+        window = PanelWindow(ViewModel(), platform=platform, advice_source=picker)
+        qtbot.addWidget(window)
+        assert window._advice_vision_only.isChecked()  # noqa: SLF001
+        assert picker.asked == []
+
+    def test_steam_is_ticked_and_locked(self, qtbot) -> None:
+        window, picker = self._window(qtbot, platforms.STEAM)
+        box = window._advice_vision_only  # noqa: SLF001
+        assert box.isChecked()
+        assert not box.isEnabled()
+        assert "Steam" in box.toolTip()
+        assert picker.asked == []
+
+    def test_changing_platform_redraws_it_without_restarting(self, qtbot) -> None:
+        window, picker = self._window(qtbot)
+        box = window._advice_vision_only  # noqa: SLF001
+        window._platform_picker.setCurrentIndex(1)  # noqa: SLF001
+        assert box.isChecked()
+        assert not box.isEnabled()
+        window._platform_picker.setCurrentIndex(0)  # noqa: SLF001
+        assert not box.isChecked()
+        assert box.isEnabled()
+        assert picker.asked == []
+
+    def test_replay_has_nothing_to_pick(self, qtbot) -> None:
+        window = PanelWindow(ViewModel())
+        qtbot.addWidget(window)
+        assert not window._advice_vision_only.isEnabled()  # noqa: SLF001
+
+
+class FakeLogWindow:
+    """滿足 Log 視窗那幾個勾選要的介面。"""
+
+    def __init__(self, *, shown: bool = False) -> None:
+        self.shown = shown
+        self.locked = False
+        self.asked: list[tuple[str, bool]] = []
+        self.closed = False
+
+    def set_shown(self, on: bool) -> None:
+        self.asked.append(("shown", on))
+        self.shown = on
+
+    def set_locked(self, on: bool) -> None:
+        self.asked.append(("locked", on))
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class TestLogSettings:
+    def _window(self, qtbot, log):
+        window = PanelWindow(ViewModel(), event_log=log)
+        qtbot.addWidget(window)
+        return window
+
+    def test_ticking_it_opens_the_log(self, qtbot) -> None:
+        log = FakeLogWindow()
+        window = self._window(qtbot, log)
+        window._log_shown.setChecked(True)  # noqa: SLF001
+        assert log.asked == [("shown", True)]
+
+    def test_a_remembered_choice_does_not_count_as_a_click(self, qtbot) -> None:
+        log = FakeLogWindow(shown=True)
+        window = self._window(qtbot, log)
+        assert window._log_shown.isChecked()  # noqa: SLF001
+        assert log.asked == []
+
+    def test_lock_needs_the_window_open(self, qtbot) -> None:
+        window = self._window(qtbot, FakeLogWindow())
+        assert not window._log_locked.isEnabled()  # noqa: SLF001
+        window._log_shown.setChecked(True)  # noqa: SLF001
+        assert window._log_locked.isEnabled()  # noqa: SLF001
+
+    def test_it_is_independent_from_the_overlay_boxes(self, qtbot) -> None:
+        log = FakeLogWindow()
+        window = self._window(qtbot, log)
+        window._log_shown.setChecked(True)  # noqa: SLF001
+        assert not window._overlay_shown.isChecked()  # noqa: SLF001
+
+    def test_closing_the_panel_closes_it(self, qtbot) -> None:
+        """少了這個,Log 會是最後一個開著的視窗,程式關不掉。"""
+        log = FakeLogWindow()
+        self._window(qtbot, log).close()
+        assert log.closed
+
+    def test_replay_has_no_log(self, qtbot) -> None:
+        window = PanelWindow(ViewModel())
+        qtbot.addWidget(window)
+        assert not window._log_shown.isEnabled()  # noqa: SLF001
+
+
 class FakeTableRectPicker:
     """假的牌桌框選接線。不開對話框 —— 那需要一張真的遊戲畫面。"""
 

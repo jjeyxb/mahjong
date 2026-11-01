@@ -71,6 +71,13 @@ class UiState:
         danger_vision_only: 強制讓放銃分析走**純畫面**那條,即使有封包。
             預設 ``False`` —— 平常由程式自己選(有封包就用封包)。這個選項
             是給開發與比較用的,見 :class:`~mia.features.DangerSourceChoice`。
+        advice_vision_only: 網頁版的 AI 建議走圖像辨識,不讀封包。預設 ``False``。
+            見 :class:`~mia.features.AdviceSourceChoice`。
+        log_visible: Log 視窗是開著的嗎。Log 與 Overlay 互不相干,所以位置、大小、
+            鎖定都各記各的。
+        log_locked: Log 視窗是否鎖定位置(鎖定 = 滑鼠穿透)。
+        log_pos: Log 視窗左上角的螢幕座標。``None`` 表示還沒拖過。
+        log_size: Log 視窗的寬高。``None`` 表示用預設大小。
         compare_style: 上次選的並排比較對象,``None`` 代表不比較。
             與 :attr:`style` 撞在一起或名字不存在時一律當成不比較 ——
             開著比較要多載一份 130MB 的權重,**所以對不上的時候寧可不開**。
@@ -84,6 +91,7 @@ class UiState:
     style: str | None = None
     compare_style: str | None = None
     danger_vision_only: bool = False
+    advice_vision_only: bool = False
     overlay_visible: bool = False
     overlay_expanded: bool = False
     overlay_danger: bool = False
@@ -91,6 +99,10 @@ class UiState:
     #: 拖不動。鎖上了才點得到底下的遊戲,那是使用者自己該做的下一個動作。
     overlay_locked: bool = False
     overlay_pos: tuple[int, int] | None = None
+    log_visible: bool = False
+    log_locked: bool = False
+    log_pos: tuple[int, int] | None = None
+    log_size: tuple[int, int] | None = None
 
     def __post_init__(self) -> None:
         #: 從哪裡讀來的就存回哪裡 —— 呼叫端只需要在 :meth:`load` 指定一次路徑。
@@ -139,6 +151,21 @@ class UiState:
             logger.debug("存不了 {}:{}", target, exc)
 
 
+#: 依型別分的欄位。其餘都是開關。
+_POINTS = ("overlay_pos", "log_pos", "log_size")
+_RECTS = ("hand_roi", "table_rect")
+_TEXTS = ("platform", "canvas", "style", "compare_style")
+
+
+def _numbers(value: object, count: int) -> bool:
+    """是不是 ``count`` 個數字。``bool`` 也是 ``int`` 的子類別,要擋掉。"""
+    return (
+        isinstance(value, list | tuple)
+        and len(value) == count
+        and all(isinstance(v, int | float) and not isinstance(v, bool) for v in value)
+    )
+
+
 def _known(raw: dict[str, Any]) -> dict[str, Any]:
     """只留下型別對得上的欄位。
 
@@ -150,17 +177,16 @@ def _known(raw: dict[str, Any]) -> dict[str, Any]:
         if field.name not in raw:
             continue
         value = raw[field.name]
-        if field.name == "canvas":
-            # 型別對就收下,內容看不懂是 Canvas.parse 的事(它會退回自動偵測)
-            if value is None or isinstance(value, str):
-                out[field.name] = value
-        elif field.name == "overlay_pos":
-            if (
-                isinstance(value, list | tuple)
-                and len(value) == 2
-                and all(isinstance(v, int) for v in value)
-            ):
+        if field.name in _POINTS:
+            if _numbers(value, 2) and all(isinstance(v, int) for v in value):
                 out[field.name] = (int(value[0]), int(value[1]))
+        elif field.name in _RECTS:
+            if _numbers(value, 4):
+                out[field.name] = tuple(float(v) for v in value)
+        elif field.name in _TEXTS:
+            # 型別對就收下,內容看不懂是各自的事(都會退回預設)
+            if isinstance(value, str) or (value is None and field.default is None):
+                out[field.name] = value
         elif isinstance(value, bool):
             out[field.name] = value
     return out

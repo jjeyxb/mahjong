@@ -19,6 +19,7 @@ import numpy as np
 from mia.calibration.canvas import Canvas, CanvasChoice, CanvasMismatchError
 from mia.calibration.letterbox import find_content_rect, fit_aspect
 from mia.calibration.manual import TableRectChoice
+from mia.calibration.unity import unity_layout
 from mia.capture.base import Frame
 from mia.config.models import CalibrationConfig
 from mia.utils.geometry import NormRect, Rect, Size
@@ -42,6 +43,9 @@ class Calibration:
         source: ``auto`` 自動偵測成功 / ``canvas`` 由指定的畫布尺寸推導 /
             ``manual`` 使用設定檔指定 / ``fallback`` 偵測失敗,退而使用整張影像。
         warnings: 校正過程中的疑慮。非空代表結果可能不可靠,上層應顯示給使用者。
+        panel: 左上角寶牌與立直棒面板的像素矩形。``None`` 是跟著牌桌矩形走(網頁版)。
+            這塊面板貼著視窗角落,牌桌矩形不等於視窗時要另外給,見
+            :mod:`mia.calibration.unity`。
     """
 
     table_rect: Rect
@@ -49,6 +53,7 @@ class Calibration:
     scale: float = 1.0
     source: CalibrationSource = "auto"
     warnings: tuple[str, ...] = field(default_factory=tuple)
+    panel: Rect | None = None
 
     @property
     def aspect(self) -> float:
@@ -102,6 +107,7 @@ class TableCalibrator:
         canvas: 使用者選的畫布尺寸,會**蓋過** ``config.canvas``。傳一個可變的
             :class:`~mia.calibration.canvas.CanvasChoice` 而不是值,是因為
             UI 可以隨時改選 —— 見該類別的 docstring。省略時就用設定檔裡的。
+        unity: 這是 Steam 客戶端。比例量過的話直接用 :func:`~mia.calibration.unity.unity_layout`。
     """
 
     def __init__(
@@ -110,8 +116,10 @@ class TableCalibrator:
         *,
         canvas: CanvasChoice | None = None,
         manual: TableRectChoice | None = None,
+        unity: bool = False,
     ) -> None:
         self.config = config or CalibrationConfig()
+        self.unity = unity
         self.canvas = canvas or CanvasChoice(Canvas.parse(self.config.canvas))
         #: 使用者在 UI 上框的牌桌矩形。與 ``canvas`` 同樣是可變的共用格子 ——
         #: 框完下一幀就生效,不必重啟擷取執行緒。
@@ -158,6 +166,17 @@ class TableCalibrator:
                 image_size=image_size,
                 scale=frame.scale,
                 source="manual",
+            )
+
+        layout = unity_layout(image_size) if self.unity else None
+        if layout is not None:
+            self._clear_warning()
+            return Calibration(
+                table_rect=layout[0],
+                image_size=image_size,
+                scale=frame.scale,
+                source="canvas",
+                panel=layout[1],
             )
 
         if self.canvas.value is not None:

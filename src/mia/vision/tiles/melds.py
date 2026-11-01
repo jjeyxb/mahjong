@@ -59,6 +59,7 @@ __all__ = [
     "MeldStrip",
     "MeldView",
     "occupied_length",
+    "occupied_span",
     "read_meld_faces",
     "read_melds",
 ]
@@ -330,12 +331,29 @@ def occupied_length(
     Returns:
         長度,以格為單位。0 表示沒有副露。
     """
+    return occupied_span(image, table, view, cell=cell, extent=extent)[1]
+
+
+def occupied_span(
+    image: np.ndarray,
+    table: Rect,
+    view: MeldView,
+    *,
+    cell: tuple[int, int] = CELL,
+    extent: int = EXTENT,
+) -> tuple[float, float]:
+    """副露區的牌從第幾格開始、到第幾格結束,見 :func:`occupied_length`。
+
+    開始的位置各視窗不同(Steam 全螢幕自己那家 0.75 格,網頁版 0.29 格),所以第一組的
+    寬度要扣掉多出來的那段才比得起來。
+    """
     flat = view.rectify(image, table, cell=cell, columns=extent)
     face, back = tile_masks(flat)
     occupied = (face | back).mean(axis=0) > _COLUMN_OCCUPIED
-    end = miss = 0
+    first = end = miss = 0
     for x, filled in enumerate(occupied):
         if filled:
+            first = first if end else x
             end, miss = x + 1, 0
             continue
         if end == 0 and x < cell[0]:
@@ -345,7 +363,7 @@ def occupied_length(
         miss += 1
         if miss > _GAP:
             break
-    return end / cell[0]
+    return first / cell[0], end / cell[0]
 
 
 # ---------------------------------------------------------------------- 牌面
@@ -362,10 +380,19 @@ _STEP = (25, 40)
 #: 那場上家的字牌要 0.82 ~ 0.9 倍才認得到。
 _SIZES = ((64, 92), (58, 83), (52, 75))
 
+#: 粗篩:先在一半大小的圖上比完 37 張,只留分數最高的幾張到原尺寸比。一框要比
+#: 37 張 x 2 個覆核尺度 x 3 種大小,一組副露 2 ~ 8 秒,而有人鳴牌時正需要這些牌面。
+_COARSE_WINDOW = (_WINDOW[0] // 2, _WINDOW[1] // 2)
+_COARSE_FACE = (29, 41)
+_COARSE_KEEP = 6
+
+#: 雀魂記法裡的赤五與普通五。
+_RED_TWIN = {"0m": "5m", "5m": "0m", "0p": "5p", "5p": "0p", "0s": "5s", "5s": "0s"}
+
 #: 白的分數門檻,依座位。其他牌照牌河的 :data:`CONFIDENT`。
 #:
 #: 白沒有圖案,框到牌的側面、頂面也湊得出分數:下家 0.6 ~ 0.65,對家(看得到
-#: 牌的頂面)到 0.76。真的白在自家、對家、下家都在 0.85 以上,但 Steam 實戰
+#: 牌的頂面)到 0.76。真的白在自家、對家、下家都在 0.85 以上,但 CPU 對局
 #: 的上家(最小最糊)只有 0.80 —— 跟對家的假白分不開,只能各用各的。
 _HAKU_SCORE = {"own": 0.85, "shimocha": 0.85, "toimen": 0.85, "kamicha": 0.75}
 
@@ -593,6 +620,17 @@ def _windows(plane: np.ndarray, x: int, y: int) -> list[np.ndarray]:
     return out
 
 
+def _shortlist(window: np.ndarray, templates: TemplateSet) -> set[str]:
+    """這一框最像的幾種牌。赤五與普通五算同一種,兩張都留。"""
+    small = cv2.resize(window, _COARSE_WINDOW, interpolation=cv2.INTER_AREA)
+    scores = [
+        (float(cv2.matchTemplate(small, face, cv2.TM_CCOEFF_NORMED).max()), label)
+        for label, face in templates.scaled(_COARSE_FACE)
+    ]
+    kept = {label for _, label in sorted(scores, reverse=True)[:_COARSE_KEEP]}
+    return kept | {_RED_TWIN[label] for label in kept if label in _RED_TWIN}
+
+
 def _classify(
     window: np.ndarray, templates: TemplateSet, *, haku: float
 ) -> tuple[str | None, float]:
@@ -601,9 +639,10 @@ def _classify(
     centre = window[height // 4 : height - height // 4, width // 4 : width - width // 4]
     if face_coverage(centre) < _FACE_MIN:
         return None, 0.0
+    labels = _shortlist(window, templates)
     best: tuple[str | None, float] = (None, 0.0)
     for size in _SIZES:
-        match = classify_river_tile(window, templates, size=size)
+        match = classify_river_tile(window, templates, size=size, labels=labels)
         floor = haku if match.label == "5z" else CONFIDENT[0]
         if match.score >= max(floor, best[1]) and match.margin >= CONFIDENT[1]:
             best = (match.label, match.score)

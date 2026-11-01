@@ -25,6 +25,7 @@ mahjong>=2.0.0
 # --- 平台相依:單視窗擷取 ---
 # 全螢幕擷取會把自己的 Overlay 一起拍進去,故主路徑走「指定視窗擷取」。
 pyobjc-framework-Quartz>=12.2 ; sys_platform == "darwin"   # CGWindowListCreateImage
+pyobjc-framework-Cocoa>=12.2 ; sys_platform == "darwin"    # Overlay 蓋到全螢幕遊戲上
 pywin32>=312 ; sys_platform == "win32"                      # PrintWindow / DPI awareness
 dxcam>=0.3.0 ; sys_platform == "win32"                      # 高幀率備援
 

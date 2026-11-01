@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from mia.ui.state import UiState
 
 
@@ -47,6 +49,50 @@ class TestRoundTrip:
             overlay_locked=True,
             overlay_pos=(120, 340),
         )
+
+    def test_every_setting_comes_back(self, tmp_path) -> None:
+        """存得進去讀不回來的話,症狀是每次啟動版本與框選都不見,而且沒有錯誤訊息。"""
+        target = tmp_path / "ui.json"
+        saved = UiState(
+            platform="steam",
+            hand_roi=(0.1, 0.2, 0.3, 0.4),
+            table_rect=(0.0, 0.1, 1.0, 0.9),
+            canvas="1280x720",
+            style="愛鳴牌",
+            compare_style="不愛鳴牌",
+            log_visible=True,
+            log_locked=True,
+            log_pos=(10, 20),
+            log_size=(480, 360),
+        )
+        saved.save(target)
+        assert UiState.load(target) == saved
+
+    @pytest.mark.parametrize(
+        ("name", "value"),
+        [
+            ("platform", None),
+            ("platform", 3),
+            ("hand_roi", [0.1, 0.2, 0.3]),
+            ("table_rect", ["a", "b", "c", "d"]),
+            ("hand_roi", [True, False, True, False]),
+            ("log_pos", [1.5, 2.5]),
+            ("log_size", "480x360"),
+            ("style", 1),
+        ],
+    )
+    def test_a_wrongly_shaped_value_falls_back(self, tmp_path, name, value) -> None:
+        target = tmp_path / "ui.json"
+        target.write_text(json.dumps({name: value}), encoding="utf-8")
+        assert getattr(UiState.load(target), name) == getattr(UiState(), name)
+
+    def test_the_advice_source_defaults_to_packets(self, tmp_path) -> None:
+        assert UiState.load(tmp_path / "none.json").advice_vision_only is False
+
+    def test_the_advice_source_comes_back(self, tmp_path) -> None:
+        target = tmp_path / "ui.json"
+        UiState(advice_vision_only=True).save(target)
+        assert UiState.load(target).advice_vision_only is True
 
     def test_the_position_comes_back_as_a_tuple(self, tmp_path) -> None:
         """JSON 沒有 tuple,存進去是 list —— 讀回來要轉回去,不然

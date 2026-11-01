@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 
 from mia.utils.geometry import Rect
+from mia.vision.tiles.classify import TemplateSet
 from mia.vision.tiles.melds import (
     _RED_MELD,
     CELL,
@@ -22,6 +23,7 @@ from mia.vision.tiles.melds import (
     MeldStrip,
     MeldView,
     _red_score,
+    _shortlist,
     occupied_length,
     read_melds,
 )
@@ -137,6 +139,30 @@ class TestOccupiedLength:
     def test_four_daiminkan_fit(self) -> None:
         """四組大明槓約 17.3 張寬,13 格裝不下。"""
         assert EXTENT * 1.0 >= 4 * (3 + 1.33)
+
+
+class TestTheShortlist:
+    """粗篩只是省時間:真的那張一定要留下來,不然認出來的牌會變。"""
+
+    @staticmethod
+    def _window(templates: TemplateSet, label: str) -> np.ndarray:
+        window = np.full((140, 100, 3), 90, np.uint8)
+        face = templates.scaled((58, 83))[templates.labels.index(label)][1]
+        window[28:111, 21:79] = face
+        return window
+
+    def test_the_real_tile_is_kept(self) -> None:
+        templates = TemplateSet.load()
+        for label in ("7z", "1m", "9s"):
+            assert label in _shortlist(self._window(templates, label), templates)
+
+    def test_a_five_keeps_its_red_twin(self) -> None:
+        templates = TemplateSet.load()
+        assert {"5p", "0p"} <= _shortlist(self._window(templates, "5p"), templates)
+
+    def test_it_is_much_shorter_than_the_set(self) -> None:
+        templates = TemplateSet.load()
+        assert len(_shortlist(self._window(templates, "7z"), templates)) <= 9
 
 
 class TestRedFiveInAMeld:

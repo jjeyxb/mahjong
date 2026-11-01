@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from mia.utils.geometry import NormRect
 
 __all__ = [
+    "AdviceSourcePicker",
     "CanvasPicker",
     "DangerSourcePicker",
     "GameLauncher",
@@ -135,6 +136,20 @@ class DangerSourcePicker(Protocol):
     #: 現在**真的在跑**的那條路。與上面那個勾選不是同一件事:
     #: 沒有封包來源時本來就走圖像辨識,使用者沒勾也一樣。
     def danger_source_name(self) -> str | None: ...
+
+
+class AdviceSourcePicker(Protocol):
+    """能決定 AI 建議走不走圖像辨識的東西。見 :class:`~mia.features.AdviceSourceChoice`。
+
+    :meth:`set_advice_vision_only` **會重啟 AI 建議**(如果它開著)。
+    """
+
+    def can_pick_advice_source(self) -> bool: ...
+    def advice_vision_only(self) -> bool: ...
+    def set_advice_vision_only(self, on: bool) -> None: ...
+
+    #: 現在走不走畫面。與上面那個勾選不是同一件事:Steam 版沒勾也走畫面。
+    def advice_uses_screen(self) -> bool: ...
 
 
 class CanvasPicker(Protocol):

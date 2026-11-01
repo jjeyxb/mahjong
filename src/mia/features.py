@@ -9,7 +9,7 @@ UI 不該知道 live 的存在(它也要服務錄影重播),live 不該知道 Qt
 
 from __future__ import annotations
 
-__all__ = ["ADVICE", "DANGER", "NAMES", "VISION", "DangerSourceChoice"]
+__all__ = ["ADVICE", "DANGER", "NAMES", "VISION", "AdviceSourceChoice", "DangerSourceChoice"]
 
 #: 功能 1:螢幕擷取 → 手牌 → 向聽 / 進張。
 VISION = "vision"
@@ -69,3 +69,11 @@ class DangerSourceChoice:
             return False
         self._vision_only = on
         return True
+
+
+class AdviceSourceChoice(DangerSourceChoice):
+    """AI 建議要不要走圖像辨識 —— 同一種共用格子,同一個理由。
+
+    與放銃分析不同的是這個**給玩家選**:走畫面完全不讀封包,代價是慢一點、偶爾認錯。
+    只有網頁版有得選,Steam 版沒有封包,本來就只有這一條。
+    """

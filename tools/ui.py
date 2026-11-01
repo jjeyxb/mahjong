@@ -53,17 +53,20 @@ from mia.capture.base import Frame
 from mia.config.models import AppConfig
 from mia.engine import AIEngine, DummyEngine, EngineGroup
 from mia.engine.styles import StyleChoice, StyleProfile
-from mia.features import DangerSourceChoice
+from mia.features import AdviceSourceChoice, DangerSourceChoice
 from mia.live.runtime import LiveRuntime
 from mia.mjai import MjaiEvent
 from mia.mjai.handstate import HandTracker
 from mia.platforms import WEB, PlatformChoice
+from mia.ui.eventlog import EventLog
 from mia.ui.icon import app_icon
 from mia.ui.identity import apply_identity
+from mia.ui.overlay.log import EventLogWindow
 from mia.ui.overlay.window import OverlayWindow
 from mia.ui.panel.window import PanelWindow, present
 from mia.ui.state import UiState
 from mia.ui.viewmodel import ViewModel
+from mia.utils.appnap import hold_off_app_nap
 from mia.utils.geometry import NormRect
 from mia.utils.logging import logger, setup_logging
 from mia.utils.paths import DATA_DIR, PROJECT_ROOT
@@ -80,10 +83,9 @@ DEMO_HAND = ("1m", "1m", "2m", "3s", "4m", "5pr", "6m", "8p", "8s", "8s", "9m", 
 
 #: 即時模式下多久把郵箱套進 UI 一次(毫秒)。
 #:
-#: 100 ms 是刻意的:擷取是 15 fps(66 ms),再快只是重畫同樣的東西;而人看
-#: 手牌變化,10 Hz 已經完全跟得上。郵箱會把這段時間內的更新合併掉,所以
-#: 「調慢」不會漏資訊,只會讓畫面晚 0.1 秒 —— 遠小於遊戲自己的動畫時間。
-PUMP_INTERVAL_MS = 100
+#: 這是建議到畫面的最後一段,寧可空轉也不要在這裡多等。沒有更新時一輪只是看一下
+#: 空的郵箱,而畫面只有在有更新時才重畫,所以轉快不會多花重畫的錢。
+PUMP_INTERVAL_MS = 33
 
 #: `--mortal` 指定的那一項在風格選單裡叫什麼。**不寫回 ui_state** ——
 #: 下次沒帶旗標啟動時這個名字不存在,記了也對不上。
@@ -425,6 +427,28 @@ class _RememberedStyle:
         self._state.save()
 
 
+class _RememberedAdviceSource:
+    """把「AI 建議走圖像辨識」轉給 runtime,順手記到磁碟。"""
+
+    def __init__(self, runtime: LiveRuntime, state: UiState) -> None:
+        self._runtime = runtime
+        self._state = state
+
+    def can_pick_advice_source(self) -> bool:
+        return self._runtime.can_pick_advice_source()
+
+    def advice_vision_only(self) -> bool:
+        return self._runtime.advice_vision_only()
+
+    def advice_uses_screen(self) -> bool:
+        return self._runtime.advice_uses_screen()
+
+    def set_advice_vision_only(self, on: bool) -> None:
+        self._runtime.set_advice_vision_only(on)
+        self._state.advice_vision_only = self._runtime.advice_vision_only()
+        self._state.save()
+
+
 def build_live_runtime(
     args: argparse.Namespace,
     model: ViewModel,
@@ -435,6 +459,8 @@ def build_live_runtime(
     hand_roi: HandRoiChoice | None = None,
     table_rect: TableRectChoice | None = None,
     danger_source: DangerSourceChoice | None = None,
+    advice_source: AdviceSourceChoice | None = None,
+    event_log: EventLog | None = None,
 ) -> LiveRuntime:
     """組出 runtime。**什麼都還沒開始** —— 瀏覽器等使用者按「開始遊戲」,
     三個功能等使用者撥開關。
@@ -456,6 +482,7 @@ def build_live_runtime(
     from mia.vision.tiles.classify import DEFAULT_SKIN
 
     danger_source = danger_source if danger_source is not None else DangerSourceChoice()
+    advice_source = advice_source if advice_source is not None else AdviceSourceChoice()
     bus = UpdateBus()
     feature_list: list[Feature] = []
     capture: CaptureLauncher | None = None
@@ -499,8 +526,9 @@ def build_live_runtime(
             #
             # 權重在**這裡**才從 style 讀,不是在外面先取出來存著 —— 使用者
             # 換風格靠的正是「關掉再開」,先取出來的話第二次開起來還是舊的。
-            if screen_for_danger is not None and platform is not None and platform.value != WEB:
-                # 這一版沒有封包,事件流只能從畫面組。
+            no_packets = platform is not None and platform.value != WEB
+            if screen_for_danger is not None and (no_packets or advice_source.vision_only):
+                # Steam 版沒有封包,事件流只能從畫面組;網頁版是玩家自己選的。
                 return VisionAdviceWorker(
                     bus,
                     config=load_config().roi,
@@ -587,6 +615,8 @@ def build_live_runtime(
         style=style,
         platform=platform,
         danger_source=danger_source,
+        advice_source=advice_source,
+        event_log=event_log,
     )
 
 
@@ -809,6 +839,8 @@ def main(argv: list[str] | None = None) -> int:
     # 一次邊框,而使用者當初會去框正是因為那條路在他的環境下走不通。
     table_rect = TableRectChoice(ui_state.table_rect)
     danger_source = DangerSourceChoice(ui_state.danger_vision_only)
+    advice_source = AdviceSourceChoice(ui_state.advice_vision_only)
+    event_log = EventLog()
     # 視窗比對條件要與擷取執行緒讀的是同一份 —— 兩邊找的必須是同一個視窗,
     # 否則使用者框的是 A、辨識跑的是 B。
     from mia.config.loader import load_config
@@ -827,6 +859,8 @@ def main(argv: list[str] | None = None) -> int:
             hand_roi=hand_roi,
             table_rect=table_rect,
             danger_source=danger_source,
+            advice_source=advice_source,
+            event_log=event_log,
         )
         if args.live
         else None
@@ -843,11 +877,13 @@ def main(argv: list[str] | None = None) -> int:
         options["switchboard"] = runtime
     overlay = OverlayWindow(model, ui_state=ui_state, **options)  # type: ignore[arg-type]
     model.subscribe(overlay.apply)
+    log_window = EventLogWindow(event_log, ui_state=ui_state)
 
     # launcher 與 canvas 只給側邊視窗 —— 「開始遊戲」是一個動作而不是要顯示的
     # 狀態,畫布尺寸則是設定;Overlay 上兩者都沒有位置(鎖定之後也按不到)。
     window = PanelWindow(
         model,
+        event_log=log_window,
         overlay=overlay,
         launcher=runtime,
         canvas=_RememberedCanvas(runtime, ui_state) if runtime is not None else None,
@@ -866,11 +902,15 @@ def main(argv: list[str] | None = None) -> int:
         danger_source=(
             _RememberedDangerSource(runtime, ui_state) if runtime is not None else None
         ),
+        advice_source=(
+            _RememberedAdviceSource(runtime, ui_state) if runtime is not None else None
+        ),
         **options,  # type: ignore[arg-type]
     )
     model.subscribe(window.apply)
 
     if runtime is not None:
+        hold_off_app_nap()
         start_live(runtime, model)
         _quit_on_signals(app)
         print("按視窗左下角的「開始遊戲」開啟瀏覽器;三個功能的開關預設關著。")
@@ -886,6 +926,8 @@ def main(argv: list[str] | None = None) -> int:
     # 它前面 —— 使用者勾了卻看不到,只會以為壞了。
     if overlay.shown:
         overlay.set_shown(True)
+    if log_window.shown:
+        log_window.set_shown(True)
     try:
         return app.exec()
     finally:

@@ -59,6 +59,7 @@ from mia.vision.roi import MissingRoiError, RoiSet
 from mia.vision.tiles.classify import (
     DEFAULT_SKIN,
     HOVER_HEADROOM,
+    Match,
     TemplateSet,
     classify_hand,
 )
@@ -83,6 +84,12 @@ _REFIND_AFTER = 15
 #: (換了會呼吸的牌背皮膚、擷取本身帶雜訊):真發生的話寧可退回舊行為
 #: (每幀都認、動畫中途偶爾認錯),也不要讓整個功能安靜地停擺。
 _MAX_UNSETTLED = 15
+
+#: 認得沒把握的手牌,畫面要再靜止這麼多幀才交給牌桌那條路(15 fps 下約一秒)。
+#:
+#: 兩種沒把握要分開:動畫中的誤讀很快就過了,應該擋;某張牌一直認不好,擋住的話手牌會
+#: 整個凍結。等一下兩邊都顧到。實測一律放行,CPU 素材有一局因誤讀卡住,15 手只排到 5 手。
+_STILL_FRAMES = 15
 
 
 
@@ -152,11 +159,14 @@ class VisionWorker(threading.Thread):
 
         self._sink = sink
         self._calibrator = StableCalibrator(
-            config.calibration, canvas=canvas, manual=table_rect
+            config.calibration, canvas=canvas, manual=table_rect, unity=platform != WEB
         )
         self._hand_roi = hand_roi if hand_roi is not None else HandRoiChoice()
         self._rois: RoiSet | None = None
         self._templates: TemplateSet | None = None
+        self._tiles: dict[bytes, Match] = {}
+        self._doubtful: tuple[list[str], str | None] | None = None
+        self._quiet = 0
         self._previous: np.ndarray | None = None
         #: 手牌區連續變動了幾幀。0 表示現在這個畫面已經認過了。
         self._unsettled = 0
@@ -298,21 +308,34 @@ class VisionWorker(threading.Thread):
         # **比的是含 headroom 的整條**:牌被滑鼠抬起來的時候手牌區的下緣其實
         # **比的是含 headroom 的整條**:牌被滑鼠抬起來的時候手牌區的下緣其實
         # 沒什麼變化,只比 ROI 的話那一幀會被當成沒動,抬起來的過程就看不見。
+        forced = False
         if self._previous is None or not np.array_equal(tall, self._previous):
             self._previous = tall.copy()
+            self._doubtful = None
             self._unsettled += 1
             if self._unsettled < _MAX_UNSETTLED:
                 self.skipped += 1
                 return
             # 一直在動 —— 還是給個答案,不要整個安靜下來
             logger.debug("手牌區連續變動 {} 幀,不再等它停", self._unsettled)
+            forced = True
         elif self._unsettled == 0:
             # 這個畫面上一輪已經認過了
             self.skipped += 1
+            self._offer_doubtful()
             return
 
         self._unsettled = 0
-        self._read(tall, headroom)
+        self._read(tall, headroom, forced=forced)
+
+    def _offer_doubtful(self) -> None:
+        """沒把握的手牌,畫面一直沒變就交出去。見 :data:`_STILL_FRAMES`。"""
+        if self._doubtful is None:
+            return
+        self._quiet += 1
+        if self._quiet >= _STILL_FRAMES and self._sink is not None:
+            self._sink.offer_hand(*self._doubtful)
+            self._doubtful = None
 
     def _ensure_window(self) -> WindowInfo | None:
         if self._window is not None:
@@ -367,7 +390,7 @@ class VisionWorker(threading.Thread):
             self.status.say(f"切不出手牌區域:{exc}")
             return None
 
-    def _read(self, tall: np.ndarray, headroom: int) -> None:
+    def _read(self, tall: np.ndarray, headroom: int, *, forced: bool = False) -> None:
         assert self._templates is not None
         roi = tall[headroom:]
         hand = read_hand(roi)
@@ -378,7 +401,9 @@ class VisionWorker(threading.Thread):
             return
 
         try:
-            concealed, drawn = classify_hand(tall, hand, self._templates, headroom=headroom)
+            concealed, drawn = classify_hand(
+                tall, hand, self._templates, headroom=headroom, memo=self._tiles
+            )
         except ValueError as exc:
             # 牌框太小,`classify` 明確拒收而不是硬算(見 classify.MIN_TEMPLATE_PX)。
             #
@@ -403,12 +428,17 @@ class VisionWorker(threading.Thread):
                 confident=confident,
             )
         )
-        if self._sink is not None:
-            # 危險度要知道自己手上有什麼。**含剛摸的那張** —— 那張正是
-            # 使用者現在要決定切不切的牌。
-            self._sink.offer_hand(
-                [m.label for m in matches], drawn.label if drawn is not None else None
-            )
+        # 摸牌那格沒把握就不交出去:打牌的特效(角色的手、花瓣)飄過那一格,實測被讀成一張
+        # 低信心的牌,記成摸到牌之後,自己的動作從那裡開始晚一輪。真的摸牌分數都很高。
+        if self._sink is None or not (drawn is None or drawn.is_confident):
+            return
+        # 危險度要知道自己手上有什麼。**含剛摸的那張** —— 那張正是
+        # 使用者現在要決定切不切的牌。
+        offer = ([m.label for m in matches], drawn.label if drawn is not None else None)
+        if confident or forced:
+            self._sink.offer_hand(*offer)
+        else:
+            self._doubtful, self._quiet = offer, 0
 
     def __repr__(self) -> str:
         return (

@@ -207,6 +207,24 @@ class TestItOnlyKeepsTheLatestFrame:
         worker.tick()
         assert not bus.drain()
 
+    def test_a_waiting_hand_is_read_as_soon_as_a_frame_arrives(
+        self, templates: TemplateSet, calibration: Calibration
+    ) -> None:
+        """手牌先到、畫面被上一輪拿走了:不等滿一秒。"""
+        worker, _ = _worker(templates)
+        worker.offer_hand(["1m"])
+        worker.tick()
+        worker._wake.clear()  # noqa: SLF001
+        worker.offer_frame(np.zeros((90, 160, 3), dtype=np.uint8), calibration)
+        assert worker._wake.is_set()  # noqa: SLF001
+
+    def test_a_frame_alone_does_not_wake_it(
+        self, templates: TemplateSet, calibration: Calibration
+    ) -> None:
+        worker, _ = _worker(templates)
+        worker.offer_frame(np.zeros((90, 160, 3), dtype=np.uint8), calibration)
+        assert not worker._wake.is_set()  # noqa: SLF001
+
 
 class TestTheLink:
     """兩個功能各自開關,所以中間要一個不會被重建的東西。"""

@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import cv2
@@ -171,6 +172,32 @@ class TestClassifyHand:
         concealed, drawn = classify_hand(roi, read_hand(roi), templates)
         assert len(concealed) == 13
         assert drawn is None
+
+    def test_a_big_hand_reads_the_same_as_a_small_one(self, templates: TemplateSet) -> None:
+        """Steam 全螢幕的牌很大,先縮小再比。認出來的牌不能因此改變。"""
+        roi = cv2.imread(str(FIXTURES / "hand_14_with_draw.png"))
+        big = cv2.resize(roi, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+        small = classify_hand(roi, read_hand(roi), templates)
+        large = classify_hand(big, read_hand(big), templates)
+        assert [m.label for m in large[0]] == [m.label for m in small[0]]
+        assert large[1] is not None and small[1] is not None
+        assert large[1].label == small[1].label
+
+    def test_tiles_that_did_not_change_are_not_read_again(
+        self, templates: TemplateSet, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """摸牌時另外 13 張畫面沒變,只該付新那張的錢。"""
+        roi = cv2.imread(str(FIXTURES / "hand_14_with_draw.png"))
+        hand = read_hand(roi)
+        memo: dict[bytes, Match] = {}
+        first = classify_hand(roi, hand, templates, memo=memo)
+        reads = []
+        module = sys.modules["mia.vision.tiles.classify"]  # 套件把模組名蓋成同名函式了
+        monkeypatch.setattr(
+            module, "classify", lambda *a, **k: reads.append(1) or classify(*a, **k)
+        )
+        assert classify_hand(roi, hand, templates, memo=memo) == first
+        assert not reads
 
 
 #: ``own_hand`` ROI 佔牌桌寬度的比例(``config/default.yaml``)。
@@ -472,6 +499,13 @@ class TestRedFive:
         chun = templates.scaled((64, 92))[templates.labels.index("7z")][1]
         assert settle_five("7z", chun) == "7z"
         assert red_ink(chun) >= WHOLE_RED
+
+    def test_labels_narrow_the_search(self, templates: TemplateSet) -> None:
+        """只比這幾種:真的那張不在裡面,就不可能回它。"""
+        face = templates.scaled((64, 92))[templates.labels.index("7z")][1]
+        cell = cv2.copyMakeBorder(face, 8, 8, 8, 8, cv2.BORDER_REPLICATE)
+        assert classify(cell, templates, size=(64, 92)).label == "7z"
+        assert classify(cell, templates, size=(64, 92), labels={"1m", "2m"}).label != "7z"
 
     def test_a_blank_patch_has_no_ink(self) -> None:
         assert red_ink(np.full((20, 20, 3), 235, np.uint8)) == 0.0

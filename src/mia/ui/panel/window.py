@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QPushButton,
+    QScrollArea,
     QStackedWidget,
     QStatusBar,
     QVBoxLayout,
@@ -59,6 +60,7 @@ from mia.ui.style import (
     Hairline,
 )
 from mia.ui.switchboard import (
+    AdviceSourcePicker,
     CanvasPicker,
     DangerSourcePicker,
     GameLauncher,
@@ -77,7 +79,8 @@ from mia.ui.widgets.tiles import DEFAULT_SKIN, TileIcons
 from mia.ui.widgets.toggle import ToggleSwitch
 
 if TYPE_CHECKING:
-    from mia.ui.overlay.window import OverlayWindow
+    from mia.ui.overlay.log import EventLogWindow
+from mia.ui.overlay.window import OverlayWindow
 
 #: ``Switchboard`` 原本定義在這裡,現在搬到 :mod:`mia.ui.switchboard`
 #: —— Overlay 也要用它,而那兩個是平行的呈現方式,誰都不該相依誰。
@@ -98,6 +101,15 @@ NAV_WIDTH = 96
 
 #: 「開始遊戲」按鈕的字。兩處(按鈕與狀態列提示)都取這裡,不會寫得不一樣。
 START_GAME = "開始遊戲"
+
+
+def _scrollable(content: QWidget) -> QScrollArea:
+    """內容比視窗高時捲動,不要把整個視窗的最小高度撐大:那會連其他分頁一起變高。"""
+    area = QScrollArea()
+    area.setWidget(content)
+    area.setWidgetResizable(True)
+    area.setFrameShape(QFrame.Shape.NoFrame)
+    return area
 
 
 class _Page(QWidget):
@@ -160,6 +172,14 @@ class _Page(QWidget):
 #: 「設定」不在這裡 —— 它不是功能頁(沒有開關,設定列是空的)。
 PAGES = ("AI 建議", "向聽分析", "放銃分析")
 
+#: 設定頁 AI 建議「使用圖像辨識」的說明。
+_ADVICE_SOURCE_TIP = (
+    "不勾:讀封包,最準。\n"
+    "勾起來:只看畫面,不讀封包,但比較慢,偶爾會認錯。\n"
+    "會重啟 AI 建議,並一併打開畫面辨識。\n"
+    "遊戲還是 MIA 開的瀏覽器,封包照樣會錄,只是建議不看。"
+)
+
 
 class PanelWindow(QMainWindow):
     """輔助資訊的側邊視窗。
@@ -181,6 +201,8 @@ class PanelWindow(QMainWindow):
         hand_roi: 「框選手牌範圍」要接到誰。``None`` 時按鈕畫成停用。
         table_rect: 「框選整個遊戲畫面」要接到誰。``None`` 時按鈕畫成停用。
         danger_source: 「強制使用圖像辨識」要接到誰。``None`` 時勾選框畫成停用。
+        advice_source: 設定頁 AI 建議的「使用圖像辨識」要接到誰。``None`` 時畫成停用。
+        event_log: Log 視窗。``None`` 時勾選框畫成停用。
         overlay: 要控制的 Overlay。設定頁上的四個勾選都作用在它身上;
             ``None`` 時那四個畫成停用。
 
@@ -204,6 +226,8 @@ class PanelWindow(QMainWindow):
         hand_roi: HandRoiPicker | None = None,
         table_rect: TableRectPicker | None = None,
         danger_source: DangerSourcePicker | None = None,
+        advice_source: AdviceSourcePicker | None = None,
+        event_log: EventLogWindow | None = None,
         overlay: OverlayWindow | None = None,
     ) -> None:
         super().__init__()
@@ -225,6 +249,8 @@ class PanelWindow(QMainWindow):
         self._hand_roi = hand_roi
         self._table_rect = table_rect
         self._danger_source = danger_source
+        self._advice_source = advice_source
+        self._event_log = event_log
         self._overlay = overlay
         self._switches: dict[str, ToggleSwitch] = {}
         self._skin = skin
@@ -257,7 +283,7 @@ class PanelWindow(QMainWindow):
         self._advice_page = self._add_page(PAGES[0], self._advice)
         self._analysis_page = self._add_page(PAGES[1], self._analysis)
         self._danger_page = self._add_page(PAGES[2], self._danger)
-        self._settings_page = self._add_page("設定", self._build_settings())
+        self._settings_page = self._add_page("設定", _scrollable(self._build_settings()))
         self._build_advice_settings()
         self._build_analysis_settings()
         self._build_danger_settings()
@@ -423,6 +449,43 @@ class PanelWindow(QMainWindow):
         # 「候選數」不在這條設定列上,而在它控制的那段清單旁邊
         # (見 :class:`~mia.ui.widgets.advice.AdviceTab`)。
         self._advice.candidate_count_changed.connect(self._on_candidate_count)
+
+    def _build_advice_source_settings(self, page: QWidget, layout: QVBoxLayout) -> None:
+        """AI 建議要不要走圖像辨識。
+
+        放這裡不放 AI 建議頁:那條設定列擠不下,最小寬度時控制項會疊在一起。
+        """
+        self._advice_vision_only = QCheckBox("使用圖像辨識", page)
+        self._sync_advice_source()
+        self._advice_vision_only.toggled.connect(self._on_advice_source)
+        layout.addWidget(self._advice_vision_only)
+
+    def _sync_advice_source(self) -> None:
+        """勾選框要說現在的實情。換到 Steam 版時它變成打勾、不能改。
+
+        擋掉訊號:這裡是把狀態畫出來,不是使用者按的,接著的話會白白重啟一次 AI 建議。
+        """
+        box = self._advice_vision_only
+        picker = self._advice_source
+        can_pick = picker is not None and picker.can_pick_advice_source()
+        on_screen = picker is not None and picker.advice_uses_screen()
+        box.blockSignals(True)
+        box.setChecked(on_screen)
+        box.blockSignals(False)
+        box.setEnabled(can_pick)
+        if can_pick:
+            box.setToolTip(_ADVICE_SOURCE_TIP)
+        elif on_screen:
+            box.setToolTip("Steam 版沒有封包,AI 建議只能靠圖像辨識")
+        else:
+            box.setToolTip("這個模式只有一條路,沒有得選")
+
+    def _on_advice_source(self, on: bool) -> None:
+        """換來源。走畫面時畫面辨識會一併打開,所以開關要跟著重畫。"""
+        assert self._advice_source is not None
+        self._advice_source.set_advice_vision_only(on)
+        self._sync_switches()
+        self.apply(self._viewmodel.state)
 
     def _build_analysis_settings(self) -> None:
         """向聽分析頁的設定列:手動框選手牌範圍。
@@ -658,12 +721,20 @@ class PanelWindow(QMainWindow):
         self._build_canvas_settings(page, layout)
 
         layout.addWidget(_rule(page))
+        layout.addWidget(_section("AI 建議", page))
+        self._build_advice_source_settings(page, layout)
+
+        layout.addWidget(_rule(page))
         layout.addWidget(_section("放銃分析", page))
         self._build_danger_source_settings(page, layout)
 
         layout.addWidget(_rule(page))
         layout.addWidget(_section("Overlay", page))
         self._build_overlay_settings(page, layout)
+
+        layout.addWidget(_rule(page))
+        layout.addWidget(_section("事件流 Log", page))
+        self._build_log_settings(page, layout)
 
         layout.addStretch(1)
         return page
@@ -718,6 +789,7 @@ class PanelWindow(QMainWindow):
         value = self._platform_picker.itemData(index)
         if value is not None:
             self._platform.set_platform(str(value))
+        self._sync_advice_source()
         self._sync_switches()
         self.apply(self._viewmodel.state)
 
@@ -824,6 +896,35 @@ class PanelWindow(QMainWindow):
 
         self._sync_overlay_boxes(overlay.shown)
 
+    def _build_log_settings(self, page: QWidget, layout: QVBoxLayout) -> None:
+        """Log 視窗的兩個勾選。與 Overlay 無關,也不互相連動。"""
+        log = self._event_log
+        self._log_shown = QCheckBox("開啟 Log 視窗", page)
+        self._log_shown.setToolTip(
+            "獨立的浮動視窗,顯示 AI 建議吃到的事件流:中文說明加 MJAI 格式。\n"
+            "要開著 AI 建議才有內容。位置與大小會記住。"
+        )
+        self._log_locked = QCheckBox("鎖定 Log 位置(滑鼠可穿透)", page)
+        self._log_locked.setToolTip("鎖定之後捲不動,會一直跟著最新的事件")
+        if log is None:
+            for box in (self._log_shown, self._log_locked):
+                box.setEnabled(False)
+                box.setToolTip("這個模式沒有 Log 視窗")
+        else:
+            # 先設初始值再接訊號,理由見 _build_overlay_settings。
+            self._log_shown.setChecked(log.shown)
+            self._log_locked.setChecked(log.locked)
+            self._log_locked.setEnabled(log.shown)
+            self._log_shown.toggled.connect(self._on_log_shown)
+            self._log_locked.toggled.connect(log.set_locked)
+        layout.addWidget(self._log_shown)
+        layout.addWidget(self._log_locked)
+
+    def _on_log_shown(self, on: bool) -> None:
+        assert self._event_log is not None
+        self._event_log.set_shown(on)
+        self._log_locked.setEnabled(on)
+
     def _on_overlay_shown(self, on: bool) -> None:
         assert self._overlay is not None
         self._overlay.set_shown(on)
@@ -846,6 +947,8 @@ class PanelWindow(QMainWindow):
         """
         if self._overlay is not None:
             self._overlay.close()
+        if self._event_log is not None:
+            self._event_log.close()
         super().closeEvent(event)
 
     # ------------------------------------------------------------------ 事件

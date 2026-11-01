@@ -49,20 +49,32 @@ except ImportError:  # pragma: no cover
 _NORMAL_WINDOW_LAYER = 0
 
 
-def _list_options() -> int:
+def _list_options(*, everywhere: bool = False) -> int:
+    if everywhere:
+        return Quartz.kCGWindowListOptionAll | Quartz.kCGWindowListExcludeDesktopElements
     return Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements
 
 
-def list_windows(*, include_all: bool = False) -> list[WindowInfo]:
+def list_windows(*, include_all: bool = False, everywhere: bool = False) -> list[WindowInfo]:
     """列舉螢幕上的視窗。
 
     此函式獨立於後端類別之外,是為了讓 :mod:`~mia.capture.mss_fallback`
     能在 macOS 上重用同一套視窗列舉,而不必重複實作。
+
+    Args:
+        include_all: 連系統浮層一起列。
+        everywhere: 連其他桌面(Space)的視窗一起列。全螢幕的遊戲自己佔一個桌面,
+            在終端機那個桌面下指令時它不算「在螢幕上」,但照樣擷取得到。
     """
     if not _QUARTZ_AVAILABLE:
         return []
 
-    raw = Quartz.CGWindowListCopyWindowInfo(_list_options(), Quartz.kCGNullWindowID) or []
+    raw = (
+        Quartz.CGWindowListCopyWindowInfo(
+            _list_options(everywhere=everywhere), Quartz.kCGNullWindowID
+        )
+        or []
+    )
     windows: list[WindowInfo] = []
     for entry in raw:
         layer = int(entry.get("kCGWindowLayer", 0))
@@ -211,6 +223,9 @@ class MacOSCaptureBackend(CaptureBackend):
 
     def list_windows(self, *, include_all: bool = False) -> list[WindowInfo]:
         return list_windows(include_all=include_all)
+
+    def list_windows_everywhere(self) -> list[WindowInfo]:
+        return list_windows(everywhere=True)
 
     def capture(self, window: WindowInfo) -> Frame:
         self.ensure_permission()

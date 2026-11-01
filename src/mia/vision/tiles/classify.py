@@ -41,12 +41,15 @@
 
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
 import numpy as np
 
+from mia.utils.geometry import Rect
 from mia.utils.paths import ASSETS_DIR
 from mia.vision.tiles.hand import Hand
 
@@ -263,6 +266,7 @@ def classify(
     tile_height: int | None = None,
     size: tuple[int, int] | None = None,
     merge_red: bool = False,
+    labels: Collection[str] | None = None,
 ) -> Match:
     """判斷一張牌是什麼。
 
@@ -292,6 +296,7 @@ def classify(
 
             **只在赤五與普通五無差別的地方開。** 和牌算符要知道紅不紅,
             那裡不要開。
+        labels: 只比這幾種牌。``None`` 是全部。
 
     Returns:
         最像的牌與診斷資訊。**永遠會回傳一個結果**,不會拋錯 —— 用
@@ -315,6 +320,8 @@ def classify(
     best = ("", -2.0)
     best_at = (0, 0)
     for label, face in templates.scaled(size):
+        if labels is not None and label not in labels:
+            continue
         # minMaxLoc 要的是位置,不只是分數 —— 亮度檢查得知道贏家對在哪裡,
         # 才切得出真正拿去比的那一塊。成本相對 matchTemplate 可以忽略。
         _, score, _, at = cv2.minMaxLoc(cv2.matchTemplate(tile, face, cv2.TM_CCOEFF_NORMED))
@@ -404,12 +411,27 @@ def _same_tile(a: str, b: str) -> bool:
     return a.replace("0", "5") == b.replace("0", "5")
 
 
+#: 手牌牌框縮到多寬再比對。
+#:
+#: 每張牌要比 37 個模板,成本隨面積往上長。Steam 全螢幕的牌約 150 像素寬,一手要 0.8 秒,
+#: 而牌面在這個寬度就認得出來,再大只是多付錢。
+_HAND_WIDTH = 80
+
+#: ``memo`` 最多記幾格。一手 14 格,動畫中間的畫面也會進來,超過就整個清掉重來。
+_MEMO_LIMIT = 256
+
+
 def _median_grey(image: np.ndarray) -> float:
     return float(np.median(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)))
 
 
 def classify_hand(
-    roi: np.ndarray, hand: Hand, templates: TemplateSet, *, headroom: int = 0
+    roi: np.ndarray,
+    hand: Hand,
+    templates: TemplateSet,
+    *,
+    headroom: int = 0,
+    memo: dict[bytes, Match] | None = None,
 ) -> tuple[tuple[Match, ...], Match | None]:
     """一次判斷整手牌。
 
@@ -420,6 +442,8 @@ def classify_hand(
             **原本的 ROI**,這裡會自己加上 ``headroom`` 的偏移。
         templates: 模板集。
         headroom: 牌框上方額外的搜尋高度,單位是像素。
+        memo: 認過的牌框。呼叫端留著同一個 dict,摸牌時另外 13 張就不必重認,
+            只付新的那一張的錢,而那正是最急著要答案的時候。
 
     Returns:
         ``(暗手牌的比對結果, 摸牌那張的比對結果或 None)``。
@@ -436,19 +460,41 @@ def classify_hand(
         給了 headroom 之後,同一張牌在抬起狀態下的相關係數實測回到 0.99。
     """
     concealed = tuple(
-        classify(
-            roi[: headroom + box.y + box.height, box.x : box.x + box.width],
-            templates,
-            tile_height=box.height,
-        )
-        for box in hand.concealed
+        _classify_slot(roi, box, templates, headroom, memo) for box in hand.concealed
     )
     drawn = None
     if hand.drawn is not None:
-        box = hand.drawn
-        drawn = classify(
-            roi[: headroom + box.y + box.height, box.x : box.x + box.width],
-            templates,
-            tile_height=box.height,
-        )
+        drawn = _classify_slot(roi, hand.drawn, templates, headroom, memo)
     return concealed, drawn
+
+
+def _classify_slot(
+    roi: np.ndarray,
+    box: Rect,
+    templates: TemplateSet,
+    headroom: int,
+    memo: dict[bytes, Match] | None,
+) -> Match:
+    """認一格手牌。整格的像素沒變就直接用上次的答案。"""
+    crop = roi[: headroom + box.y + box.height, box.x : box.x + box.width]
+    key = None
+    if memo is not None:
+        key = hashlib.blake2b(crop.tobytes(), digest_size=16).digest()
+        known = memo.get(key)
+        if known is not None:
+            return known
+
+    height = box.height
+    if box.width > _HAND_WIDTH:
+        ratio = _HAND_WIDTH / box.width
+        height = round(box.height * ratio)
+        crop = cv2.resize(
+            crop, (_HAND_WIDTH, round(crop.shape[0] * ratio)), interpolation=cv2.INTER_AREA
+        )
+    match = classify(crop, templates, tile_height=height)
+
+    if memo is not None and key is not None:
+        if len(memo) >= _MEMO_LIMIT:
+            memo.clear()
+        memo[key] = match
+    return match

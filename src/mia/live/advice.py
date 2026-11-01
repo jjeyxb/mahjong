@@ -23,7 +23,7 @@ from collections.abc import Sequence
 from mia.config.models import RoiConfig
 from mia.engine.base import Advice, AIEngine, EngineError
 from mia.engine.multiplex import EngineGroup, GroupResult
-from mia.live.bus import Advices, UpdateBus, WorkerStatus
+from mia.live.bus import Advices, EventStream, UpdateBus, WorkerStatus
 from mia.live.table import TableLink, TableWorker
 from mia.mjai.events import EndKyoku, MjaiEvent, StartGame
 from mia.tracker import Stream
@@ -32,8 +32,8 @@ from mia.vision.tiles.classify import DEFAULT_SKIN
 
 __all__ = ["StreamFeeder", "VisionAdviceWorker"]
 
-#: 多久看一次有沒有新的事件流。牌桌那條路一秒更新一次,這裡只要不拖到它。
-_POLL = 0.1
+#: 沒有新的事件流時最多等多久再看一次要不要停。有新的會馬上被叫醒。
+_IDLE = 0.5
 
 #: 畫面這條路的自己永遠是 0:座位是依視角算的,見 :class:`~mia.live.table.TableWorker`。
 _OWN_SEAT = 0
@@ -114,6 +114,7 @@ class VisionAdviceWorker(threading.Thread):
         self._link = link
         self._lock = threading.Lock()
         self._latest: tuple[int, Stream] | None = None
+        self._fresh = threading.Event()
         self._stop = threading.Event()
         # 危險度投到自己的郵箱:這一條只要事件流,放銃分析有自己的開關。
         self._table = TableWorker(
@@ -125,9 +126,11 @@ class VisionAdviceWorker(threading.Thread):
     def _offer(self, kyoku: int, stream: Stream) -> None:
         with self._lock:
             self._latest = (kyoku, stream)
+        self._fresh.set()
 
     def stop(self) -> None:
         self._stop.set()
+        self._fresh.set()
 
     def run(self) -> None:
         self.status.alive = True
@@ -152,7 +155,9 @@ class VisionAdviceWorker(threading.Thread):
         self._link.attach(self._table)
         self._table.start()
         self.status.say("等待對局開始")
-        while not self._stop.wait(_POLL):
+        while not self._stop.is_set():
+            self._fresh.wait(_IDLE)
+            self._fresh.clear()
             with self._lock:
                 latest = self._latest
                 self._latest = None
@@ -160,6 +165,7 @@ class VisionAdviceWorker(threading.Thread):
                 self._feed(*latest)
 
     def _feed(self, kyoku: int, stream: Stream) -> None:
+        self._log(stream)
         if stream.doubt is not None:
             # **要閉嘴。** 拿著對不上的局面給建議比沒有建議糟:使用者會照著打。
             self.status.say(f"事件流對不上,先不給建議:{stream.doubt}")
@@ -174,6 +180,12 @@ class VisionAdviceWorker(threading.Thread):
         if result.decisions:
             self.decisions += 1
             self._bus.post(Advices(self._group.resolve_follow_ups(result).advices))
+
+    def _log(self, stream: Stream) -> None:
+        """給 Log 視窗。對不上而不給建議時更要看得到,所以排在判斷之前。"""
+        if stream.events:
+            note = stream.doubt or ("等手牌" if stream.stalled else "")
+            self._bus.post(EventStream(self.SOURCE, _OWN_SEAT, stream.events, note))
 
     def __repr__(self) -> str:
         return (

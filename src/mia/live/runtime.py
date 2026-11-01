@@ -38,10 +38,19 @@ from mia import features
 from mia.calibration.canvas import CanvasChoice
 from mia.engine.base import EngineError
 from mia.engine.styles import StyleChoice
-from mia.features import NAMES, DangerSourceChoice
-from mia.live.bus import Advices, CvHand, Dangers, PacketHand, UpdateBus, WorkerStatus
+from mia.features import NAMES, AdviceSourceChoice, DangerSourceChoice
+from mia.live.bus import (
+    Advices,
+    CvHand,
+    Dangers,
+    EventStream,
+    PacketHand,
+    UpdateBus,
+    WorkerStatus,
+)
 from mia.live.source import CaptureLauncher
 from mia.platforms import WEB, PlatformChoice
+from mia.ui.eventlog import EventLog
 from mia.ui.viewmodel import ViewModel
 from mia.utils.logging import logger
 
@@ -163,6 +172,8 @@ class LiveRuntime:
         style: StyleChoice | None = None,
         platform: PlatformChoice | None = None,
         danger_source: DangerSourceChoice | None = None,
+        advice_source: AdviceSourceChoice | None = None,
+        event_log: EventLog | None = None,
     ) -> None:
         self._viewmodel = viewmodel
         self._bus = bus
@@ -172,6 +183,8 @@ class LiveRuntime:
         self._style = style
         self._platform = platform if platform is not None else PlatformChoice()
         self._danger_source = danger_source
+        self._advice_source = advice_source
+        self._event_log = event_log
         self._running = False
         #: 最近一次「功能起不來」的理由。見 :meth:`_enable`。
         self._failure: str | None = None
@@ -286,6 +299,32 @@ class LiveRuntime:
             return
         logger.info("放銃分析改走{}那條路", "純畫面" if on else "封包")
         self._restart(features.DANGER)
+        self.pump()
+
+    # ------------------------------------------------------- AI 建議走哪條路
+
+    def can_pick_advice_source(self) -> bool:
+        """有沒有得選。Steam 版沒有封包,``--no-vision`` 沒有畫面,都只剩一條。"""
+        return (
+            self._advice_source is not None
+            and features.ADVICE in self._features
+            and features.VISION in self._features
+            and self._platform.value == WEB
+        )
+
+    def advice_vision_only(self) -> bool:
+        return self._advice_source is not None and self._advice_source.vision_only
+
+    def advice_uses_screen(self) -> bool:
+        """AI 建議現在走不走畫面。Steam 版沒勾也走畫面。"""
+        return self._platform.value != WEB or self.advice_vision_only()
+
+    def set_advice_vision_only(self, on: bool) -> None:
+        """改走哪一條路。與 :meth:`set_danger_vision_only` 同一個形狀。"""
+        if self._advice_source is None or not self._advice_source.set(on):
+            return
+        logger.info("AI 建議改走{}那條路", "圖像辨識" if on else "封包")
+        self._restart(features.ADVICE)
         self.pump()
 
     def game_running(self) -> bool:
@@ -428,6 +467,8 @@ class LiveRuntime:
         feature.disable()
         self._clear_output(key)
         self._enable(feature)
+        # 重開之後可能換了一條路,新的那條要靠畫面。
+        self._ensure_vision_for(feature)
 
     def _enable(self, feature: Feature) -> None:
         """開一個功能,並接住「根本起不來」。
@@ -562,6 +603,8 @@ class LiveRuntime:
             elif key == features.ADVICE:
                 self._viewmodel.update_packet_hand(())
                 self._viewmodel.update_advices([])
+                if self._event_log is not None:
+                    self._event_log.clear()
             elif key == features.DANGER:
                 # None 而不是空報告:「沒有這份資訊」與「算過了但沒有危險」
                 # 是兩件事,而後者會讓人以為現在很安全
@@ -601,6 +644,11 @@ class LiveRuntime:
                         self._viewmodel.update_advices(update.advices)
                     case Dangers():
                         self._viewmodel.update_dangers(update.report, update.seen)
+                    case EventStream():
+                        if self._event_log is not None:
+                            self._event_log.update(
+                                update.source, update.seat, update.events, update.note
+                            )
             self._sync_notices()
 
     def _settle_capture(self) -> None:

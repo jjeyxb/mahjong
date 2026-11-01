@@ -30,8 +30,9 @@ from dataclasses import dataclass, field
 
 from mia.analysis.danger import DangerReport
 from mia.engine.base import Advice
+from mia.mjai.events import MjaiEvent
 
-__all__ = ["Advices", "CvHand", "Dangers", "PacketHand", "Update", "UpdateBus"]
+__all__ = ["Advices", "CvHand", "Dangers", "EventStream", "PacketHand", "Update", "UpdateBus"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,7 +85,27 @@ class Dangers:
     seen: Mapping[str, int] | None = None
 
 
-Update = CvHand | PacketHand | Advices | Dangers
+@dataclass(frozen=True, slots=True)
+class EventStream:
+    """AI 建議這一局吃到的事件流。Log 視窗用。
+
+    是**這一局到目前的全部**,不是新增的那幾則:每個 slot 只留最新一筆,而畫面那條路
+    的事件流會被改寫。見 :mod:`mia.ui.eventlog`。
+
+    Attributes:
+        source: 從哪來,「封包」或「圖像辨識」。
+        seat: 自己坐哪。畫面那條路的座位已經是依視角,所以是 0。
+        events: 事件。
+        note: 事件流現在有什麼狀況,沒有就是空的。
+    """
+
+    source: str
+    seat: int | None
+    events: tuple[MjaiEvent, ...]
+    note: str = ""
+
+
+Update = CvHand | PacketHand | Advices | Dangers | EventStream
 
 
 @dataclass

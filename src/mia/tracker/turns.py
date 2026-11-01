@@ -20,9 +20,9 @@
 ``s`` 是下家          1 以上      正常摸打
 ``s`` 是下家          0,有副露   ``s`` 吃
 ``s`` 是下家          2,有副露   暗槓:摸、槓、嶺上
-``s`` 不是下家        0           ``s`` 鳴了 ``a`` 的牌
+``s`` 不是下家        0           ``s`` 鳴了 ``a`` 的牌,沒有副露紀錄也一樣
 ``s`` 不是下家        1 以上      中間有人摸打,**那張一打出就被鳴走**
-``s`` 槓了別人的牌    1 以上      大明槓:鳴、嶺上、打
+``s`` 槓了別人的牌    0 以上      大明槓:鳴、嶺上、打
 ====================  ==========  ================================
 
 槓靠副露長度分:碰與吃是 1.0 個組長,槓至少 1.13。``unseen`` 分不開「大明槓的嶺上」
@@ -33,8 +33,9 @@
 **余牌要看上一輪的。** 牌出現在第 ``t - 1`` 與 ``t`` 輪之間,而它下家的摸牌至少
 再晚半秒,常常落在同一輪 —— 看第 ``t`` 輪就會多算一張。
 
-沒交代的摸牌會累積(加槓看不見,但嶺上會讓余牌多減一張),所以正常摸打時
-把差額吸收掉,不讓一次的誤差變成之後每次都多補一張。
+沒交代的摸牌會累積(加槓不變長,只有嶺上讓余牌多減一張),所以正常摸打時把差額吸收
+掉,不讓一次的誤差變成之後每次都多補一張。加槓本身由 :mod:`mia.tracker.stream` 從寶牌
+補回來:真人打得快時,那一張差額要晚兩三手才反映在余牌上,這裡分不出是誰。
 
 什麼時候要等
 ------------
@@ -72,7 +73,10 @@ _SEATS = 4
 #: 等副露最多幾輪。副露確認比鳴牌晚 2 ~ 4 秒,而捨牌本身也比鳴牌晚一兩秒。
 WAIT = 4
 
-#: 副露紀錄最多比它對應的捨牌早幾輪。太舊的是之前的鳴牌,不是這一張的。
+#: 副露紀錄最多比**上一張捨牌**早幾輪。再舊的是之前的鳴牌,不是這一張的。
+#:
+#: 不能拿這一張捨牌來比:鳴完之後要想多久沒有上限。CPU 馬上打,真人想十幾秒,
+#: 實測那些副露全被當成太舊,排成一次不存在的摸打。
 _MELD_BEFORE = 4
 
 
@@ -129,10 +133,16 @@ class TurnTracker:
     oya: int
     drawn: int = 0
     last: int = field(init=False)
+    #: 多讀出來的格子 ``(誰, 第幾張)`` → 它其實是第幾張。立直記的可能是這一格。
+    doubled: dict[tuple[int, int], int] = field(default_factory=dict)
     _queue: list[_Pending] = field(default_factory=list, repr=False)
     _melds: list[tuple[int, int, bool]] = field(default_factory=list, repr=False)
     _wall: int | None = field(default=None, repr=False)
     _wall_tick: int = field(default=-1, repr=False)
+    _last_tick: int = field(default=0, repr=False)
+    _last_serial: int | None = field(default=None, repr=False)
+    #: 已經排出去、副露紀錄還沒到的鳴牌,依座位。
+    _owed: list[int] = field(default_factory=lambda: [0] * _SEATS, repr=False)
 
     def __post_init__(self) -> None:
         self.last = (self.oya - 1) % _SEATS
@@ -158,7 +168,11 @@ class TurnTracker:
             hurry: 輪到自己了,不必再等。見模組說明。
             kans: ``melds`` 裡寬度是槓的那幾家。
         """
-        self._melds += [(tick, seat, seat in kans) for seat in melds]
+        for seat in melds:
+            if self._owed[seat]:
+                self._owed[seat] -= 1
+            else:
+                self._melds.append((tick, seat, seat in kans))
         # 同一輪的並列照輪替排:誰離上一個打的人最近,誰先。
         anchor = self._queue[-1].actor if self._queue else self.last
         for seat, pai, *rest in sorted(discards, key=lambda d: self._distance(anchor, d[0])):
@@ -178,7 +192,19 @@ class TurnTracker:
             if steps:
                 out += steps
                 self.last = item.actor
+                self._last_tick = item.tick
+                self._last_serial = item.serial
         return out
+
+    @property
+    def next_up(self) -> Step | None:
+        """還沒排定、但確定是下一張的捨牌。見 :mod:`mia.tracker.stream`「還沒排定的捨牌」。"""
+        if not self._queue:
+            return None
+        head = self._queue[0]
+        if head.pai is None or head.actor == 0 or head.actor != (self.last + 1) % _SEATS:
+            return None
+        return Step(Action.DAHAI, head.actor, head.pai, head.guess, serial=head.serial)
 
     def _restore_turn(self) -> None:
         """排頭跳家又沒有副露,而該輪到的那一家就在後面:河晚到了,換回來。"""
@@ -197,15 +223,31 @@ class TurnTracker:
     def _distance(anchor: int, seat: int) -> int:
         return (seat - anchor - 1) % _SEATS
 
+    def _meld_since(self, tick: int) -> int:
+        """這一輪的捨牌,副露最早可以記在哪一輪。"""
+        return min(tick, self._last_tick) - _MELD_BEFORE
+
     def _take_meld(self, seat: int, tick: int) -> tuple[int, int, bool] | None:
         for entry in self._melds:
-            if entry[1] == seat and entry[0] >= tick - _MELD_BEFORE:
+            if entry[1] == seat and entry[0] >= self._meld_since(tick):
                 self._melds.remove(entry)
                 return entry
         return None
 
     def _has_meld(self, seat: int, tick: int) -> bool:
-        return any(s == seat and t >= tick - _MELD_BEFORE for t, s, _ in self._melds)
+        since = self._meld_since(tick)
+        return any(s == seat and t >= since for t, s, _ in self._melds)
+
+    def _kan_called(self, seat: int, tick: int) -> bool:
+        """``seat`` 有一組寬度是槓的副露還沒排出去。"""
+        since = self._meld_since(tick)
+        return any(s == seat and t >= since and kan for t, s, kan in self._melds)
+
+    def _skipped_seat_called(self, seat: int, tick: int) -> bool:
+        """被跳過的那幾家有人鳴牌:跳家是它造成的,不是 ``seat`` 鳴的。"""
+        lost = (seat - self.last - 1) % _SEATS
+        skipped = {(self.last + 1 + offset) % _SEATS for offset in range(lost)}
+        return any(self._has_meld(other, tick) for other in skipped)
 
     def _resolve(self, item: _Pending, now: int) -> list[Step] | None:
         """這張牌之前發生了什麼。還不能確定就回 ``None``。"""
@@ -213,15 +255,21 @@ class TurnTracker:
         known = _FULL_WALL - self.drawn if item.wall is None else item.wall
         unseen = _FULL_WALL - self.drawn - known
         drop = Step(Action.DAHAI, seat, item.pai, item.guess, serial=item.serial)
+        if seat == self.last and self.drawn and unseen <= 0:
+            # 同一家沒摸牌又打一張,不可能。橫放的宣言牌比一格寬,實測被讀成兩張。
+            if item.serial is not None and self._last_serial is not None:
+                self.doubled[seat, item.serial] = self._last_serial
+            return []
         following = seat == (self.last + 1) % _SEATS
-        if following and unseen == 1:
+        # 下家大明槓也是余牌減一張,長得跟摸打一樣,只有副露的寬度分得開。
+        if following and unseen == 1 and not self._kan_called(seat, item.tick):
             self.drawn += 1
             return [Step(Action.TSUMO, seat), drop]
         if not self._has_meld(seat, item.tick) and now - item.tick < WAIT:
             return None
         meld = self._take_meld(seat, item.tick)
         if meld is not None:
-            if meld[2] and (not following or unseen == 1):
+            if meld[2] and (not following or unseen <= 1):
                 return self._open_kan(seat, unseen, drop)
             if not following:
                 # 第一張就被鳴走:桌上還沒有牌,一定是莊家打的,而開局沒有上一輪
@@ -242,6 +290,17 @@ class TurnTracker:
             # 這張牌之後余牌都沒讀到:不知道有沒有摸,不能說它是假的。實測網頁版有一段
             # 余牌整段讀不到,局的後半全部被這樣丟掉。
             behind = 1
+        elif (
+            not following
+            and unseen <= 0
+            and behind - (len(self._queue) - 1) <= 1
+            and not self._skipped_seat_called(seat, item.tick)
+        ):
+            # 跳家、打之前沒有人摸牌,之後只減了下一家的那一張:只可能是鳴牌。副露晚到而已,
+            # 鳴完打牌之後馬上輪到自己時,副露還沒確認就得排出來。減得比這更多的話,是一輪
+            # 湧進好幾張、余牌來不及更新,這時候 ``unseen`` 不可信,中間其實有人摸過。
+            self._owed[seat] += 1
+            return [Step(Action.CALL, seat, target=self.last), drop]
         if not following:
             # 跳家卻沒有副露,而余牌有減:中間漏看了。補上再接回去,不然 last 停在
             # 原地,之後每一張都變成「跳家且沒有副露」,整局後面一路被丟。
@@ -249,7 +308,9 @@ class TurnTracker:
             steps = self._hidden(seat, min(lost, max(behind - 1, 0)))
             self.drawn += 1
             return [*steps, Step(Action.TSUMO, seat), drop]
-        self.drawn += max(1, unseen)
+        # 佇列裡後面那幾張的摸牌也算在差額裡,要留給它們。全部吸收的話會多算,之後每一張
+        # 看起來都沒人摸,真的捨牌就被當成假的丟掉。
+        self.drawn += max(1, unseen - (len(self._queue) - 1))
         return [Step(Action.TSUMO, seat), drop]
 
     def _open_kan(self, seat: int, unseen: int, drop: Step) -> list[Step]:

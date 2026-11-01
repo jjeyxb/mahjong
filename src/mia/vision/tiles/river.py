@@ -32,7 +32,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 
 import cv2
@@ -97,6 +97,12 @@ CELL = (90, 120)
 #: ⚠ 只決定**模板**的大小。「這一格有沒有牌」看的是 :data:`_OCCUPANCY_FACE`,
 #: 刻意不跟著動:張數判斷沒有問題,改它只會冒險。
 FACE = (0.71, 0.77)
+
+#: 這幾家的牌面比 :data:`FACE` 高幾倍。
+#:
+#: 對家離鏡頭最遠,攤平時被拉長。高度 92 → 104 平均分數網頁版 0.76 → 0.82、Steam 全螢幕
+#: 0.67 → 0.80,Steam 有把握的格子 387 → 523 / 600。用 92 時實測四萬被認成中。
+_TALLER = {"toimen": 1.13}
 
 #: 認牌時搜尋窗往格子**下方**多看幾像素(以 :data:`CELL` 的高度為準)。
 #:
@@ -378,9 +384,15 @@ DEFAULT_CORNERS: dict[str, RiverView] = {
 }
 
 
-def face_size(cell: tuple[int, int] = CELL) -> tuple[int, int]:
-    """模板該縮到多大。傳給 :func:`~mia.vision.tiles.classify.classify` 的 ``size``。"""
-    return round(FACE[0] * cell[0]), round(FACE[1] * cell[1])
+def face_size(cell: tuple[int, int] = CELL, *, seat: str | None = None) -> tuple[int, int]:
+    """模板該縮到多大。傳給 :func:`~mia.vision.tiles.classify.classify` 的 ``size``。
+
+    Args:
+        cell: 一格多大。
+        seat: 哪一家。對家攤平之後牌面比較高,見 :data:`_TALLER`。
+    """
+    height = round(FACE[1] * cell[1]) * _TALLER.get(seat or "", 1.0)
+    return round(FACE[0] * cell[0]), round(height)
 
 
 def _below(cell: tuple[int, int]) -> int:
@@ -442,7 +454,11 @@ CHECK_FACE_HEIGHT = 0.77 * 0.73 / 0.70
 
 
 def classify_river_tile(
-    cell: np.ndarray, templates: TemplateSet, *, size: tuple[int, int] | None = None
+    cell: np.ndarray,
+    templates: TemplateSet,
+    *,
+    size: tuple[int, int] | None = None,
+    labels: Collection[str] | None = None,
 ) -> Match:
     """認一格牌河的牌,並用第二個模板尺度覆核。
 
@@ -451,6 +467,7 @@ def classify_river_tile(
             對齊是 :func:`cv2.matchTemplate` 的工作)。
         templates: 牌面模板集。
         size: 主要的模板尺寸,預設 :func:`face_size`。
+        labels: 只比這幾種牌。``None`` 是全部。
 
     Returns:
         與 :func:`~mia.vision.tiles.classify.classify` 同樣的 ``Match``。
@@ -464,13 +481,13 @@ def classify_river_tile(
     width, height = size if size is not None else face_size()
     # merge_red:牌河裡赤五與普通五完全等價(振聽、筋都看普通五),所以
     # 「次高是自己的紅版本」不構成歧義。見 classify 的 merge_red 說明。
-    best = classify(cell, templates, size=(width, height), merge_red=True)
+    best = classify(cell, templates, size=(width, height), merge_red=True, labels=labels)
     # 用比例換算而不是直接乘 CELL —— 呼叫端給的 size 可能來自別的格子大小,
     # 那時候硬套 CELL 會讓兩個尺度的相對關係跑掉。
     check_height = round(height * CHECK_FACE_HEIGHT / FACE[1])
     if check_height == height:
         return best
-    other = classify(cell, templates, size=(width, check_height), merge_red=True)
+    other = classify(cell, templates, size=(width, check_height), merge_red=True, labels=labels)
     if other.label == best.label:
         return best
     return Match(

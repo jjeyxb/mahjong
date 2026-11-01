@@ -200,6 +200,10 @@ class CaptureBackend(ABC):
                 控制中心那類系統浮層)。設為 True 則不過濾,除錯時用。
         """
 
+    def list_windows_everywhere(self) -> list[WindowInfo]:
+        """連看不到的視窗一起列。只有 macOS 分桌面,其他平台與 :meth:`list_windows` 相同。"""
+        return self.list_windows()
+
     @abstractmethod
     def capture(self, window: WindowInfo) -> Frame:
         """擷取指定視窗。
@@ -309,6 +313,9 @@ class CaptureBackend(ABC):
         依 :meth:`score_window` 評分排序,同分時取面積最大的
         —— 遊戲視窗通常是同類候選中最大的那個。
 
+        眼前的桌面找不到才找其他桌面:Mac 的全螢幕遊戲自己佔一個桌面,而開 MIA 的
+        時候人多半在另一個桌面。順序不能反,兩邊都有候選時要選看得到的那個。
+
         Args:
             host: 目標在不在瀏覽器裡(:data:`HOST_REQUIRE` / :data:`HOST_EXCLUDE`)。
                 兩版同時開著時這是唯一分得開的判據。
@@ -317,13 +324,17 @@ class CaptureBackend(ABC):
             WindowNotFoundError: 沒有候選。錯誤訊息會附上實際看到的視窗清單,
                 方便直接判斷是 pattern 寫錯還是遊戲根本沒開。
         """
+
+        def candidates_in(listed: list[WindowInfo]) -> list[tuple[int, WindowInfo]]:
+            scored = [
+                (self.score_window(w, title_patterns, owner_patterns, host_patterns, host), w)
+                for w in listed
+                if w.bounds.width >= min_width and w.bounds.height >= min_height
+            ]
+            return [(s, w) for s, w in scored if s > 0]
+
         windows = self.list_windows()
-        scored = [
-            (self.score_window(w, title_patterns, owner_patterns, host_patterns, host), w)
-            for w in windows
-            if w.bounds.width >= min_width and w.bounds.height >= min_height
-        ]
-        candidates = [(s, w) for s, w in scored if s > 0]
+        candidates = candidates_in(windows) or candidates_in(self.list_windows_everywhere())
         if not candidates:
             seen = "\n".join(f"    {w}" for w in windows) or "    (沒有任何可擷取的視窗)"
             raise WindowNotFoundError(
