@@ -36,12 +36,20 @@
 * :attr:`KyokuSignal.STARTED` —— 新的一局真的開始了(第一張牌出現)。
   **宣告新局要等到這裡**,因為對局結束後的空桌也會給 ``ENDED``,
   而那之後沒有牌跟上來(實測連續四十秒的「零張、四家連續」)。
+
+桌面空了不一定是換局
+--------------------
+**第一張牌被鳴走時,四家的河也是全空的。** 實測東 3 局:上家第一張 9 索被自己碰走,張數從
+1 掉到 0,四家連續,於是整局的配牌與進度全被清掉,那一局 95 秒只排出 3 個事件。
+
+分得開的是 HUD:鳴牌不會改局數,換局一定會改(局或本場)。所以呼叫端可以告訴這裡 ``taken``,
+意思是「局數本場沒變」。而一次鳴牌只拿得走一張,桌上有兩張以上就空了,那一定是換局。
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 from mia.vision.tiles.river import River
@@ -77,13 +85,16 @@ class KyokuWatcher:
 
     empty: bool = True
     started: int = 0
+    #: 上一次四家都連續時桌上有幾張。動畫中的假牌不算。
+    _last: int = field(default=0, repr=False)
 
-    def observe(self, rivers: Sequence[River]) -> KyokuSignal:
+    def observe(self, rivers: Sequence[River], *, taken: bool = False) -> KyokuSignal:
         """收一次觀察。
 
         Args:
             rivers: 四家的牌河,:func:`~mia.vision.tiles.river.read_river`
                 的輸出。順序不重要 —— 這裡只看總量與連續性。
+            taken: 局數本場沒有變。見模組說明的「桌面空了不一定是換局」。
 
         Returns:
             見 :class:`KyokuSignal`。``ENDED`` 與 ``STARTED`` 各自只在
@@ -92,8 +103,10 @@ class KyokuWatcher:
         total = sum(river.count for river in rivers)
         consistent = all(river.is_plausible() for river in rivers)
 
+        last, self._last = self._last, total if consistent else self._last
+
         if total == 0 and consistent:
-            if self.empty:
+            if self.empty or (taken and last <= 1):
                 return KyokuSignal.NONE
             self.empty = True
             return KyokuSignal.ENDED
@@ -112,3 +125,4 @@ class KyokuWatcher:
         """回到「還沒看過任何東西」。"""
         self.empty = True
         self.started = 0
+        self._last = 0

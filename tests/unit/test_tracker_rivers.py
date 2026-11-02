@@ -269,6 +269,21 @@ class TestUnknownIsDeferredNotDropped:
         assert watcher.rivers[0] == ["1m"]
 
 
+class TestRevise:
+    def test_a_read_from_the_animation_is_replaced(self) -> None:
+        watcher = RiverWatcher()
+        watcher.observe(0, ["1m", "P"])
+        watcher.revise(0, 1, "2m")
+        assert watcher.rivers[0] == ["1m", "2m"]
+        assert watcher.observe(0, ["1m", "2m"]) == []
+
+    def test_a_cell_that_is_gone_is_left_alone(self) -> None:
+        watcher = RiverWatcher()
+        watcher.observe(0, ["1m"])
+        watcher.revise(0, 5, "2m")
+        assert watcher.rivers[0] == ["1m"]
+
+
 class TestItRefusesToGuess:
     def test_an_impossible_jump_is_dropped(self) -> None:
         """看不懂就整筆丟掉 —— 少發一個只是延後,猜錯會污染整條事件流。"""

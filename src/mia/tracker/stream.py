@@ -48,6 +48,15 @@ TurnTracker 是捨牌驅動的,打出去才排得出那一手。但 Mortal 要�
 他是摸打還是吃完打的,自己都能吃碰它,而吃碰的按鈕只亮幾秒。所以 :attr:`KyokuLog.next_up`
 先接在尾巴上問 Mortal。之後排出來的不一樣,下一輪重算就改掉了。
 
+手牌與排序對不上時
+------------------
+上面每一步都要手牌與排序器說同一件事。兩邊分歧的方式很多(漏讀一副手牌、鳴牌太快、牌認錯),
+一種一種補永遠補不完,而沒補到的那種會讓事件流停到局尾,建議就沒了。
+
+但 Mortal 要的是**現在的局面**,不是歷史:手牌對、河對、余牌對,就算過去的摸打不完全對,答案也
+差不多。所以分歧持續一陣子之後,:func:`resynced` 用畫面上現在的手牌與河重寫自己的動作:配牌換成
+推回去的手牌,之前每一手當成摸切。摸切與手切的標記會失真,其他都是真的,這比沒有建議好得多。
+
 不需要的事件
 ------------
 ``Hora`` / ``Ryukyoku`` 對 Mortal 沒有作用:狀態機直接略過,下一個 ``start_kyoku``
@@ -79,7 +88,7 @@ from mia.tracker.hand import Move, OwnMove
 from mia.tracker.turns import Action, Step
 from mia.vision.hud import Hud
 
-__all__ = ["KyokuLog", "Stream", "compose"]
+__all__ = ["KyokuLog", "Stream", "compose", "resynced"]
 
 _SEATS = 4
 _COPIES = 4
@@ -169,12 +178,64 @@ def compose(log: KyokuLog) -> Stream:
     return _Composer(log).run()
 
 
+def resynced(
+    log: KyokuLog, tiles: Iterable[str], drawn: str | None
+) -> tuple[tuple[str, ...], list[OwnMove]] | None:
+    """以畫面上現在的手牌為準,重寫配牌與自己的動作。見模組說明。
+
+    Args:
+        log: 這一局到目前為止知道的一切。
+        tiles: 現在手上的牌,含 ``drawn``。
+        drawn: 其中剛摸到的那張。
+
+    Returns:
+        ``(配牌, 動作)``。湊不出 13 張配牌回 ``None``:手牌與排序器連張數都對不上,硬寫只會更亂。
+    """
+    hand = list(tiles)
+    if drawn is not None:
+        if drawn not in hand:
+            return None
+        hand.remove(drawn)
+    calls = [move for move in log.moves if move.move is Move.CALL]
+    moves: list[OwnMove] = []
+    spent: list[str] = []
+    drew = False
+    discards = sum(move.move is Move.DISCARD for move in log.moves)
+    for step in _Composer(log, discards=discards).steps:
+        if step.actor != 0:
+            continue
+        if step.action is Action.TSUMO:
+            drew = True
+        elif step.action is Action.CALL:
+            if not calls:
+                return None
+            moves.append(calls.pop(0))
+            spent += moves[-1].tiles
+            drew = False
+        else:
+            pai = step.pai or step.guess
+            if pai is None:
+                return None
+            if drew:
+                moves += [OwnMove(Move.DRAW, (pai,)), OwnMove(Move.DISCARD, (pai,), tsumogiri=True)]
+            else:
+                moves.append(OwnMove(Move.DISCARD, (pai,)))
+                spent.append(pai)
+            drew = False
+    if drawn is not None:
+        moves.append(OwnMove(Move.DRAW, (drawn,)))
+    tehai = (*hand, *spent)
+    return (tehai, moves) if len(tehai) == 13 else None
+
+
 class _Composer:
-    def __init__(self, log: KyokuLog) -> None:
+    def __init__(self, log: KyokuLog, *, discards: int | None = None) -> None:
         self.log = log
-        discards = sum(move.move is Move.DISCARD for move in log.moves)
-        self.steps = _without_phantom_turns(
-            [self._updated(step) for step in log.steps], discards
+        if discards is None:
+            discards = sum(move.move is Move.DISCARD for move in log.moves)
+        self.steps = _without_phantom_ankans(
+            _without_phantom_turns([self._updated(step) for step in log.steps], discards),
+            len(log.doras) - 1,
         )
         self.left = self._budget()
         self.events: list[MjaiEvent] = []
@@ -187,6 +248,8 @@ class _Composer:
         self.doras, self.loose = self._timed_doras()
         self.forced = 0
         self.stalled = False
+        #: 最後打出來的那張,河裡是有把握讀到的。
+        self.sure = False
 
     def _timed_doras(self) -> tuple[list[tuple[int, str]], list[tuple[int, str]]]:
         """每張槓寶牌該接在哪裡,分成看得到是誰槓的,與看不到的(加槓)。
@@ -311,6 +374,8 @@ class _Composer:
             self.events.append(Tsumo(actor=step.actor, pai=UNKNOWN))
             self._added_kan(step.actor, index)
             return True
+        if self.moves and self.moves[0].move is Move.CALL and len(self.moves[0].tiles) == 2:
+            return self._call_for_draw()
         unseen = self._unseen_turn(index)
         if self.moves and self.moves[0].move is Move.DRAW and not unseen:
             self.events.append(Tsumo(actor=0, pai=self.moves.pop(0).tiles[0]))
@@ -328,6 +393,20 @@ class _Composer:
         self.unmatched -= 1
         self.events.append(Tsumo(actor=0, pai=pai))
         self.moves.insert(0, OwnMove(Move.DISCARD, (pai,), tsumogiri=True))
+        return True
+
+    def _call_for_draw(self) -> bool:
+        """排序器說自己摸牌,手牌說鳴牌:聽手牌的。
+
+        鳴完打得快時副露還沒確認,排序器只看到河裡多一張,排成摸打。步驟排出去就不會改了,不接上
+        的話事件流從這裡停到局尾。
+        """
+        call = self._own_call(self.moves[0])
+        if call is None:
+            return False
+        self.moves.pop(0)
+        self.unmatched -= 1
+        self.events.append(call)
         return True
 
     def _unseen_turn(self, index: int) -> bool:
@@ -372,9 +451,9 @@ class _Composer:
             move = self.moves.pop(0)
             self.events.append(Dahai(actor=0, pai=move.tiles[0], tsumogiri=move.tsumogiri))
         else:
-            self.events.append(
-                Dahai(actor=step.actor, pai=self._discarded(step), tsumogiri=False)
-            )
+            pai = self._discarded(step)
+            self.sure = step.pai is not None and normalize_red(step.pai) == normalize_red(pai)
+            self.events.append(Dahai(actor=step.actor, pai=pai, tsumogiri=False))
         if reached:
             self.events.append(ReachAccepted(actor=step.actor))
         return True
@@ -418,7 +497,13 @@ class _Composer:
     def _call(self, step: Step) -> bool:
         if step.actor == 0:
             if not (self.moves and self.moves[0].move is Move.CALL):
-                return False
+                # 手牌沒有鳴牌,這一步是排序器推出來的:順序亂掉時,自己打牌看起來像跳家。自己的
+                # 動作聽手牌的:手牌接下來是摸牌,這一步就是摸牌。手牌只是還沒跟上的話,下一輪重算
+                # 就接得上。
+                if self.moves and self.moves[0].move is Move.DRAW:
+                    self.unmatched += 1
+                    self.events.append(Tsumo(actor=0, pai=self.moves.pop(0).tiles[0]))
+                return True
             call = self._own_call(self.moves[0])
             if call is None:
                 return False
@@ -437,6 +522,7 @@ class _Composer:
             # 被鳴的那張還沒排出來,可能是自己打的、手牌還沒跟上。
             return False
         step = self._unseen_call(step, known)
+        known = self._agreeing(known)
         red_suits = self.log.meld_reds.get((step.actor, index), frozenset())
         self.events.append(
             self._open_kan(step, known)
@@ -444,6 +530,25 @@ class _Composer:
             else self._with_red(self._open_meld(step, known), red_suits)
         )
         return True
+
+    def _agreeing(self, known: list[str]) -> list[str]:
+        """牌面與河裡有把握的那張湊不成一組:牌面讀錯了。
+
+        被鳴的牌一定在這一組裡,而橫放的它常常認不到,所以看的是湊不湊得起來,不是有沒有認到它。
+        河裡有把握的牌實測 99.7% 是對的,副露的牌面小而且斜,反過來才對:實測 5 索吃進來被牌面讀成
+        三張 2 索,整組變成碰,還把河裡那張改掉。
+        """
+        event = self.events[self._last_dahai()]
+        assert isinstance(event, Dahai)
+        if not self.sure or event.actor == 0:
+            return known
+        plain = normalize_red(event.pai)
+        tiles = {normalize_red(tile) for tile in known}
+        if tiles <= {plain}:
+            return known
+        if plain in HONOR_ORDER or not any(tiles <= set(run) for run in _runs_with(plain)):
+            return []
+        return known
 
     def _added_kan(self, actor: int, index: int) -> None:
         """``actor`` 剛摸牌。有一張沒有主人的新寶牌,而他有碰可以加,就是他加槓。
@@ -509,23 +614,24 @@ class _Composer:
             return Ankan(actor=0, consumed=sorted(tiles))
         if len(tiles) == 1:
             return Kakan(actor=0, pai=tiles[0], consumed=[normalize_red(tiles[0])] * 3)
-        last = self.events[-1]
+        # 鳴的是宣言牌時,它後面還接著 reach_accepted。
+        at = len(self.events) - 1 - isinstance(self.events[-1], ReachAccepted)
+        last = self.events[at]
         if not isinstance(last, Dahai) or last.actor == 0:
             return None
         if len(tiles) == 3:
-            pai = self._called_by_me([normalize_red(tiles[0])])
+            pai = self._called_by_me(at, [normalize_red(tiles[0])])
             return Daiminkan(actor=0, target=last.actor, pai=pai, consumed=tiles)
         if normalize_red(tiles[0]) == normalize_red(tiles[1]):
-            pai = self._called_by_me([normalize_red(tiles[0])])
+            pai = self._called_by_me(at, [normalize_red(tiles[0])])
             return Pon(actor=0, target=last.actor, pai=pai, consumed=tiles)
         low, high = sorted(normalize_red(tile) for tile in tiles)
         fitting = [t for run in _runs_with(low) if high in run for t in run if t not in (low, high)]
-        pai = self._called_by_me(fitting)
+        pai = self._called_by_me(at, fitting)
         return Chi(actor=0, target=last.actor, pai=pai, consumed=tiles)
 
-    def _called_by_me(self, fitting: list[str]) -> str:
+    def _called_by_me(self, at: int, fitting: list[str]) -> str:
         """自己鳴的那張牌。手上拿出去的牌來自手牌,比河裡那張可靠,對不上就聽手牌的。"""
-        at = len(self.events) - 1
         pai = self.events[at].pai  # type: ignore[attr-defined]
         if normalize_red(pai) in fitting:
             return pai
@@ -683,11 +789,38 @@ def _without_phantom_turns(steps: list[Step], discards: int) -> list[Step]:
     return [step for index, step in enumerate(steps) if index not in drop]
 
 
+def _without_phantom_ankans(steps: list[Step], flips: int) -> list[Step]:
+    """拿掉別家沒有翻寶牌的暗槓。
+
+    暗槓一定翻一張新寶牌,翻不出來就是副露長度讀錯了:別家的手伸過副露帶,量成多了四張。實測
+    一局憑空多了下家暗槓四張北,張數一滿,之後真的北就全變成別的牌。寶牌比副露確認得早,所以真的
+    暗槓不會被擋;就算晚一步,下一輪重算也會補回來。
+    """
+    out: list[Step] = []
+    skip = False
+    for index, step in enumerate(steps):
+        if skip:
+            skip = False
+            continue
+        if step.action is Action.CALL and (step.kan or step.target is None):
+            hidden = step.target is None and step.actor != 0
+            if hidden and flips <= 0:
+                after = steps[index + 1] if index + 1 < len(steps) else None
+                skip = after is not None and after.action is Action.TSUMO
+                continue
+            flips -= 1
+        out.append(step)
+    return out
+
+
 def _legal_length(events: list[MjaiEvent]) -> int:
     """前面幾個事件是 libriichi 收得下的。規則見模組說明。"""
     seen: Counter[str] = Counter()
     hand: Counter[str] = Counter()
     drawn = 0
+    # 立直之後不能鳴牌。libriichi 遇到這個不是報錯,是整個行程崩潰:實測一次假立直接上真的碰,
+    # 引擎當場掉線,後面一局半都沒有建議。
+    reached: set[int] = set()
 
     def witness(tiles: Iterable[str]) -> bool:
         for tile in tiles:
@@ -702,6 +835,8 @@ def _legal_length(events: list[MjaiEvent]) -> int:
     for index, event in enumerate(events):
         drawn += isinstance(event, Tsumo)
         if drawn > _WALL:
+            return index
+        if isinstance(event, Chi | Pon | Daiminkan | Kakan) and event.actor in reached:
             return index
         match event:
             case StartKyoku():
@@ -722,6 +857,9 @@ def _legal_length(events: list[MjaiEvent]) -> int:
                 fine = spend([event.pai])
             case Kakan():
                 fine = witness([event.pai])
+            case ReachAccepted():
+                reached.add(event.actor)
+                fine = True
             case _:
                 fine = True
         if not fine:

@@ -18,7 +18,7 @@ import pytest
 
 from mia.mjai.tiles import ms_to_mjai, normalize_red
 from mia.utils.geometry import Rect
-from mia.vision.tiles.classify import TemplateSet, classify
+from mia.vision.tiles.classify import Match, TemplateSet, classify
 from mia.vision.tiles.river import (
     CELL,
     CHECK_FACE_HEIGHT,
@@ -29,6 +29,7 @@ from mia.vision.tiles.river import (
     SEARCH_BELOW,
     SEATS,
     SIDEWAYS_FACE,
+    SIDEWAYS_ROOM,
     SIDEWAYS_SHIFT,
     River,
     RiverView,
@@ -103,7 +104,7 @@ class TestRiverView:
     def test_rectify_produces_the_canonical_grid(self, table_image: np.ndarray) -> None:
         """三列,再往下多一截給認牌的搜尋窗。格子的位置不變。"""
         flat = DEFAULT_CORNERS["own"].rectify(table_image, TABLE)
-        assert flat.shape[:2] == (ROWS * CELL[1] + SEARCH_BELOW, COLUMNS * CELL[0])
+        assert flat.shape[:2] == (ROWS * CELL[1] + SEARCH_BELOW, COLUMNS * CELL[0] + SIDEWAYS_ROOM)
 
     @pytest.mark.parametrize("seat", SEATS)
     def test_every_seat_has_corners(self, seat: str) -> None:
@@ -487,10 +488,19 @@ class TestTheSidewaysReachTile:
         :meth:`River.is_plausible` 把**整家這一幀**丟掉:實測舊素材 10 次、
         新素材 5 次,全在立直之後。那是用扔掉整家去換宣言牌之後的正確率。
         """
-        river = read_river(self._flat(table_image), sideways=8, scale=self.SCALE)
+        narrow = self._flat(table_image)[:, : COLUMNS * CELL[0]]
+        river = read_river(narrow, sideways=8, scale=self.SCALE)
         assert river.clipped == (11,)
         assert river.count == len(EXPECTED["toimen"].split())
         assert river.is_plausible()
+
+    def test_the_room_on_the_right_keeps_the_pushed_tile_readable(
+        self, table_image: np.ndarray
+    ) -> None:
+        """被推出第 6 格的牌還在攤平圖裡,不必棄權。"""
+        river = read_river(self._flat(table_image), sideways=8, scale=self.SCALE)
+        assert river.clipped == ()
+        assert river.count == len(EXPECTED["toimen"].split())
 
     def test_the_shift_stays_inside_its_row(self, table_image: np.ndarray) -> None:
         """只推同一列、在它後面的格子。下一列從頭排,不受影響。"""
@@ -538,3 +548,59 @@ def test_a_red_five_is_not_a_tile_back() -> None:
     fixtures = Path(__file__).resolve().parents[1] / "fixtures"
     face = cv2.imread(str(fixtures / "river_red_5p_face.png"))
     assert is_face_up(face)
+
+
+class TestTheUpperSeatLeansLeft:
+    """上家最後一欄的牌比格線偏左。實測那一欄 26/33,其他位置 94~100%。"""
+
+    def test_only_the_upper_seat_needs_it(self) -> None:
+        assert DEFAULT_CORNERS["kamicha"].left_slack > 0
+        assert all(DEFAULT_CORNERS[s].left_slack == 0 for s in SEATS if s != "kamicha")
+
+    def test_the_window_grows_to_the_left(self) -> None:
+        flat = np.zeros((390, 580, 3), np.uint8)
+        rect = Rect(450, 120, 90, 120)
+        plain = search_window(flat, rect)
+        wide = search_window(flat, rect, left=8)
+        assert wide.shape[1] == plain.shape[1] + 8
+        assert wide.shape[0] == plain.shape[0]
+
+    def test_it_stops_at_the_edge(self) -> None:
+        flat = np.zeros((390, 580, 3), np.uint8)
+        assert search_window(flat, Rect(0, 0, 90, 120), left=8).shape[1] == 90
+
+
+class TestSidewaysSizes:
+    def test_the_far_seats_are_smaller(self) -> None:
+        """共用一個尺寸時對家只對 4/11:離鏡頭越遠,橫放的牌越小。"""
+        near = DEFAULT_CORNERS["shimocha"].sideways_size
+        for seat in ("toimen", "kamicha"):
+            assert DEFAULT_CORNERS[seat].sideways_size[0] < near[0]
+
+    def test_a_size_can_be_given(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen: list[tuple[int, int]] = []
+
+        def spy(_: object, __: object, *, size: tuple[int, int]) -> Match:
+            seen.append(size)
+            return Match("1m", 0.8, "2m", 0.2)
+
+        monkeypatch.setattr("mia.vision.tiles.river.classify", spy)
+        flat = np.zeros((390, 580, 3), np.uint8)
+        classify_sideways(flat, 0, _Rotated(), size=(88, 63))
+        assert seen == [(88, 63)]
+
+
+class _Rotated:
+    @staticmethod
+    def rotated() -> None:
+        return None
+
+
+class TestFaceSize:
+    def test_the_nearest_row_of_ones_own_river_is_shorter(self) -> None:
+        """自己第三列離鏡頭最近,攤平之後牌面反而矮。照一般尺寸讀只對七成。"""
+        assert face_size(seat="own", row=2) == (66, 78)
+
+    def test_other_rows_and_seats_are_unchanged(self) -> None:
+        assert face_size(seat="own", row=1) == face_size(seat="own")
+        assert face_size(seat="kamicha", row=2) == face_size(seat="kamicha")

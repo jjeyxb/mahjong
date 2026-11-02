@@ -89,3 +89,48 @@ class TestTheGapCanBeLong:
         for _ in range(60):
             assert watcher.observe(_table(0, 0, 0, 0)) is KyokuSignal.NONE
         assert watcher.observe(_table(1, 0, 0, 0)) is KyokuSignal.STARTED
+
+
+class TestTheFirstTileIsCalled:
+    """第一張牌被鳴走時四家的河也是全空的。實測那一局的配牌與進度全被清掉。"""
+
+    @staticmethod
+    def _started() -> KyokuWatcher:
+        watcher = KyokuWatcher()
+        watcher.observe(_table(0, 0, 0, 0))
+        assert watcher.observe(_table(0, 0, 0, 1)) is KyokuSignal.STARTED
+        return watcher
+
+    def test_the_same_round_means_it_was_called(self) -> None:
+        watcher = self._started()
+        assert watcher.observe(_table(0, 0, 0, 0), taken=True) is KyokuSignal.NONE
+        assert not watcher.empty
+
+    def test_the_call_animation_does_not_count(self) -> None:
+        """實測鳴牌的動畫中間會讀到幾張假牌,而且不連續。"""
+        watcher = self._started()
+        assert watcher.observe([_river(3, holes=(0,)), *_table(0, 0, 1)]) is KyokuSignal.NONE
+        assert watcher.observe(_table(0, 0, 0, 0), taken=True) is KyokuSignal.NONE
+
+    def test_it_keeps_going_after_the_call(self) -> None:
+        watcher = self._started()
+        watcher.observe(_table(0, 0, 0, 0), taken=True)
+        assert watcher.observe(_table(1, 0, 0, 0)) is KyokuSignal.NONE
+
+    def test_a_new_round_on_the_hud_is_a_real_end(self) -> None:
+        """第一張就放銃或九種九牌:桌上也只有一張,但局數變了。"""
+        watcher = self._started()
+        assert watcher.observe(_table(0, 0, 0, 0), taken=False) is KyokuSignal.ENDED
+
+    def test_one_call_cannot_take_two_tiles(self) -> None:
+        watcher = KyokuWatcher()
+        watcher.observe(_table(0, 0, 0, 0))
+        watcher.observe(_table(0, 0, 0, 1))
+        watcher.observe(_table(1, 0, 0, 1))
+        assert watcher.observe(_table(0, 0, 0, 0), taken=True) is KyokuSignal.ENDED
+
+    def test_a_second_call_on_the_next_first_tile(self) -> None:
+        watcher = self._started()
+        watcher.observe(_table(0, 0, 0, 0), taken=True)
+        watcher.observe(_table(0, 1, 0, 0))
+        assert watcher.observe(_table(0, 0, 0, 0), taken=True) is KyokuSignal.NONE

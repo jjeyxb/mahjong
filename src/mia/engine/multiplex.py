@@ -94,6 +94,7 @@ class EngineGroup:
     def __init__(self, engines: Iterable[AIEngine], *, parallel: bool = True) -> None:
         self._engines: list[AIEngine] = list(engines)
         self._failed: dict[str, str] = {}
+        self._fallen: list[AIEngine] = []
         self.parallel = parallel
 
     def __len__(self) -> int:
@@ -165,8 +166,33 @@ class EngineGroup:
 
         for name, reason in failures.items():
             self._drop(name, reason)
+        self._fallen += [e for e in self._engines if e.name in failures]
         self._engines = [e for e in self._engines if e.name not in failures]
         return GroupResult(tuple(a for a in results if a is not None), failures)
+
+    def revive(self) -> bool:
+        """把掉隊的引擎重新開起來。回傳有沒有救回任何一個。
+
+        只有畫面那條路用得到:事件流是推測出來的,錯一次就可能讓引擎崩潰,而那不是引擎壞了。
+        下一局又是乾淨的開始,沒有理由讓一次誤判賠掉整場的建議。封包的事件是真的,在那裡
+        崩潰代表引擎真的有問題,所以不救。
+
+        救回來的引擎還沒收過 ``start_game``,呼叫端要重送。
+        """
+        revived = []
+        for engine in self._fallen:
+            try:
+                engine.close()
+                engine.start()
+            except EngineError as exc:
+                logger.warning(f"{engine.name}: 救不回來 — {exc}")
+                continue
+            revived.append(engine)
+            self._failed.pop(engine.name, None)
+            logger.info(f"{engine.name}: 回到這一場")
+        self._fallen = [e for e in self._fallen if e not in revived]
+        self._engines += revived
+        return bool(revived)
 
     def resolve_follow_ups(self, result: GroupResult) -> GroupResult:
         """替回了「立直」的引擎補上「然後切哪一張」。

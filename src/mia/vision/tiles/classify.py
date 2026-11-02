@@ -158,6 +158,21 @@ class Match:
         )
 
 
+def river_faces_dir(skin: str = DEFAULT_SKIN, *, root: Path | None = None) -> Path:
+    """真實牌河平均出來的模板放哪裡。見 :meth:`TemplateSet.load_river`。"""
+    return (root or ASSETS_DIR) / "tiles" / f"{skin}-river"
+
+
+#: 快篩把圖縮小幾倍。
+_COARSE = 2
+
+#: 快篩留幾種牌。四種在一批牌河上也全對,多留兩種當餘裕,只多 1.5 毫秒。
+_SHORTLIST = 6
+
+#: 縮小後比這個窄就不快篩:圖案糊掉,挑出來的不可靠。
+_COARSE_MIN = 16
+
+
 class TemplateSet:
     """一套牌面模板,對應一種牌面皮膚。
 
@@ -165,11 +180,15 @@ class TemplateSet:
     所以同一套模板可以用在任何視窗尺寸上。
     """
 
-    def __init__(self, faces: dict[str, np.ndarray]) -> None:
+    def __init__(
+        self, faces: dict[str, np.ndarray], *, alternates: dict[str, np.ndarray] | None = None
+    ) -> None:
         if not faces:
             raise ValueError("模板集是空的")
         self._faces = dict(faces)
+        self._alternates = dict(alternates or {})
         self._cache: dict[tuple[int, int], list[tuple[str, np.ndarray]]] = {}
+        self._coarse: dict[tuple[int, int], list[tuple[str, np.ndarray]]] = {}
         self._brightness: dict[str, float] = {}
         self._rotated: TemplateSet | None = None
 
@@ -195,6 +214,22 @@ class TemplateSet:
             faces[path.stem] = image
         return cls(faces)
 
+    @classmethod
+    def load_river(cls, skin: str = DEFAULT_SKIN, *, root: Path | None = None) -> TemplateSet:
+        """牌河用的模板:遊戲素材,加上從真實牌河平均出來的第二份。
+
+        第二份由 ``tools/build_river_faces.py`` 產生,沒有的話就是素材本身。比對時每種牌取分數
+        高的那份:素材的牌面是平的,河裡的是攤平後的 3D 牌,比較糊,而且有斜面與光。
+        """
+        templates = cls.load(skin, root=root)
+        faces = {}
+        for path in sorted(river_faces_dir(skin, root=root).glob("*.png")):
+            image = cv2.imread(str(path))
+            if image is None:
+                raise ValueError(f"讀不到模板 {path}")
+            faces[path.stem] = image
+        return templates.with_alternates(faces) if faces else templates
+
     @property
     def labels(self) -> tuple[str, ...]:
         return tuple(sorted(self._faces))
@@ -211,10 +246,31 @@ class TemplateSet:
         if cached is None:
             cached = [
                 (label, cv2.resize(face, size, interpolation=cv2.INTER_AREA))
-                for label, face in self._faces.items()
+                for label, face in (*self._faces.items(), *self._alternates.items())
             ]
             self._cache[size] = cached
         return cached
+
+    def coarse(self, size: tuple[int, int]) -> list[tuple[str, np.ndarray]]:
+        """快篩用的模板:縮小的灰階圖。見 :func:`_shortlist`。"""
+        cached = self._coarse.get(size)
+        if cached is None:
+            small = (size[0] // _COARSE, size[1] // _COARSE)
+            cached = [
+                (
+                    label,
+                    cv2.cvtColor(
+                        cv2.resize(face, small, interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY
+                    ),
+                )
+                for label, face in self.scaled(size)
+            ]
+            self._coarse[size] = cached
+        return cached
+
+    def with_alternates(self, faces: dict[str, np.ndarray]) -> TemplateSet:
+        """同一套模板,每種牌多一份寫法,比對時取分數高的那份。見 :meth:`load_river`。"""
+        return TemplateSet(self._faces, alternates=faces)
 
     def only(self, *labels: str) -> TemplateSet:
         """只留這幾張的模板集。"""
@@ -230,11 +286,12 @@ class TemplateSet:
         快取在實例上:這是 37 張影像的旋轉,而呼叫端是每一幀的每一格。
         """
         if self._rotated is None:
+            turn = cv2.ROTATE_90_COUNTERCLOCKWISE
             self._rotated = TemplateSet(
-                {
-                    label: cv2.rotate(face, cv2.ROTATE_90_COUNTERCLOCKWISE)
-                    for label, face in self._faces.items()
-                }
+                {label: cv2.rotate(face, turn) for label, face in self._faces.items()},
+                alternates={
+                    label: cv2.rotate(face, turn) for label, face in self._alternates.items()
+                },
             )
         return self._rotated
 
@@ -316,6 +373,9 @@ def classify(
             f"每邊至少要 {MIN_TEMPLATE_PX} 像素,且要留得下平移搜尋的餘裕"
         )
 
+    if labels is None:
+        labels = _shortlist(tile, templates, size)
+
     scored: list[tuple[str, float]] = []
     best = ("", -2.0)
     best_at = (0, 0)
@@ -341,6 +401,27 @@ def classify(
     reference = templates.brightness(best[0])
     brightness = _median_grey(window) / reference if reference else 1.0
     return Match(best[0], best[1], second[0], second[1], brightness)
+
+
+def _shortlist(
+    tile: np.ndarray, templates: TemplateSet, size: tuple[int, int]
+) -> list[str] | None:
+    """先用小圖挑出最像的幾種牌,完整比對只比它們。太小比不了就回 ``None``,全部比。
+
+    輪到自己時,每一毫秒都是建議的延遲,而完整比對絕大多數的時間花在明顯不是的牌上。兩份模板
+    的牌河 600 格,答案、分數、差距完全一樣,一格 27 → 7 毫秒。
+    """
+    small = (size[0] // _COARSE, size[1] // _COARSE)
+    height, width = tile.shape[:2]
+    shrunk = (width // _COARSE, height // _COARSE)
+    if min(small) < _COARSE_MIN or small[0] >= shrunk[0] or small[1] >= shrunk[1]:
+        return None
+    grey = cv2.cvtColor(cv2.resize(tile, shrunk, interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
+    scores: dict[str, float] = {}
+    for label, face in templates.coarse(size):
+        score = cv2.minMaxLoc(cv2.matchTemplate(grey, face, cv2.TM_CCOEFF_NORMED))[1]
+        scores[label] = max(score, scores.get(label, -2.0))
+    return sorted(scores, key=lambda label: scores[label], reverse=True)[:_SHORTLIST]
 
 
 #: 紅色的墨水(OpenCV HSV):色相、飽和度下限、亮度下限。
@@ -468,6 +549,11 @@ def classify_hand(
     return concealed, drawn
 
 
+def _slot_key(roi: np.ndarray, box: Rect, headroom: int) -> bytes:
+    crop = roi[: headroom + box.y + box.height, box.x : box.x + box.width]
+    return hashlib.blake2b(crop.tobytes(), digest_size=16).digest()
+
+
 def _classify_slot(
     roi: np.ndarray,
     box: Rect,
@@ -479,7 +565,7 @@ def _classify_slot(
     crop = roi[: headroom + box.y + box.height, box.x : box.x + box.width]
     key = None
     if memo is not None:
-        key = hashlib.blake2b(crop.tobytes(), digest_size=16).digest()
+        key = _slot_key(roi, box, headroom)
         known = memo.get(key)
         if known is not None:
             return known

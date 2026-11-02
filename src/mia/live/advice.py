@@ -13,6 +13,11 @@
 
 Mortal 重播一局只要幾十毫秒到一秒,而且只在有新知識時才發生。這比「等到確定才送」好:
 那要等四五秒,輪到自己的時候還沒排到。
+
+引擎崩潰不必等下一局
+--------------------
+送進去的事件是推測的,錯了引擎會報錯。但錯的事件之後多半會被改寫,所以流改掉了就把引擎救回來、
+重播這一局。沒改到出錯的那一段就不救,救了也只是再崩潰一次。
 """
 
 from __future__ import annotations
@@ -51,6 +56,8 @@ class StreamFeeder:
         self._kyoku: int | None = None
         self._sent: tuple[MjaiEvent, ...] = ()
         self._started = False
+        # 上次讓引擎崩潰的事件流,到出錯的那個事件為止。
+        self._crashed: tuple[MjaiEvent, ...] | None = None
         self.rewinds = 0
 
     def update(self, kyoku: int, events: Sequence[MjaiEvent]) -> GroupResult | None:
@@ -66,8 +73,16 @@ class StreamFeeder:
                 self._group.react(EndKyoku())
             self._kyoku = kyoku
             self._sent = ()
+            self._crashed = None
+            if self._group.revive():
+                self._started = False
         if not stream or stream == self._sent:
             return None
+        crashed = self._crashed
+        if crashed is not None and stream[: len(crashed)] != crashed:
+            self._crashed = None
+            if self._group.revive():
+                self._started = False
         sent = len(self._sent)
         if not self._started or stream[:sent] != self._sent:
             self.rewinds += self._started
@@ -75,8 +90,11 @@ class StreamFeeder:
             self._started = True
             self._sent = ()
         result = None
-        for event in stream[len(self._sent) :]:
+        for index, event in enumerate(stream[len(self._sent) :], len(self._sent)):
             result = self._group.react(event)
+            if result.failures:
+                self._crashed = stream[: index + 1]
+                break
         self._sent = stream
         return result
 

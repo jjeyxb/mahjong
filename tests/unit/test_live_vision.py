@@ -198,6 +198,17 @@ class TestWhatTheTableGets:
         worker._offer_doubtful()  # noqa: SLF001
         assert len(sink.hands) == 1
 
+    def test_a_forced_read_needs_the_same_doubtful_hand_twice(
+        self, window: WindowInfo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """打牌特效貼著手牌右邊,強制讀取剛好讀到那一幀,就憑空多一張摸牌。"""
+        worker, sink = self._doubtful_worker(window, monkeypatch)
+        hand = _hand_image("hand_14_with_draw.png")
+        worker._read(hand, 0, forced=True)  # noqa: SLF001
+        assert sink.hands == []
+        worker._read(hand, 0, forced=True)  # noqa: SLF001
+        assert len(sink.hands) == 1
+
     def test_a_doubtful_hand_is_dropped_when_the_screen_moves(
         self, window: WindowInfo, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -208,6 +219,99 @@ class TestWhatTheTableGets:
         for _ in range(vision._STILL_FRAMES):  # noqa: SLF001
             worker._offer_doubtful()  # noqa: SLF001
         assert sink.hands == []
+
+
+class TestGlancingWhileItMoves:
+    """實打時滑鼠滑過手牌,手牌區停不下來。動的時候也看一眼。"""
+
+    TILE = Match(label="1m", score=0.9, runner_up="2m", runner_up_score=0.1, brightness=1.0)
+    OTHER = Match(label="9p", score=0.9, runner_up="2m", runner_up_score=0.1, brightness=1.0)
+    FUZZY = Match(label="5s", score=0.3, runner_up="2m", runner_up_score=0.29, brightness=1.0)
+
+    def _worker(
+        self, window: WindowInfo, monkeypatch: pytest.MonkeyPatch, seen: list[object]
+    ) -> tuple[VisionWorker, _Sink, np.ndarray]:
+        hand = _hand_image("hand_14_with_draw.png")
+        frame, roi = _frame_with_hand(window, hand)
+        sink = _Sink()
+        worker = VisionWorker(
+            UpdateBus(),
+            config=_config(roi),
+            backend=FakeBackend(window, [frame]),
+            window=window,
+            sink=sink,
+        )
+        worker._templates = TemplateSet.load()  # noqa: SLF001
+        answers = iter(seen)
+        monkeypatch.setattr(vision, "classify_hand", lambda *_, **__: next(answers))
+        return worker, sink, hand
+
+    def test_a_clear_draw_goes_through_at_once(
+        self, window: WindowInfo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        worker, sink, hand = self._worker(window, monkeypatch, [((self.TILE,) * 13, self.TILE)])
+        worker._resting = ("1m",) * 13  # noqa: SLF001
+        assert not worker._glance(hand, 0)  # noqa: SLF001
+        assert sink.hands == [["1m"] * 14]
+
+    def test_it_is_offered_once(self, window: WindowInfo, monkeypatch: pytest.MonkeyPatch) -> None:
+        both = ((self.TILE,) * 13, self.TILE)
+        worker, sink, hand = self._worker(window, monkeypatch, [both, both])
+        worker._resting = ("1m",) * 13  # noqa: SLF001
+        worker._glance(hand, 0)  # noqa: SLF001
+        worker._glance(hand, 0)  # noqa: SLF001
+        assert len(sink.hands) == 1
+
+    def test_a_fuzzy_draw_waits(self, window: WindowInfo, monkeypatch: pytest.MonkeyPatch) -> None:
+        worker, sink, hand = self._worker(window, monkeypatch, [((self.TILE,) * 13, self.FUZZY)])
+        worker._resting = ("1m",) * 13  # noqa: SLF001
+        worker._glance(hand, 0)  # noqa: SLF001
+        assert sink.hands == []
+
+    def test_the_rest_of_the_hand_has_to_be_the_same(
+        self, window: WindowInfo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = [((self.TILE,) * 12 + (self.OTHER,), self.TILE)]
+        worker, sink, hand = self._worker(window, monkeypatch, seen)
+        worker._resting = ("1m",) * 13  # noqa: SLF001
+        worker._glance(hand, 0)  # noqa: SLF001
+        assert sink.hands == []
+
+    def test_twice_the_same_counts_as_stopped(
+        self, window: WindowInfo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """滑鼠一直在動時等不到靜止,實測大多要等滿一秒強制讀。"""
+        both = ((self.TILE,) * 13, self.TILE)
+        worker, _, hand = self._worker(window, monkeypatch, [both, both, both])
+        assert not worker._glance(hand, 0)  # noqa: SLF001
+        assert worker._glance(hand, 0)  # noqa: SLF001
+        assert not worker._glance(hand, 0), "同一手不必一直重讀"  # noqa: SLF001
+
+    def test_once_is_not_enough(self, window: WindowInfo, monkeypatch: pytest.MonkeyPatch) -> None:
+        one = ((self.TILE,) * 13, self.TILE)
+        other = ((self.OTHER,) * 13, self.TILE)
+        worker, _, hand = self._worker(window, monkeypatch, [one, other])
+        worker._glance(hand, 0)  # noqa: SLF001
+        assert not worker._glance(hand, 0)  # noqa: SLF001
+
+    def test_anything_unsure_is_not_stopped(
+        self, window: WindowInfo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fuzzy = ((self.TILE,) * 13, self.FUZZY)
+        worker, _, hand = self._worker(window, monkeypatch, [fuzzy, fuzzy])
+        worker._glance(hand, 0)  # noqa: SLF001
+        assert not worker._glance(hand, 0)  # noqa: SLF001
+
+    def test_the_settled_read_does_not_offer_the_draw_again(
+        self, window: WindowInfo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """再交一次只是白白叫醒牌桌。"""
+        both = ((self.TILE,) * 13, self.TILE)
+        worker, sink, hand = self._worker(window, monkeypatch, [both, both])
+        worker._resting = ("1m",) * 13  # noqa: SLF001
+        worker._glance(hand, 0)  # noqa: SLF001
+        worker._read(hand, 0)  # noqa: SLF001
+        assert len(sink.hands) == 1
 
 
 class TestReadingAHand:
@@ -257,6 +361,19 @@ class TestReadingAHand:
         assert isinstance(hand, CvHand)
         for tile in hand.tiles:
             assert tile[-1] in "mpsz", f"{tile} 不是雀魂記法"
+
+
+def _fading_frame(window: WindowInfo, step: int) -> Frame:
+    """手牌半透明、每一幀深淺不同 —— 摸打動畫中途的樣子,認不出來。"""
+    hand = _hand_image()
+    frame, _ = _frame_with_hand(window, hand)
+    image = frame.image.copy()
+    hand_h, hand_w = hand.shape[:2]
+    alpha = 0.15 + 0.03 * step
+    base = np.full_like(hand, (40, 90, 40))
+    faded = (hand * alpha + base * (1 - alpha)).astype(np.uint8)
+    image[PASTE.y : PASTE.y + hand_h, PASTE.x + step : PASTE.x + step + hand_w] = faded
+    return Frame(image, window, scale=1.0)
 
 
 def _moving_frame(window: WindowInfo, offset: int) -> Frame:
@@ -309,7 +426,7 @@ class TestOnlyClassifyingWhatHasStopped:
         """動畫中途每一幀都不一樣,那些幀一張都不該認 —— 認了就是把
         半透明、位移中的牌投到畫面上。"""
         roi = _frame_with_hand(window, _hand_image())[1]
-        moving = [_moving_frame(window, offset) for offset in range(1, 8)]
+        moving = [_fading_frame(window, step) for step in range(1, 8)]
         bus = UpdateBus()
         worker = VisionWorker(
             bus,
@@ -323,6 +440,19 @@ class TestOnlyClassifyingWhatHasStopped:
         _run_until(worker, lambda: worker.skipped >= len(moving), timeout=3.0)
         assert worker.reads == 0, f"動畫中途認了 {worker.reads} 次"
         assert len(bus) == 0
+
+    def test_tiles_that_move_but_read_clearly_are_read(self, window: WindowInfo) -> None:
+        """滑鼠滑過手牌時一直在動,但每一張都認得出來:連兩眼一樣就讀,不必等滿一秒。"""
+        roi = _frame_with_hand(window, _hand_image())[1]
+        moving = [_moving_frame(window, offset) for offset in range(1, 8)]
+        worker = VisionWorker(
+            UpdateBus(),
+            config=_config(roi),
+            backend=FakeBackend(window, [*moving, None]),
+            window=window,
+        )
+        _run_until(worker, lambda: worker.reads >= 1, timeout=3.0)
+        assert worker.reads >= 1
 
     def test_something_that_never_stops_still_gets_read(self, window: WindowInfo) -> None:
         """ROI 裡有東西永遠在動的話(會呼吸的牌背皮膚、擷取雜訊),寧可退回

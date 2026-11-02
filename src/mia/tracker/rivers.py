@@ -217,6 +217,14 @@ class RiverWatcher:
         self._shrinking = [None for _ in range(4)]
         self._growing = [None for _ in range(4)]
 
+    def revise(self, position: int, index: int, pai: str) -> None:
+        """這一格是讀在動畫中途的,重讀的答案蓋過去。
+
+        與 :meth:`_fill` 的「只補不改」不衝突:那是怕對齊出問題,這裡是同一格停穩之後的讀數。
+        """
+        if index < len(self.rivers[position]):
+            self.rivers[position][index] = pai
+
     def observe(self, position: int, tiles: Sequence[str]) -> list[Discard]:
         """收一次觀察,回傳**新**的捨牌事件(可能是空的)。
 

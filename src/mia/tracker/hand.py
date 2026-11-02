@@ -16,6 +16,7 @@
 -2         少 2              吃、碰
 -2         少 3 多 1         大明槓 + 嶺上
 -3         少 4 多 1         暗槓 + 嶺上
+-4         少 4              暗槓,嶺上摸切了:立直之後兩次讀取之間就做完。河會補上摸切那一手
 0          少 1 多 1         河多一張:摸打都沒看到。少的是碰過的牌:加槓 + 嶺上
 =========  ================  ==================
 
@@ -219,6 +220,23 @@ class HandWatcher:
             self._apply(move)
         return fresh
 
+    def adopt(
+        self,
+        tehai: Sequence[str],
+        moves: Sequence[OwnMove],
+        tiles: Sequence[str],
+        drawn: str | None,
+    ) -> None:
+        """換成重寫過的配牌與動作。見 :func:`mia.tracker.stream.resynced`。"""
+        self.tehai = tuple(tehai)
+        self.moves = list(moves)
+        self.hand = list(tiles)
+        self.stuck = 0
+        self._drawn = drawn
+        self._doubted = ()
+        self._doubts = 0
+        self._unexplained = ()
+
     def _deal(self, tiles: Sequence[str], drawn: str | None) -> list[OwnMove]:
         """第一副手牌。莊家一開始就是 14 張。"""
         if len(tiles) == 13:
@@ -285,8 +303,15 @@ class HandWatcher:
                 # 鳴完打一張,下一巡又摸了一張,都在兩次讀取之間。
                 return [*self._call_and_discard(lost), draw]
             return None
-        if change == -3 and waiting and len(lost) == 3 and not gained and not _is_kan(lost):
+        if change == -3 and waiting and len(lost) == 3 and not gained:
+            # 三張一樣是大明槓,嶺上摸切了。理由同下。
+            if _is_kan(lost):
+                return [OwnMove(Move.CALL, tuple(lost))]
             return self._call_and_discard(lost)
+        if change == -4 and not waiting and len(lost) == 4 and not gained and _is_kan(lost):
+            # 立直之後嶺上是自動摸切,一秒不到,手牌從 14 張直接變 10 張。沒有這一條的話,這之後每一
+            # 副手牌都解釋不了,實測事件流停在暗槓前,那一局最後十幾手沒有建議。
+            return [OwnMove(Move.CALL, tuple(lost))]
         if change == -3 and not waiting and len(lost) == 4 and len(gained) == 1:
             return [OwnMove(Move.CALL, tuple(lost)), OwnMove(Move.DRAW, (gained[0],))]
         if change == 0 and len(lost) == 1 and len(gained) == 1:

@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 
 from mia.mjai.tiles import HONOR_ORDER, UNKNOWN
 
-__all__ = ["MeldWatcher", "guess_meld"]
+__all__ = ["KAN_WIDTH", "MeldWatcher", "guess_meld"]
 
 #: 長了多少個組長才算一組。一組最短是 1.0(吃 / 碰),量測誤差約 ±0.1。
 _MIN_GROUP = 0.7
@@ -43,6 +43,15 @@ _MEAN_GROUP = 1.15
 
 #: 兩次讀數差多少以內算「同樣的長度」,以組長為單位。
 _STABLE = 0.15
+
+#: 一組長到這麼長就是槓,以組長為單位。吃碰是 1.0,槓實測 1.13 以上。
+KAN_WIDTH = 1.1
+
+#: 一次最多長這麼多,以組長為單位,就是兩組槓。再長就不是副露了。
+#:
+#: 別家摸打時角色的手會伸過他的副露帶,膚色與牌面一樣亮而不飽和,整條帶子量成滿的。實測連續
+#: 兩輪讀到 20(組長 3.8),憑空多了一組下家的碰。
+_MAX_GROWTH = 2.7
 
 
 @dataclass
@@ -85,11 +94,17 @@ class MeldWatcher:
             # 沒長、變短(被蓋住),或還在動畫中間。只增不減:不動基準。
             self._pending[position] = []
             return 0
+        grown = length - self._base[position]
+        if grown > _MAX_GROWTH * unit:
+            self._pending[position] = []
+            return 0
         pending = self._pending[position]
         if pending and abs(length - pending[0]) > _STABLE * unit:
             pending.clear()
         pending.append(length)
-        if len(pending) < self.confirm:
+        # 看起來是槓的要多讀一次。鳴牌動畫中間牌還沒併攏:實測下家碰的長度讀到 6.04、6.27,
+        # 一秒後才是 4.02,碰就被當成了大明槓。真的槓只是晚一輪。
+        if len(pending) < self.confirm + (grown >= KAN_WIDTH * unit):
             return 0
         fresh = max(1, round((length - self._base[position]) / (_MEAN_GROUP * unit)))
         self._base[position] = length

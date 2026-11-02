@@ -97,6 +97,18 @@ def cmd_cdp(args: argparse.Namespace) -> int:
         print("--canvas 與 --connect 不能一起用:連過去的瀏覽器不歸我們管", file=sys.stderr)
         return 2
 
+    autoplay = _autoplay(args)
+    pilot = None
+    if args.cpu_room:
+        from autoplay import CpuRoomPilot
+
+        if autoplay is None or args.connect:
+            print("--cpu-room 要配 --autoplay,而且不能用 --connect", file=sys.stderr)
+            return 2
+        autoplay = pilot = CpuRoomPilot(
+            bot=autoplay, out=args.out.parent, overtime=args.overtime
+        )
+
     try:
         with DumpWriter(args.out) as writer:
             capture = CdpCapture(writer, url_patterns=_patterns(args.filter))
@@ -111,11 +123,16 @@ def cmd_cdp(args: argparse.Namespace) -> int:
                     user_data_dir=args.user_data_dir,
                     canvas=canvas,
                     control=ControlFile(args.control) if args.control else None,
-                    autoplay=_autoplay(args),
+                    autoplay=autoplay,
+                    stop_check=(lambda: bool(pilot.failed)) if pilot else None,
                 )
     except PlaywrightMissingError as exc:
         print(f"\n{exc}", file=sys.stderr)
         return 1
+
+    if pilot is not None and pilot.failed:
+        print(f"\n開房間失敗:{pilot.failed}", file=sys.stderr)
+        return 3
 
     print()
     print(stats.summary())
@@ -318,6 +335,15 @@ def main(argv: list[str] | None = None) -> int:
     p_cdp.add_argument(
         "--autoplay-dry-run", action="store_true",
         help="只印「會點哪裡」,不真的點。按鈕座標還沒量過,第一次跑請用這個對一下",
+    )
+    p_cdp.add_argument(
+        "--cpu-room", action="store_true",
+        help="登入後自己開一間四人半莊、加三台電腦、按開始。要配 --autoplay。"
+             "每一步都要有封包或畫面憑據,對不上就停,不會去碰段位場",
+    )
+    p_cdp.add_argument(
+        "--overtime", action="store_true",
+        help="--cpu-room 開的房間 1 位必要點數設最大、關掉擊飛,一定打進西入",
     )
     p_cdp.add_argument("--url", help="要開啟的網址,預設為網頁版雀魂")
     p_cdp.add_argument("--connect", metavar="ENDPOINT",

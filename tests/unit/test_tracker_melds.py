@@ -25,7 +25,7 @@ def test_a_moving_length_is_not_trusted() -> None:
 def test_groups_of_different_widths_each_count_once() -> None:
     """碰 1.0、暗槓 1.2、大明槓 1.3 —— 只看增量,寬度差不會累積。"""
     w = watcher()
-    assert sum(feed(w, 3.0, 3.0, 6.6, 6.6, 10.5, 10.5, 13.5, 13.5)) == 4
+    assert sum(feed(w, 3.0, 3.0, 6.6, 6.6, 6.6, 10.5, 10.5, 10.5, 13.5, 13.5)) == 4
     assert w.groups[0] == 4
 
 
@@ -45,7 +45,31 @@ def test_it_never_shrinks() -> None:
 
 def test_two_groups_between_reads_count_as_two() -> None:
     w = watcher()
-    assert feed(w, 6.6, 6.6) == [0, 2]
+    assert feed(w, 6.6, 6.6, 6.6) == [0, 0, 2]
+
+
+def test_a_kan_is_read_one_more_time() -> None:
+    """鳴牌動畫中間牌還沒併攏,看起來比一組寬。"""
+    assert feed(watcher(), 3.6, 3.6, 3.6) == [0, 0, 1]
+
+
+def test_a_pon_in_the_middle_of_its_animation_is_not_a_kan() -> None:
+    """實測下家的碰讀到 6.04、6.27,一秒後才是 4.02(組長 3.8)。"""
+    w = MeldWatcher(units=(3.8,))
+    assert feed(w, 6.04, 6.27, 4.02, 4.02) == [0, 0, 0, 1]
+    assert w.length(0) == 4.02
+
+
+def test_a_hand_over_the_band_is_not_a_group() -> None:
+    """別家摸打時角色的手伸過副露帶,實測連續兩輪量到滿的。"""
+    w = MeldWatcher(units=(3.8,))
+    assert feed(w, 20.0, 20.0, 20.0, 0.0) == [0, 0, 0, 0]
+    assert w.groups[0] == 0
+
+
+def test_a_real_group_still_counts_after_a_hand() -> None:
+    w = MeldWatcher(units=(3.8,))
+    assert feed(w, 20.0, 4.0, 4.0) == [0, 0, 1]
 
 
 def test_positions_are_independent_and_reset_clears() -> None:

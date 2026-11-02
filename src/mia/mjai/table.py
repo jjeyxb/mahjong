@@ -289,6 +289,17 @@ class TableTracker:
 
     # ------------------------------------------------------------------ 更新
 
+    def revise(self, actor: int, old: str, new: str) -> None:
+        """河裡最後一張 ``old`` 其實是 ``new``。畫面那條路停穩之後重讀才用得到。
+
+        不改的話,讀在動畫中途的那張會一直留著當現物。
+        """
+        river = self.players[actor].river
+        for index in range(len(river) - 1, -1, -1):
+            if river[index] == old:
+                river[index] = new
+                return
+
     def handle(self, event: MjaiEvent) -> None:
         """吃一個事件。認不得的型別直接忽略。"""
         match event:

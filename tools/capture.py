@@ -96,6 +96,8 @@ class GameWatcher:
         self._seen = 0
         self.ended = False
         self.kyoku = 0
+        #: 看過幾個牌局事件。一直不變代表牌局已經不在進行了。
+        self.events = 0
 
     def poll(self) -> bool:
         """回傳「對局已經結束」。檔案還沒出現也算沒結束。"""
@@ -109,6 +111,7 @@ class GameWatcher:
             if decoded is None:
                 continue
             for event in decoded.events:
+                self.events += 1
                 if event.TYPE == "start_kyoku":
                     self.kyoku += 1
                 elif event.TYPE == "end_game":

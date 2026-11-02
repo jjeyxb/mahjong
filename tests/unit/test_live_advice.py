@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from mia.config.loader import load_config
-from mia.engine.base import Advice
+from mia.engine.base import Advice, AIEngine, EngineError
 from mia.engine.multiplex import EngineGroup
 from mia.live.advice import StreamFeeder, VisionAdviceWorker
 from mia.live.bus import EventStream, UpdateBus
@@ -143,3 +143,71 @@ class TestLog:
         worker, bus = self._worker()
         worker._log(Stream())  # noqa: SLF001
         assert bus.drain() == ()
+
+
+class Fragile(AIEngine):
+    """第一次 ``bomb`` 之後的那個事件會崩潰。"""
+
+    name = "fragile"
+
+    def __init__(self) -> None:
+        self.starts = 0
+        self.bomb = False
+        self.seen: list[str] = []
+
+    def start(self) -> None:
+        self.starts += 1
+
+    def react(self, event: MjaiEvent) -> Advice:
+        if self.bomb:
+            self.bomb = False
+            raise EngineError("崩潰")
+        self.seen.append(event.TYPE)
+        return Advice(self.name)
+
+    def peek(self, event: MjaiEvent) -> Advice:
+        return self.react(event)
+
+    def close(self) -> None:
+        pass
+
+
+class TestAnEngineThatCrashed:
+    """畫面的事件流是推測的,錯一次可能讓引擎崩潰。實測最後一局半都沒有建議。"""
+
+    FIRST = (Dahai(actor=1, pai="1m", tsumogiri=False),)
+    BAD = Dahai(actor=2, pai="2m", tsumogiri=False)
+    GOOD = Dahai(actor=2, pai="3m", tsumogiri=False)
+
+    def _crashed(self) -> tuple[Fragile, EngineGroup, StreamFeeder]:
+        engine = Fragile()
+        group = EngineGroup([engine])
+        fed = StreamFeeder(group)
+        fed.update(1, self.FIRST)
+        engine.bomb = True
+        result = fed.update(1, [*self.FIRST, self.BAD])
+        assert result is not None
+        assert result.failures
+        assert len(group) == 0
+        return engine, group, fed
+
+    def test_it_comes_back_at_the_next_kyoku(self) -> None:
+        engine, group, fed = self._crashed()
+        fed.update(2, self.FIRST)
+        assert len(group) == 1
+        assert engine.seen[-2:] == ["start_game", "dahai"]
+
+    def test_it_comes_back_as_soon_as_the_stream_is_rewritten(self) -> None:
+        """錯的事件多半會被改寫,不必賠掉這一局剩下的建議。"""
+        engine, group, fed = self._crashed()
+        fed.update(1, [*self.FIRST, self.GOOD])
+        assert len(group) == 1
+        assert engine.seen[-3:] == ["start_game", "dahai", "dahai"]
+
+    def test_it_stays_down_while_the_bad_part_is_still_there(self) -> None:
+        """救了也只是再崩潰一次。"""
+        engine, group, fed = self._crashed()
+        starts = engine.starts
+        fed.update(1, [*self.FIRST, self.BAD, self.GOOD])
+        assert len(group) == 0
+        assert engine.starts == starts

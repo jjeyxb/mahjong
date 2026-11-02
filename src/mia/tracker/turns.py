@@ -20,6 +20,7 @@
 ``s`` 是下家          1 以上      正常摸打
 ``s`` 是下家          0,有副露   ``s`` 吃
 ``s`` 是下家          2,有副露   暗槓:摸、槓、嶺上
+``s`` 是下家          2,沒有副露  牌讀得晚,再下一家已經摸了:等一下副露,沒有就是摸打
 ``s`` 不是下家        0           ``s`` 鳴了 ``a`` 的牌,沒有副露紀錄也一樣
 ``s`` 不是下家        1 以上      中間有人摸打,**那張一打出就被鳴走**
 ``s`` 槓了別人的牌    0 以上      大明槓:鳴、嶺上、打
@@ -70,8 +71,12 @@ _FULL_WALL = 70
 
 _SEATS = 4
 
-#: 等副露最多幾輪。副露確認比鳴牌晚 2 ~ 4 秒,而捨牌本身也比鳴牌晚一兩秒。
+#: 等副露最多幾輪,一輪一秒。副露確認比鳴牌晚 2 ~ 4 秒,而捨牌本身也比鳴牌晚一兩秒。
 WAIT = 4
+
+#: 下家打牌而余牌多減一張時等幾輪。多半只是牌讀得晚,再下一家已經摸了,不是暗槓。暗槓一定翻寶牌,
+#: 而且少見,不值得為它讓整桌排隊:等滿 :data:`WAIT` 的話,後面每一張都晚 3 秒。
+_LATE_WAIT = 1
 
 #: 副露紀錄最多比**上一張捨牌**早幾輪。再舊的是之前的鳴牌,不是這一張的。
 #:
@@ -114,7 +119,7 @@ class Step:
 
 @dataclass(slots=True)
 class _Pending:
-    tick: int
+    tick: float
     actor: int
     pai: str | None
     guess: str | None
@@ -136,10 +141,10 @@ class TurnTracker:
     #: 多讀出來的格子 ``(誰, 第幾張)`` → 它其實是第幾張。立直記的可能是這一格。
     doubled: dict[tuple[int, int], int] = field(default_factory=dict)
     _queue: list[_Pending] = field(default_factory=list, repr=False)
-    _melds: list[tuple[int, int, bool]] = field(default_factory=list, repr=False)
+    _melds: list[tuple[float, int, bool]] = field(default_factory=list, repr=False)
     _wall: int | None = field(default=None, repr=False)
-    _wall_tick: int = field(default=-1, repr=False)
-    _last_tick: int = field(default=0, repr=False)
+    _wall_tick: float = field(default=-1, repr=False)
+    _last_tick: float = field(default=0, repr=False)
     _last_serial: int | None = field(default=None, repr=False)
     #: 已經排出去、副露紀錄還沒到的鳴牌,依座位。
     _owed: list[int] = field(default_factory=lambda: [0] * _SEATS, repr=False)
@@ -149,7 +154,7 @@ class TurnTracker:
 
     def tick(
         self,
-        tick: int,
+        tick: float,
         discards: Sequence[tuple[int, str | None, *tuple[str | int | None, ...]]] = (),
         melds: Sequence[int] = (),
         wall: int | None = None,
@@ -160,7 +165,7 @@ class TurnTracker:
         """收一輪的觀察,回傳這一輪可以確定的動作。
 
         Args:
-            tick: 第幾輪。
+            tick: 第幾輪,一輪一秒,可以有小數。見 :meth:`TableWorker._turn_clock`。
             discards: 這一輪新出現的捨牌 ``(座位, 牌)`` 或
                 ``(座位, 牌, 猜測, 第幾張)``。牌讀不出來給 ``None``。
             melds: 這一輪副露多了一組的座位,一組一筆。
@@ -196,13 +201,60 @@ class TurnTracker:
                 self._last_serial = item.serial
         return out
 
+    def see_wall(self, tick: float, wall: int | None) -> None:
+        """沒有整輪走完時也記下余牌。
+
+        排序看的是牌落下**之前**的余牌,讀得太舊的話,打牌的人自己那次摸牌還沒算進去,看起來
+        像鳴牌,這張牌與排在後面的牌就要等副露,實測等到 3.9 秒。
+        """
+        if wall is not None:
+            self._wall, self._wall_tick = wall, tick
+
+    def jump(
+        self,
+        tick: float,
+        discards: Sequence[tuple[int, str | None, *tuple[str | int | None, ...]]],
+        wall: int | None = None,
+    ) -> list[Step]:
+        """一次看到一大批牌:中途才開始看,或畫面被蓋了好幾秒。
+
+        每家打了什麼、依什麼順序都在河裡,只有家與家之間的先後要推:照輪替排。鳴牌看不出來,但
+        Mortal 要的是現在的局面,手牌與河都對,就比這一局都沒有建議好。
+        """
+        pending = [(i.actor, i.pai, i.guess, i.serial) for i in self._queue]
+        for seat, pai, *rest in discards:
+            guess, serial = rest if rest else (None, None)
+            pending.append((seat, pai, guess, serial))  # type: ignore[arg-type]
+        self._queue.clear()
+        self._melds.clear()
+        self._owed = [0] * _SEATS
+        seats = {seat: [d for d in pending if d[0] == seat] for seat in range(_SEATS)}
+        out: list[Step] = []
+        seat = (self.last + 1) % _SEATS
+        while any(seats.values()):
+            if seats[seat]:
+                _, pai, guess, serial = seats[seat].pop(0)
+                drop = Step(Action.DAHAI, seat, pai, guess, serial=serial)
+                out += [Step(Action.TSUMO, seat), drop]
+                self.drawn += 1
+                self.last = seat
+                self._last_serial = serial
+            seat = (seat + 1) % _SEATS
+        self._last_tick = tick
+        if wall is not None:
+            self._wall, self._wall_tick = wall, tick
+            self.drawn = max(self.drawn, _FULL_WALL - wall)
+        return out
+
     @property
     def next_up(self) -> Step | None:
         """還沒排定、但確定是下一張的捨牌。見 :mod:`mia.tracker.stream`「還沒排定的捨牌」。"""
         if not self._queue:
             return None
         head = self._queue[0]
-        if head.pai is None or head.actor == 0 or head.actor != (self.last + 1) % _SEATS:
+        if head.pai is None and head.guess is None:
+            return None
+        if head.actor == 0 or head.actor != (self.last + 1) % _SEATS:
             return None
         return Step(Action.DAHAI, head.actor, head.pai, head.guess, serial=head.serial)
 
@@ -223,33 +275,33 @@ class TurnTracker:
     def _distance(anchor: int, seat: int) -> int:
         return (seat - anchor - 1) % _SEATS
 
-    def _meld_since(self, tick: int) -> int:
+    def _meld_since(self, tick: float) -> float:
         """這一輪的捨牌,副露最早可以記在哪一輪。"""
         return min(tick, self._last_tick) - _MELD_BEFORE
 
-    def _take_meld(self, seat: int, tick: int) -> tuple[int, int, bool] | None:
+    def _take_meld(self, seat: int, tick: float) -> tuple[float, int, bool] | None:
         for entry in self._melds:
             if entry[1] == seat and entry[0] >= self._meld_since(tick):
                 self._melds.remove(entry)
                 return entry
         return None
 
-    def _has_meld(self, seat: int, tick: int) -> bool:
+    def _has_meld(self, seat: int, tick: float) -> bool:
         since = self._meld_since(tick)
         return any(s == seat and t >= since for t, s, _ in self._melds)
 
-    def _kan_called(self, seat: int, tick: int) -> bool:
+    def _kan_called(self, seat: int, tick: float) -> bool:
         """``seat`` 有一組寬度是槓的副露還沒排出去。"""
         since = self._meld_since(tick)
         return any(s == seat and t >= since and kan for t, s, kan in self._melds)
 
-    def _skipped_seat_called(self, seat: int, tick: int) -> bool:
+    def _skipped_seat_called(self, seat: int, tick: float) -> bool:
         """被跳過的那幾家有人鳴牌:跳家是它造成的,不是 ``seat`` 鳴的。"""
         lost = (seat - self.last - 1) % _SEATS
         skipped = {(self.last + 1 + offset) % _SEATS for offset in range(lost)}
         return any(self._has_meld(other, tick) for other in skipped)
 
-    def _resolve(self, item: _Pending, now: int) -> list[Step] | None:
+    def _resolve(self, item: _Pending, now: float) -> list[Step] | None:
         """這張牌之前發生了什麼。還不能確定就回 ``None``。"""
         seat = item.actor
         known = _FULL_WALL - self.drawn if item.wall is None else item.wall
@@ -261,11 +313,17 @@ class TurnTracker:
                 self.doubled[seat, item.serial] = self._last_serial
             return []
         following = seat == (self.last + 1) % _SEATS
+        # 自己的牌手牌看得到:沒有鳴牌就是摸打,余牌怎麼說都一樣。不等的話莊家第一張就要等滿四輪,
+        # 那時候還沒讀過余牌。
+        own = seat == 0 and not self._has_meld(seat, item.tick)
+        plain = unseen == 1 or own
         # 下家大明槓也是余牌減一張,長得跟摸打一樣,只有副露的寬度分得開。
-        if following and unseen == 1 and not self._kan_called(seat, item.tick):
+        if following and plain and not self._kan_called(seat, item.tick):
             self.drawn += 1
             return [Step(Action.TSUMO, seat), drop]
-        if not self._has_meld(seat, item.tick) and now - item.tick < WAIT:
+        # 跳到自己:前一家的牌漏讀了。等一下讓晚到的牌有機會排回去,但不能讓整桌等滿。
+        patience = _LATE_WAIT if own or (following and unseen > 1) else WAIT
+        if not self._has_meld(seat, item.tick) and now - item.tick < patience:
             return None
         meld = self._take_meld(seat, item.tick)
         if meld is not None:

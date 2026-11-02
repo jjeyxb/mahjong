@@ -29,22 +29,33 @@
 不是 ``None`` 就代表「這一巡摸到了牌、還沒打」。那是精確的,而且是既有的
 程式碼,不是為這支工具新寫的判斷。
 
+只動全電腦的桌
+--------------
+「只在對電腦的房間用」原本只是一句提醒。現在兩個機器人都要先看到 ``authGame``
+說另外三家都是電腦才會按(:func:`cpu_table`),沒看到或有真人就一動也不動。
+
 用法::
 
-    python tools/gt.py cdp --autoplay --out data/recordings/x/ws.jsonl
+    python tools/gt.py cdp --autoplay mortal --mortal models/x.pth --cpu-room
 """
 
 from __future__ import annotations
 
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+import cv2
+import numpy as np
 
 from mia.groundtruth.dump import DumpFrame
+from mia.groundtruth.liqi import LiqiMessage, LiqiParseError, LiqiParser, MessageKind
+from mia.groundtruth.schema import LiqiSchema
 from mia.groundtruth.stream import MjaiDecoder
 from mia.mjai.handstate import HandTracker
-from mia.mjai.tiles import sort_key
+from mia.mjai.tiles import ms_to_mjai, sort_key
 from mia.utils.logging import logger
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -53,8 +64,11 @@ if TYPE_CHECKING:  # pragma: no cover
 __all__ = [
     "DRAWN_TILE",
     "SHOT_DIR",
+    "CpuRoomPilot",
     "MortalBot",
     "TsumogiriBot",
+    "choice_point",
+    "cpu_table",
     "tile_point",
     "viewport",
 ]
@@ -92,6 +106,47 @@ DRAWN_TILE = (0.798, 0.925)
 #: 伺服器回的那個事件才會清掉,在那之前狀態仍然說「該打牌」。沒有這道閘
 #: 就會連點,而連點在雀魂上的後果是把下一巡的牌也打掉。
 _COOLDOWN = 2.0
+
+#: 莊家開局要等幾秒才點。
+#:
+#: 閒家第一手來的時候發牌早就演完了,莊家的第一手卻在開局封包就到。逐幀看:+1 秒牌還在發,
+#: +2 秒排好,+3 秒起點得到。點在動畫中間的那一下會被吃掉。
+_DEAL_DELAY = 4.0
+
+#: 點下去之後這麼久都沒有新的事件,就當作沒點到,再點一次。
+#:
+#: 會需要這個是因為**莊家開局**:閒家的第一手來的時候發牌動畫早就演完了,莊家的第一手卻在
+#: 開局封包就到,一秒後點下去還在發牌,點擊被吃掉。實測閒家第一手 1.4~1.6 秒,莊家 13.9 秒
+#: 與 53.7 秒,其他手中位 1.4 秒。
+#:
+#: 開局動畫的等待見 :data:`_DEAL_DELAY`,這裡是動畫之外的保險。重點是安全的:打出去之後
+#: 新的事件會清掉這件事,而輪到自己之前一定先有事件。
+_RETRY_AFTER = 2.5
+
+#: 最多重點幾次。再點不到就是別的問題了,不要一直點下去。
+_MAX_RETRIES = 8
+
+_AUTH_GAME = ".lq.FastTest.authGame"
+
+#: 四人桌要有幾台電腦。
+_CPU_SEATS = 3
+
+
+def cpu_table(message: LiqiMessage) -> bool | None:
+    """這則訊息說這一桌是不是只有自己一個真人。與這件事無關的訊息回 ``None``。
+
+    ``authGame`` 的回應列出 ``seat_list``(每個座位的帳號)與 ``robots``(電腦的帳號)。
+    電腦的帳號是 1、2、3 這種小數字,不是 0,所以要對 ``robots``,不能看座位是不是空的。
+
+    友人房的 ``mode.ai`` 不能當判據:實測沒按「人機」也是 ``true``,那只代表這間房可以加
+    電腦,不代表桌上全是電腦。
+    """
+    if message.method != _AUTH_GAME or message.kind is not MessageKind.RESPONSE:
+        return None
+    payload: Any = message.payload
+    robots = {robot.account_id for robot in payload.robots}
+    humans = [account for account in payload.seat_list if account not in robots]
+    return len(robots) == _CPU_SEATS and len(humans) == 1
 
 
 def viewport(page: Page) -> tuple[int, int] | None:
@@ -143,6 +198,40 @@ def _press(page: Page, x: int, y: int) -> None:
     page.mouse.up()
 
 
+def _read_operations(action) -> tuple[tuple[int, tuple[str, ...]], ...]:
+    """動作訊息附帶的選項,不含打牌。沒有問自己的話是空的。"""
+    operation = getattr(action, "operation", None)
+    if not operation:
+        return ()
+    return tuple(
+        (item.type, tuple(item.combination))
+        for item in operation.operation_list
+        if item.type != _OP_DISCARD
+    )
+
+
+def _discard_of(advice) -> str | None:
+    """這個建議最後會打哪張牌。立直的話是宣言之後切的那張。"""
+    action = getattr(advice, "action", None)
+    if action is None:
+        return None
+    if action.TYPE == "reach":
+        action = getattr(advice, "follow_up", None)
+    return action.pai if action is not None and action.TYPE == "dahai" else None
+
+
+def _judge_table(message: LiqiMessage, allowed: bool) -> bool:
+    """看一則訊息之後還能不能動手。不是 ``authGame`` 就維持原樣。"""
+    verdict = cpu_table(message)
+    if verdict is None:
+        return allowed
+    if verdict:
+        logger.info("確認這一桌另外三家都是電腦")
+    else:
+        logger.warning("這一桌有其他真人 —— 自動打牌不會動手")
+    return verdict
+
+
 @dataclass
 class TsumogiriBot:
     """摸到什麼打什麼。滿足 :class:`~mia.groundtruth.cdp.AutoPlayer`。"""
@@ -154,6 +243,8 @@ class TsumogiriBot:
     _hand: HandTracker = field(default_factory=HandTracker, repr=False)
     _ready_at: float | None = field(default=None, repr=False)
     _last_click: float = field(default=0.0, repr=False)
+    #: 這一桌確定只有電腦。見 :func:`cpu_table`。
+    allowed: bool = False
 
     #: 統計,給人看的。
     discards: int = 0
@@ -166,6 +257,7 @@ class TsumogiriBot:
         decoded = self._decoder.feed(frame)
         if decoded is None:
             return
+        self.allowed = _judge_table(decoded.message, self.allowed)
         for event in decoded.events:
             if event.TYPE == "start_game":
                 # 新的一場:座位可能變了,追蹤器要從頭來。
@@ -175,7 +267,7 @@ class TsumogiriBot:
 
     def act(self, page: Page) -> None:
         now = time.monotonic()
-        if self._ready_at is None or now < self._ready_at:
+        if not self.allowed or self._ready_at is None or now < self._ready_at:
             return
         if now - self._last_click < _COOLDOWN:
             return
@@ -237,23 +329,58 @@ _BUTTON_PITCH = 0.149
 #: 所以固定座標是錯的模型:按鈕數量一變,其他每一顆都跟著移位。
 _BUTTON_RIGHT = 0.682
 
-#: 從右邊數,每一種按鈕在第幾格。
+#: 只有一種動作可選時,每一種按鈕在第幾格,從右邊數。跳過在第 0 格,其他都在第 1 格。
 #:
-#: ⚠ **只有 0 與 1 是量過的。** 跳過在第 0 格、碰在第 1 格,兩者都用
-#: 實際畫面確認過。其餘是推測:同時出現兩個以上可鳴的動作本來就少見,
-#: 而最常見的情況(只有一種可鳴 + 跳過)不管是哪一種都落在第 1 格 ——
-#: 那一格已經驗過了。
-#:
-#: 立直也在這一排,**與碰同一格**。使用者實際看過畫面這麼回報的。
-#: 它出現在自己的回合(那時候沒有「跳過」),所以原本以為它不在這一排、
-#: 要另外量 —— 不必。
+#: 立直也在這一排,**與碰同一格**。它出現在自己的回合,那時候沒有「跳過」。
 _BUTTON_SLOT = {"skip": 0, "pon": 1, "chi": 1, "kan": 1, "hora": 1, "reach": 1}
+
+#: 封包 ``operation_list`` 的動作代號,依引擎的動作名稱。
+#:
+#: 同時有好幾種動作時,按鈕由左到右就是這份清單的順序,跳過在最右邊。實測三種組合:
+#: 吃 碰 跳過、碰 和 跳過、碰 槓 跳過。
+_OPERATIONS = {
+    "chi": (2,),
+    "pon": (3,),
+    "ankan": (4,),
+    "daiminkan": (5,),
+    "kakan": (6,),
+    "reach": (7,),
+    "hora": (8, 9),
+}
+
+#: 封包裡「打牌」的代號。它不是按鈕。
+_OP_DISCARD = 1
+
+#: 吃牌有好幾種組合時跳出來的選擇框,相對 viewport 的比例。
+#:
+#: 2026-11-01 從兩組與三組的畫面量的:組與組等距,以畫面中央排開,由左到右就是封包
+#: ``combination`` 的順序。
+_CHOICE_CENTER = 0.4895
+_CHOICE_PITCH = 0.104
+_CHOICE_Y = 0.71
 
 
 def button_point(name: str) -> tuple[float, float]:
-    """某一顆按鈕在畫面上的位置,相對 viewport 的比例。"""
-    slot = _BUTTON_SLOT.get(name, 1)
+    """只有一種動作可選時,某一顆按鈕的位置,相對 viewport 的比例。"""
+    return _slot_point(_BUTTON_SLOT.get(name, 1))
+
+
+def _slot_point(slot: int) -> tuple[float, float]:
     return _BUTTON_RIGHT - slot * _BUTTON_PITCH, _BUTTON_Y
+
+
+def choice_point(index: int, count: int) -> tuple[float, float]:
+    """選擇框裡第 ``index`` 組的位置,共 ``count`` 組。"""
+    return _CHOICE_CENTER + (index - (count - 1) / 2) * _CHOICE_PITCH, _CHOICE_Y
+
+
+def _choice_index(consumed: Sequence[str], combinations: Sequence[str]) -> int | None:
+    """引擎要的組合是封包列的第幾組。``combination`` 長得像 ``1s|2s``,赤五寫成 ``0p``。"""
+    wanted = sorted(consumed)
+    for index, combination in enumerate(combinations):
+        if sorted(ms_to_mjai(tile) for tile in combination.split("|")) == wanted:
+            return index
+    return None
 
 
 _BUTTONS: dict[str, tuple[float, float]] = {name: button_point(name) for name in _BUTTON_SLOT}
@@ -276,8 +403,25 @@ class MortalBot:
     _pending: list[tuple[float, float]] = field(default_factory=list, repr=False)
     _ready_at: float | None = field(default=None, repr=False)
     _last_click: float = field(default=0.0, repr=False)
+    #: 這一桌確定只有電腦。見 :func:`cpu_table`。
+    allowed: bool = False
+    #: 剛點的那一下,還沒看到結果。見 :data:`_RETRY_AFTER`。
+    _unconfirmed: tuple[float, float] | None = field(default=None, repr=False)
+    _retry_at: float = field(default=0.0, repr=False)
+    _retries: int = field(default=0, repr=False)
+    _seat: int | None = field(default=None, repr=False)
+    #: 自己是莊家,而且還沒動過。見 :meth:`_tile_point`。
+    _dealing: bool = field(default=False, repr=False)
+    #: 這一手要打的牌。與打出去的不同就是點錯了。
+    _intended: str | None = field(default=None, repr=False)
+    #: 這一手要鳴的組合。
+    _wanted_call: list[str] | None = field(default=None, repr=False)
+    #: 伺服器說現在能做什麼:``(代號, 組合)``,順序就是畫面上按鈕的順序。
+    _operations: tuple[tuple[int, tuple[str, ...]], ...] = field(default=(), repr=False)
 
     actions: int = 0
+    #: 打出去的牌與引擎要的不同幾次。不是零就代表座標算錯了。
+    misplays: int = 0
     #: 看過幾個封包、解出幾個事件。心跳會報,用來分辨「沒在試」與「試了沒用」。
     frames: int = 0
     events: int = 0
@@ -294,16 +438,46 @@ class MortalBot:
         decoded = self._decoder.feed(frame)
         if decoded is None:
             return
+        self.allowed = _judge_table(decoded.message, self.allowed)
+        if decoded.message.is_action:
+            self._operations = _read_operations(decoded.message.action)
         for event in decoded.events:
             self.events += 1
-            if event.TYPE == "start_game":
-                self._hand = HandTracker(_name="autoplay")
+            self._unconfirmed = None
+            self._follow(event)
             self._hand.feed(event)
-            advice = self.engine.react(event)  # type: ignore[attr-defined]
-            points = self._plan(self._resolve(advice))
+            advice = self._resolve(self.engine.react(event))  # type: ignore[attr-defined]
+            points = self._plan(advice)
             if points:
                 self._pending = points
-                self._ready_at = time.monotonic() + self.delay
+                wait = _DEAL_DELAY if self._dealing else self.delay
+                self._ready_at = time.monotonic() + wait
+                self._intended = _discard_of(advice)
+                consumed = getattr(getattr(advice, "action", None), "consumed", None)
+                self._wanted_call = sorted(consumed) if consumed else None
+
+    def _follow(self, event) -> None:
+        """記下輪到誰、開局的狀態,順便核對上一手打出去的是不是要打的那張。"""
+        if event.TYPE == "start_game":
+            self._hand = HandTracker(_name="autoplay")
+            self._seat = event.id
+        elif event.TYPE == "start_kyoku":
+            self._dealing = event.oya == self._seat
+            self._intended = None
+        elif getattr(event, "actor", None) == self._seat and event.TYPE != "tsumo":
+            self._dealing = False
+            if event.TYPE == "dahai":
+                if self._intended not in (None, event.pai):
+                    self.misplays += 1
+                    logger.warning("點錯了:要打 {},打出去的是 {}", self._intended, event.pai)
+                self._intended = None
+            elif event.TYPE in ("chi", "pon") and self._wanted_call is not None:
+                if sorted(event.consumed) != self._wanted_call:
+                    self.misplays += 1
+                    logger.warning(
+                        "點錯了:要鳴 {},鳴到的是 {}", self._wanted_call, event.consumed
+                    )
+                self._wanted_call = None
 
     def _resolve(self, advice):
         """立直的話,先問清楚宣言之後要切哪一張。
@@ -353,17 +527,38 @@ class MortalBot:
         if kind == "reach":
             # 立直是兩段:先宣言,再切。切哪一張引擎先 peek 好了放在 follow_up
             # —— 等真的看到 reach 事件才問就來不及了(見 Advice.follow_up)。
-            points = [_BUTTONS["reach"]]
+            points = self._call_points(kind, action)
             follow = getattr(advice, "follow_up", None)
             if follow is not None and getattr(follow, "TYPE", "") == "dahai":
                 point = self._tile_point(follow.pai)
                 if point:
                     points.append(point)
             return points
-        if kind in _BUTTONS:
-            return [_BUTTONS[kind]]
+        if kind in _OPERATIONS:
+            return self._call_points(kind, action)
         logger.info("不知道怎麼按「{}」,跳過這一手", kind)
         return []
+
+    def _call_points(self, kind: str, action) -> list[tuple[float, float]]:
+        """按鈕,以及有好幾種組合時選擇框裡的那一組。
+
+        只按按鈕的話選擇框就開在那裡,要等重點剛好點中它,而那個位置落在框的中間偏右:
+        實測東三局引擎要吃 1 2 索,三組裡吃到的是中間的 2 4 索。
+        """
+        codes = [code for code, _ in self._operations]
+        code = next((c for c in _OPERATIONS[kind] if c in codes), None)
+        if code is None:
+            return [button_point("kan" if kind in ("ankan", "daiminkan", "kakan") else kind)]
+        points = [_slot_point(len(codes) - codes.index(code))]
+        combinations = dict(self._operations)[code]
+        consumed = getattr(action, "consumed", None)
+        if kind in ("chi", "pon") and consumed and len(combinations) > 1:
+            index = _choice_index(consumed, combinations)
+            if index is None:
+                logger.warning("{} 不在選項 {} 裡", consumed, combinations)
+            else:
+                points.append(choice_point(index, len(combinations)))
+        return points
 
     def _tile_point(self, pai: str) -> tuple[float, float] | None:
         """手上哪一張是這張牌 —— 用封包的手牌找,不用畫面。
@@ -371,6 +566,8 @@ class MortalBot:
         雀魂把暗手牌排序後顯示,摸進來那張另外擺在右邊。所以位置由
         「它在排序後的第幾個」決定,而那個順序封包就知道。
         """
+        if self._dealing:
+            return self._dealt_point(pai)
         # **只移掉一張,不是所有同名的。** 摸到一張手上已經有的牌很常見,
         # 而按值過濾會把兩張都拿掉 —— 手牌數少算一張,摸的那張就往左偏
         # 一格,點到隔壁。隔壁那張是合法的牌,所以不會有任何錯誤訊息,
@@ -390,9 +587,29 @@ class MortalBot:
             return None
         return tile_point(order.index(pai), len(rest))
 
+    def _dealt_point(self, pai: str) -> tuple[float, float] | None:
+        """莊家開局的 14 張在哪裡。**與封包說的摸牌無關。**
+
+        封包的第 14 張是「摸的」,畫面不是這樣擺的:14 張一起排序,最後一張放在摸牌的位置。
+        實測封包摸 8 萬、手上有西,畫面的摸牌位卻是西。照封包算的話西在第 13 格,而那裡實際
+        是 8 索,於是「要打西,打出去是 8 索」。莊家第一手 7 次錯 5 次,其他 254 手全對。
+        """
+        order = sorted(self._hand.tiles, key=sort_key)
+        if pai not in order:
+            logger.warning("引擎要打 {},但手上沒有 —— 手牌 {}", pai, order)
+            return None
+        index = order.index(pai)
+        last = len(order) - 1
+        return tile_point(index, last, drawn=index == last)
+
     def act(self, page: Page) -> None:
         now = time.monotonic()
         self._heartbeat(now)
+        if not self.allowed:
+            return
+        if self._unconfirmed is not None:
+            self._retry(page, now)
+            return
         if self._ready_at is None or now < self._ready_at or not self._pending:
             return
         if now - self._last_click < _COOLDOWN:
@@ -419,12 +636,35 @@ class MortalBot:
         name = next((k for k, v in _BUTTONS.items() if v == (fx, fy)), None)
         if name is not None or self.dry_run:
             self._snapshot(page, fx, fy)
+        if not self._pending and not self.dry_run:
+            # **按下去之前就要記。** 按壓的這段時間 Playwright 會送事件進來,而打出去的回應
+            # 常常就在這時候到。按完才記的話,那個回應已經過了,成功的一下會被當成沒反應。
+            self._unconfirmed = (fx, fy)
+            self._retry_at = now + _RETRY_AFTER
+            self._retries = 0
         if not self.dry_run:
             _press(page, x, y)
         self._last_click = now
         self.actions += 1
         if not self._pending:
             self._ready_at = None
+
+    def _retry(self, page: Page, now: float) -> None:
+        """剛才那一下沒有下文,再點一次。見 :data:`_RETRY_AFTER`。"""
+        if now < self._retry_at or self._unconfirmed is None:
+            return
+        if self._retries >= _MAX_RETRIES:
+            logger.warning("點了 {} 次都沒有反應,放棄這一手", self._retries + 1)
+            self._unconfirmed = None
+            return
+        size = viewport(page)
+        if size is None:
+            return
+        fx, fy = self._unconfirmed
+        self._retries += 1
+        logger.info("沒有反應,第 {} 次重點 ({:.3f}, {:.3f})", self._retries, fx, fy)
+        _press(page, int(size[0] * fx), int(size[1] * fy))
+        self._retry_at = time.monotonic() + _RETRY_AFTER
 
     def _heartbeat(self, now: float) -> None:
         """每隔一段時間報一次自己在哪一步。
@@ -438,10 +678,11 @@ class MortalBot:
             return
         self._beat_at = now
         logger.info(
-            "自動打牌:封包 {} / 事件 {} / 動作 {} / 手牌 {} 張,摸到 {} / {}",
+            "自動打牌:封包 {} / 事件 {} / 動作 {} / 點錯 {} / 手牌 {} 張,摸到 {} / {}",
             self.frames,
             self.events,
             self.actions,
+            self.misplays,
             len(self._hand.tiles),
             self._hand.drawn or "—",
             "等著動手" if self._pending else "沒輪到",
@@ -475,3 +716,284 @@ class MortalBot:
             logger.info("  畫面存到 {} —— 拿它對座標", path)
         except Exception as exc:  # noqa: BLE001 - 存不下來不值得中斷
             logger.warning("存不下畫面:{}", exc)
+
+
+# --------------------------------------------------------------------- 開房間
+
+#: 下面這些座標都是畫布比例,在 1280x720 的大廳量的。
+
+#: 大廳的「友人場」,以及點下去之後的「創設房間」。
+_FRIEND_ROOM = (0.72, 0.70)
+_CREATE_ROOM = (0.727, 0.375)
+#: 建立房間頁。按鈕正中央是字,判斷顏色要取沒有字的地方,所以另外記。
+_FOUR_PLAYERS_MARK = (0.225, 0.27)
+_HANCHAN = (0.554, 0.468)
+_HANCHAN_MARK = (0.515, 0.468)
+_CREATE = (0.5, 0.875)
+_CREATE_MARK = (0.445, 0.875)
+#: 房間裡三個空位的「新增電腦」。
+_ADD_CPU = ((0.334, 0.565), (0.533, 0.565), (0.73, 0.565))
+_START = (0.594, 0.925)
+#: 「開始」要三台電腦都就位才會從灰色變橘色。
+_START_MARK = (0.54, 0.925)
+
+#: 高級設置。開啟後設定列表要往下捲 :data:`_SCROLL_STEPS` 格才看得到下面兩項。
+_ADVANCED = (0.417, 0.663)
+_SETTINGS = (0.5, 0.55)
+_SCROLL_STEPS = 9
+#: 滾輪一格。列表每格的位移是固定的,與這個數字無關,只要夠大。
+_SCROLL_WHEEL = 160
+#: 兩格之間等列表滑完。
+_SCROLL_MS = 400
+#: 捲到底之後的「1 位必要點數」。按下去是遊戲自己的數字鍵盤,不吃實體鍵盤。
+_FIRST_PLACE = (0.278, 0.495)
+_PAD_TWO = (0.452, 0.434)
+_PAD_ZERO = (0.452, 0.681)
+_PAD_OK = (0.4535, 0.794)
+#: 捲到底之後「擊飛」的「關閉」。
+_NO_BUST = (0.278, 0.595)
+#: 延長局的 1 位必要點數。最大值,沒有人到得了,半莊一定打進西入。
+_FIRST_PLACE_POINTS = 200000
+
+#: 橘色按鈕,BGR 的範圍。實測選中的選項是 (70, 175, 255),「創建」是 (58, 154, 239),
+#: 沒選中的是藍灰色 (104, 77, 51),大廳同一個位置是 (54, 31, 142) 與 (203, 204, 221)。
+_ORANGE_LOW = (30, 130, 210)
+_ORANGE_HIGH = (110, 210, 255)
+
+#: 登入之後等多久才開始點。大廳要先演進場動畫。
+_LOBBY_SETTLE = 6.0
+#: 兩次點擊之間等多久。頁面切換有動畫,太快會點在舊頁面上。
+_STEP_DELAY = 2.0
+#: 點了之後等多久要看到封包確認。
+_REPLY_TIMEOUT = 15.0
+#: 可以重按的那一步,多久沒回覆就再按一次。實測第三台電腦的點擊沒有送出請求,房間就開不成。
+_RETRY_AFTER = 4.0
+
+_LOGIN = ".lq.Lobby.loginSuccess"
+_CREATE_REQUEST = ".lq.Lobby.createRoom"
+_ROOM_UPDATE = ".lq.NotifyRoomPlayerUpdate"
+
+_HANCHAN_MODE = 2
+_FOUR_PLAYERS = 4
+
+
+def is_orange(image: np.ndarray, fx: float, fy: float) -> bool:
+    """畫面上那一點是不是橘色按鈕。取一小塊平均,單一像素可能剛好在花紋上。"""
+    height, width = image.shape[:2]
+    x, y = int(width * fx), int(height * fy)
+    patch = image[max(0, y - 4) : y + 4, max(0, x - 4) : x + 4].reshape(-1, 3)
+    if patch.size == 0:
+        return False
+    blue, green, red = patch.mean(axis=0)
+    low, high = _ORANGE_LOW, _ORANGE_HIGH
+    return bool(
+        low[0] <= blue <= high[0] and low[1] <= green <= high[1] and low[2] <= red <= high[2]
+    )
+
+
+@dataclass(frozen=True)
+class _Stage:
+    """開房間的一步。"""
+
+    name: str
+    point: tuple[float, float]
+    #: 按之前這些位置要是橘色,否則就不在該在的頁面上。
+    marks: tuple[tuple[float, float], ...] = ()
+    #: 按了之後等這件事成立才往下走。``None`` 就只等動畫。
+    done: Callable[[CpuRoomPilot], bool] | None = None
+    #: 不是按,是捲動設定列表這麼多格,負的往上。
+    scroll: int = 0
+    #: 沒回覆可以在同一點再按。只給「新增電腦」:同一個空位,上一下其實生效的話那裡已經是電腦的
+    #: 卡片,再按也沒事。其他步驟按錯會到別的頁面,不重按。
+    retry: bool = False
+
+
+def _overtime_stages() -> tuple[_Stage, ...]:
+    """打開高級設置,1 位必要點數設成最大、關掉擊飛:一定打得進西入。
+
+    擊飛要關:Mortal 打簡單的電腦,實測五場有兩場不到南場就有人被飛掉。
+    """
+    digits = (_PAD_TWO, *(_PAD_ZERO,) * 5)
+    return (
+        _Stage("高級設置", _ADVANCED),
+        _Stage("往下捲", _SETTINGS, scroll=_SCROLL_STEPS),
+        _Stage("1 位必要點數", _FIRST_PLACE),
+        *(_Stage("數字", point) for point in digits),
+        _Stage("確認", _PAD_OK),
+        _Stage("關閉擊飛", _NO_BUST),
+        _Stage("捲回去", _SETTINGS, scroll=-_SCROLL_STEPS),
+    )
+
+
+def _stages(*, overtime: bool = False) -> tuple[_Stage, ...]:
+    def robots(count: int) -> Callable[[CpuRoomPilot], bool]:
+        return lambda pilot: pilot.robots >= count
+
+    return (
+        _Stage("友人場", _FRIEND_ROOM),
+        _Stage("創設房間", _CREATE_ROOM),
+        _Stage("半莊", _HANCHAN, marks=(_FOUR_PLAYERS_MARK, _CREATE_MARK)),
+        *(_overtime_stages() if overtime else ()),
+        _Stage("創建", _CREATE, marks=(_HANCHAN_MARK,), done=lambda pilot: pilot.room),
+        *(
+            _Stage("新增電腦", point, done=robots(index + 1), retry=True)
+            for index, point in enumerate(_ADD_CPU)
+        ),
+        _Stage("開始", _START, marks=(_START_MARK,), done=lambda pilot: pilot.started),
+    )
+
+
+@dataclass
+class CpuRoomPilot:
+    """從大廳開一間四人半莊,加三台電腦,按開始,然後把畫面交給 ``bot``。
+
+    滿足 :class:`~mia.groundtruth.cdp.AutoPlayer`。
+
+    **大廳點錯的後果比牌桌上大。** 同一個位置在另一頁是「段位場」,一路盲點下去有機會排進
+    真人對局,而那時候沒有人在電腦前面。所以每一步都要有憑據才往下走:進建立房間頁之後看
+    按鈕顏色,開房、加電腦、開始都等封包回覆。任何一步對不上就存畫面、設 :attr:`failed`,
+    不重試也不猜。
+    """
+
+    bot: Any
+    #: 失敗時的畫面存在這裡。
+    out: Path
+    schema: LiqiSchema | None = None
+    #: 開成一定打進西入的房間,見 :func:`_overtime_stages`。
+    overtime: bool = False
+    #: 為什麼停下來。空字串表示沒事。
+    failed: str = ""
+    #: 房間開好了,而且是四人半莊。
+    room: bool = False
+    #: 房間裡有幾台電腦。
+    robots: int = 0
+    #: 進牌桌了。
+    started: bool = False
+
+    _parsers: dict[str, LiqiParser] = field(default_factory=dict, repr=False)
+    _plan: tuple[_Stage, ...] = field(default_factory=_stages, repr=False)
+    _index: int = field(default=0, repr=False)
+    _wait_until: float | None = field(default=None, repr=False)
+    _deadline: float | None = field(default=None, repr=False)
+    _retry_at: float | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.schema is None:
+            self.schema = LiqiSchema.load()
+        self._plan = _stages(overtime=self.overtime)
+
+    # ------------------------------------------------------------ 封包
+
+    def observe(self, payload: bytes, *, from_client: bool, flow: str) -> None:
+        self.bot.observe(payload, from_client=from_client, flow=flow)
+        if self.started:
+            return
+        parser = self._parsers.setdefault(flow, LiqiParser(self.schema))
+        try:
+            message = parser.parse(payload, from_client=from_client)
+        except LiqiParseError:
+            return
+        self.note(message)
+
+    def note(self, message: LiqiMessage) -> None:
+        """看一則訊息,更新憑據。"""
+        data: Any = message.payload
+        if message.method == _LOGIN and message.kind is MessageKind.RESPONSE:
+            if self._wait_until is None:
+                self._wait_until = time.monotonic() + _LOBBY_SETTLE
+        elif message.method == _CREATE_REQUEST and message.kind is MessageKind.RESPONSE:
+            mode, count = data.room.mode.mode, data.room.max_player_count
+            if mode != _HANCHAN_MODE or count != _FOUR_PLAYERS:
+                self._fail(f"開出來的房間不是四人半莊(mode={mode},人數={count})")
+            elif not self.overtime:
+                self.room = True
+            else:
+                rule = data.room.mode.detail_rule
+                if rule.fandian == _FIRST_PLACE_POINTS and not rule.can_jifei:
+                    self.room = True
+                else:
+                    self._fail(f"延長局沒設好(必要點數 {rule.fandian},擊飛 {rule.can_jifei})")
+        elif message.method == _ROOM_UPDATE:
+            if len(data.player_list) > 1:
+                self._fail("房間裡出現了其他真人")
+            else:
+                self.robots = len(data.robots)
+        elif message.method == _AUTH_GAME and message.kind is MessageKind.RESPONSE:
+            self.started = True
+
+    def _fail(self, reason: str) -> None:
+        if not self.failed:
+            logger.error("開房間失敗:{}", reason)
+            self.failed = reason
+
+    # ------------------------------------------------------------ 畫面
+
+    def act(self, page: Page) -> None:
+        if self.started:
+            self.bot.act(page)
+            return
+        if self.failed or self._wait_until is None:
+            return
+        now = time.monotonic()
+        if now < self._wait_until:
+            return
+        if self._deadline is not None:
+            last = self._plan[self._index - 1]
+            if last.done is not None and not last.done(self):
+                if now > self._deadline:
+                    self._give_up(page, f"按了「{last.name}」等不到回覆")
+                elif last.retry and self._retry_at is not None and now > self._retry_at:
+                    self._press_again(page, last)
+                return
+            self._deadline = None
+        if self._index >= len(self._plan):
+            return
+        stage = self._plan[self._index]
+        if stage.marks:
+            image = _grab(page)
+            if image is None or not all(is_orange(image, *mark) for mark in stage.marks):
+                self._give_up(page, f"要按「{stage.name}」時畫面不對")
+                return
+        size = viewport(page)
+        if size is None:
+            return
+        logger.info("開房間:按「{}」", stage.name)
+        x, y = int(size[0] * stage.point[0]), int(size[1] * stage.point[1])
+        if stage.scroll:
+            page.mouse.move(x, y)
+            for _ in range(abs(stage.scroll)):
+                page.mouse.wheel(0, _SCROLL_WHEEL if stage.scroll > 0 else -_SCROLL_WHEEL)
+                page.wait_for_timeout(_SCROLL_MS)
+        else:
+            _press(page, x, y)
+        self._index += 1
+        self._wait_until = time.monotonic() + _STEP_DELAY
+        if stage.done is not None:
+            self._deadline = time.monotonic() + _REPLY_TIMEOUT
+            self._retry_at = time.monotonic() + _RETRY_AFTER
+
+    def _press_again(self, page: Page, stage: _Stage) -> None:
+        size = viewport(page)
+        if size is None:
+            return
+        logger.info("開房間:「{}」沒有回覆,再按一次", stage.name)
+        _press(page, int(size[0] * stage.point[0]), int(size[1] * stage.point[1]))
+        self._retry_at = time.monotonic() + _RETRY_AFTER
+
+    def _give_up(self, page: Page, reason: str) -> None:
+        self._fail(reason)
+        try:
+            self.out.mkdir(parents=True, exist_ok=True)
+            page.screenshot(path=str(self.out / "lobby-failed.png"))
+        except Exception as exc:  # noqa: BLE001 - 存不下來不值得蓋掉原本的錯誤
+            logger.warning("存不下畫面:{}", exc)
+
+
+def _grab(page: Page) -> np.ndarray | None:
+    """現在的畫面,BGR。"""
+    try:
+        data = page.screenshot()
+    except Exception as exc:  # noqa: BLE001 - 分頁可能剛好在換頁
+        logger.warning("截不到畫面:{}", exc)
+        return None
+    return cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)

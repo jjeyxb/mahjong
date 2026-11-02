@@ -105,6 +105,81 @@ class TestTemplateSet:
         assert templates.scaled((40, 60)) is first
 
 
+class TestShortlist:
+    """快篩不能改變答案:分數與次高都要跟全部比一樣。"""
+
+    def test_it_changes_nothing(
+        self, templates: TemplateSet, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        module = sys.modules[TemplateSet.__module__]
+        for label, face in templates.scaled((60, 80))[:12]:
+            tile = cv2.copyMakeBorder(face, 8, 8, 8, 8, cv2.BORDER_CONSTANT, value=(200,) * 3)
+            fast = classify(tile, templates, size=(60, 80))
+            with monkeypatch.context() as patch:
+                patch.setattr(module, "_shortlist", lambda *_: None)
+                full = classify(tile, templates, size=(60, 80))
+            assert fast == full
+            assert fast.label == label
+
+    def test_it_only_looks_at_a_few(self, templates: TemplateSet) -> None:
+        face = templates.scaled((60, 80))[0][1]
+        tile = cv2.copyMakeBorder(face, 8, 8, 8, 8, cv2.BORDER_CONSTANT, value=(200,) * 3)
+        module = sys.modules[TemplateSet.__module__]
+        assert len(module._shortlist(tile, templates, (60, 80))) == 6  # noqa: SLF001
+
+    def test_too_small_to_shortlist(self, templates: TemplateSet) -> None:
+        module = sys.modules[TemplateSet.__module__]
+        tile = np.full((30, 26, 3), 200, np.uint8)
+        assert module._shortlist(tile, templates, (20, 24)) is None  # noqa: SLF001
+
+
+class TestAlternates:
+    """牌河的第二份模板:同一種牌兩種寫法,取分數高的那份。"""
+
+    @staticmethod
+    def _faces(templates: TemplateSet) -> dict[str, np.ndarray]:
+        return {label: face for label, face in templates.scaled((60, 80))}
+
+    def test_a_second_face_of_the_same_tile_is_not_a_rival(self, templates: TemplateSet) -> None:
+        """同一張牌的兩份不能互相當次高,不然差距是零,什麼都過不了門檻。"""
+        faces = self._faces(templates)
+        both = templates.only("1m", "9p").with_alternates({"1m": faces["1m"]})
+        tile = cv2.copyMakeBorder(faces["1m"], 8, 8, 8, 8, cv2.BORDER_CONSTANT, value=(200,) * 3)
+        match = classify(tile, both, size=(60, 80))
+        assert (match.label, match.runner_up) == ("1m", "9p")
+        assert match.margin > 0.1
+
+    def test_the_better_face_wins(self, templates: TemplateSet) -> None:
+        """素材長得不像,第二份像:要認得出來。"""
+        faces = self._faces(templates)
+        wrong = templates.only("1m", "9p")
+        both = TemplateSet({"1m": faces["2m"], "9p": faces["9p"]}).with_alternates(
+            {"1m": faces["1m"]}
+        )
+        tile = cv2.copyMakeBorder(faces["1m"], 8, 8, 8, 8, cv2.BORDER_CONSTANT, value=(200,) * 3)
+        assert classify(tile, both, size=(60, 80)).score == pytest.approx(
+            classify(tile, wrong, size=(60, 80)).score
+        )
+
+    def test_rotating_keeps_the_second_face(self, templates: TemplateSet) -> None:
+        both = templates.only("1m").with_alternates({"1m": self._faces(templates)["1m"]})
+        assert len(both.rotated().scaled((80, 60))) == 2
+
+    def test_without_river_faces_it_is_the_plain_set(self, tmp_path: Path) -> None:
+        """沒有錄影做不出第二份,不能因此不能用。"""
+        skin = tmp_path / "tiles" / "skin"
+        skin.mkdir(parents=True)
+        cv2.imwrite(str(skin / "1m.png"), np.full((84, 66, 3), 200, dtype=np.uint8))
+        assert len(TemplateSet.load_river("skin", root=tmp_path).scaled((30, 40))) == 1
+
+    def test_river_faces_are_added(self, tmp_path: Path) -> None:
+        for name in ("skin", "skin-river"):
+            folder = tmp_path / "tiles" / name
+            folder.mkdir(parents=True)
+            cv2.imwrite(str(folder / "1m.png"), np.full((84, 66, 3), 200, dtype=np.uint8))
+        assert len(TemplateSet.load_river("skin", root=tmp_path).scaled((30, 40))) == 2
+
+
 class TestAccuracy:
     @pytest.mark.parametrize("fixture", sorted(EXPECTED))
     def test_known_tiles_are_classified_correctly(

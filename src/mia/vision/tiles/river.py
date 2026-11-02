@@ -81,6 +81,13 @@ SEATS = ("own", "shimocha", "toimen", "kamicha")
 #: 對得上,不是還原物理尺寸 —— 模板本身就是斜著畫的貼圖,不是正投影。
 CELL = (90, 120)
 
+#: 攤平圖右邊多留幾像素。
+#:
+#: 橫放的宣言牌比一格寬,而同一列後面的牌會被它往右推。攤平圖只到第 6 格的話,宣言牌落在第 6
+#: 格時連讀的窗都開不出來,被推出去的第 6 張則整張讀不到。一場 13 次立直有 3 次是這樣。
+#: 第 6 格的窗要 1.4 格寬,所以多留 0.4 格多一點。
+SIDEWAYS_ROOM = 40
+
 #: 認牌用的模板,佔一格的比例 ``(寬, 高)``。即 64 x 92 像素。
 #:
 #: 原本是 0.72 x 0.70(65 x 84),那是「整體最佳」掃出來的 —— 但掃描時搜尋
@@ -103,6 +110,13 @@ FACE = (0.71, 0.77)
 #: 對家離鏡頭最遠,攤平時被拉長。高度 92 → 104 平均分數網頁版 0.76 → 0.82、Steam 全螢幕
 #: 0.67 → 0.80,Steam 有把握的格子 387 → 523 / 600。用 92 時實測四萬被認成中。
 _TALLER = {"toimen": 1.13}
+
+#: 這些列的牌面另外量,``(寬, 高)``,佔一格的比例。
+#:
+#: 自己第三列離鏡頭最近,攤平之後牌面反而矮:照 :data:`FACE` 的 64 x 92,靜止的 149 張只對 7 成,
+#: 分數 0.5 上下,整排讀不出來。掃出來是 66 x 78,140 張對,有信心的 123 張只錯 1 張。立直之後的
+#: 摸切只看得到河,這一排讀錯就變成摸錯牌。
+_ROW_FACE = {("own", 2): (66 / 90, 78 / 120)}
 
 #: 認牌時搜尋窗往格子**下方**多看幾像素(以 :data:`CELL` 的高度為準)。
 #:
@@ -303,6 +317,12 @@ class RiverView:
         tuple[float, float], tuple[float, float], tuple[float, float], tuple[float, float]
     ]
     sideways_scale: float = 1.0
+    #: 認牌的搜尋窗往左多看幾像素。見 :data:`DEFAULT_CORNERS` 的上家。
+    left_slack: int = 0
+    #: 橫放的牌面要認成哪張牌時用的模板尺寸,攤平後的像素。離鏡頭越遠越小,所以每家一組。
+    #: 六場 46 張宣言牌:共用 :data:`SIDEWAYS_FACE` 只對 33 張,對家 4/11;分開量 41 張,對家 9/11。
+    #: 找哪一格是宣言牌還是用 :data:`SIDEWAYS_FACE`,那邊問的是形狀,而且分數門檻是照它量的。
+    sideways_size: tuple[int, int] = (104, 55)
 
     def quad(self, table: Rect) -> np.ndarray:
         """換算成擷取影像上的像素四邊形。"""
@@ -322,9 +342,9 @@ class RiverView:
             cell: 攤平後一格的大小。
 
         Returns:
-            ``(3 * cell高 + 下方延伸, 6 * cell寬)`` 的 BGR 影像,牌面是正的。
+            ``(3 * cell高 + 下方延伸, 6 * cell寬 + 右方延伸)`` 的 BGR 影像,牌面是正的。
             比三列高一截,是給認牌的搜尋窗往下看用的(:data:`SEARCH_BELOW`)。
-            格子的位置不變,第三列以下只是平面的延伸。
+            右邊多一截見 :data:`SIDEWAYS_ROOM`。格子的位置不變,延伸的部分只是平面的延伸。
         """
         width, height = cell
         target = np.array(
@@ -333,7 +353,8 @@ class RiverView:
         )
         matrix = cv2.getPerspectiveTransform(self.quad(table), target)
         below = _below(cell)
-        return cv2.warpPerspective(image, matrix, (COLUMNS * width, ROWS * height + below))
+        room = round(SIDEWAYS_ROOM * width / CELL[0])
+        return cv2.warpPerspective(image, matrix, (COLUMNS * width + room, ROWS * height + below))
 
 
 #: 四家的角點。
@@ -379,18 +400,31 @@ DEFAULT_CORNERS: dict[str, RiverView] = {
     "toimen": RiverView(
         ((0.5866, 0.2720), (0.4088, 0.2699), (0.4174, 0.1350), (0.5747, 0.1422)),
         sideways_scale=0.9,
+        sideways_size=(88, 63),
     ),
-    "kamicha": RiverView(((0.4160, 0.2667), (0.4077, 0.4920), (0.2488, 0.5002), (0.2847, 0.2667))),
+    # 上家最後一欄的牌比格線偏左,模板滑不到正確的位置。實打兩場逐欄量:這一欄只有 26/33,其他
+    # 位置 94~100%。往左放寬 8 像素變成 31/33,有信心的 24 → 31,有信心的錯 0,其他欄不變。
+    "kamicha": RiverView(
+        ((0.4160, 0.2667), (0.4077, 0.4920), (0.2488, 0.5002), (0.2847, 0.2667)),
+        left_slack=8,
+        sideways_size=(92, 55),
+    ),
 }
 
 
-def face_size(cell: tuple[int, int] = CELL, *, seat: str | None = None) -> tuple[int, int]:
+def face_size(
+    cell: tuple[int, int] = CELL, *, seat: str | None = None, row: int | None = None
+) -> tuple[int, int]:
     """模板該縮到多大。傳給 :func:`~mia.vision.tiles.classify.classify` 的 ``size``。
 
     Args:
         cell: 一格多大。
         seat: 哪一家。對家攤平之後牌面比較高,見 :data:`_TALLER`。
+        row: 第幾列,從 0 算。見 :data:`_ROW_FACE`。
     """
+    face = _ROW_FACE.get((seat or "", row or 0))
+    if face is not None:
+        return round(face[0] * cell[0]), round(face[1] * cell[1])
     height = round(FACE[1] * cell[1]) * _TALLER.get(seat or "", 1.0)
     return round(FACE[0] * cell[0]), round(height)
 
@@ -399,7 +433,9 @@ def _below(cell: tuple[int, int]) -> int:
     return round(SEARCH_BELOW * cell[1] / CELL[1])
 
 
-def search_window(flat: np.ndarray, rect: Rect, cell: tuple[int, int] = CELL) -> np.ndarray:
+def search_window(
+    flat: np.ndarray, rect: Rect, cell: tuple[int, int] = CELL, *, left: int = 0
+) -> np.ndarray:
     """認一格牌要看的那一塊:格子本身,往下延伸 :data:`SEARCH_BELOW`、
     往上延伸 :data:`SEARCH_ABOVE`(到影像頂端為止)。
 
@@ -407,7 +443,8 @@ def search_window(flat: np.ndarray, rect: Rect, cell: tuple[int, int] = CELL) ->
     第一列的牌面底部在窗外,模板滑不到正確的位置 —— 那正是二萬讀成一萬的原因。
     """
     top = max(rect.y - round(SEARCH_ABOVE * cell[1] / CELL[1]), 0)
-    return flat[top : rect.y + rect.height + _below(cell), rect.x : rect.x + rect.width]
+    start = max(rect.x - left, 0)
+    return flat[top : rect.y + rect.height + _below(cell), start : rect.x + rect.width]
 
 
 #: 覆核用的第二個模板高度,以一格的高度為單位。即 96 像素。
@@ -577,7 +614,7 @@ def read_river(
         shift = _shift_of(index, sideways, scale)
         rect = Rect(column * width + shift, row * height, width, height)
         cells.append(rect)
-        if rect.x + rect.width <= flat.shape[1]:
+        if rect.x + rect.width <= COLUMNS * width:
             occupied.append(_occupied(flat, _face_of(rect, cell)))
             continue
         # 挪出去了。**有無要用沒挪的位置判,不能判成空的。**
@@ -589,7 +626,7 @@ def read_river(
         here = Rect(column * width, row * height, width, height)
         there = _occupied(flat, _face_of(here, cell))
         occupied.append(there)
-        if there:
+        if there and rect.x + rect.width > flat.shape[1]:
             clipped.append(index)
     return River(
         cells=tuple(cells),
@@ -648,10 +685,10 @@ def find_sideways(
        真的橫放牌後面本來全偏著,挪完會對回來;九筒誤判後面本來是對的,
        挪完會壞掉。實測 0/92 假陽通過這一關。
 
-    順便得到一個很乾淨的性質:宣言牌是當列最後一張的時候沒有東西可以驗,
-    於是回 ``None``。**而那時候它也還沒害到任何人** —— 它只錯自己那一張,
-    後面還沒有牌。這個偵測器只需要在有影響的時候正確,而剛好就在那時候
-    驗得出來。
+    宣言牌是當列最後一張的時候沒有東西可以驗,於是回 ``None``。這裡原本說那時候它只錯
+    自己一張,不礙事。但那一張是立直者的現物,實打一場讀錯的牌有 9 張是宣言牌。所以即時
+    那條路不靠這裡:點數一變就知道宣言牌是哪一張,見 ``TableWorker._mark_declared``。
+    這個偵測器留給點數沒讀到的時候。
 
     Args:
         flat: 攤平後的影像。
@@ -730,6 +767,7 @@ def classify_sideways(
     *,
     cell: tuple[int, int] = CELL,
     scale: float = 1.0,
+    size: tuple[int, int] | None = None,
 ) -> Match:
     """認橫放的立直宣言牌是哪一張。
 
@@ -747,6 +785,7 @@ def classify_sideways(
         templates: **直放的**模板集,旋轉在裡面做。
         cell: 攤平時用的一格大小。
         scale: 這一家的 :attr:`RiverView.sideways_scale`。
+        size: 這一家的 :attr:`RiverView.sideways_size`。``None`` 用共用的尺寸。
 
     Returns:
         與 :func:`classify_river_tile` 同樣的 ``Match``,但**永遠不會有信心**
@@ -770,7 +809,7 @@ def classify_sideways(
         「它以為是什麼」,而上層拿不到「可以採信」。
     """
     patch = _sideways_patch(flat, index, cell)
-    best = classify(patch, templates.rotated(), size=sideways_face_size(cell, scale))
+    best = classify(patch, templates.rotated(), size=size or sideways_face_size(cell, scale))
     return Match(
         label=best.label,
         score=best.score,

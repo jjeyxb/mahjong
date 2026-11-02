@@ -16,7 +16,7 @@ from mia.mjai.events import (
     StartKyoku,
     Tsumo,
 )
-from mia.tracker import Action, KyokuLog, Move, OwnMove, Step, compose
+from mia.tracker import Action, KyokuLog, Move, OwnMove, Step, compose, resynced
 from mia.vision.hud import Hud
 
 T = Action.TSUMO
@@ -184,6 +184,39 @@ class TestOwn:
         moves = [OwnMove(Move.CALL, ("1m", "2m"))]
         stream = compose(log(steps=[Step(T, 3), Step(D, 3, "3m")], moves=moves))
         assert body(stream.events)[-1] == Chi(actor=0, target=3, pai="3m", consumed=["1m", "2m"])
+
+
+    def test_own_call_on_a_reach_tile(self) -> None:
+        """宣言牌後面接著 reach_accepted。實測事件流停在那裡直到局尾。"""
+        moves = [OwnMove(Move.CALL, ("1m", "2m"))]
+        steps = [Step(T, 3), Step(D, 3, "3m", serial=0)]
+        stream = compose(log(steps=steps, moves=moves, reaches=[(3, 0)]))
+        assert body(stream.events)[-2:] == [
+            ReachAccepted(actor=3),
+            Chi(actor=0, target=3, pai="3m", consumed=["1m", "2m"]),
+        ]
+
+    def test_a_call_the_hand_never_saw_is_skipped(self) -> None:
+        """排序亂掉時自己打牌看起來像跳家,排出一步假的鳴牌。實測事件流停在那裡直到局尾。"""
+        moves = [OwnMove(Move.DRAW, ("E",)), OwnMove(Move.DISCARD, ("E",))]
+        steps = [Step(T, 3), Step(D, 3, "3m"), Step(C, 0, target=3), Step(D, 0, "E")]
+        stream = compose(log(steps=steps, moves=moves))
+        assert not stream.stalled
+        assert body(stream.events)[-2:] == [
+            Tsumo(actor=0, pai="E"),
+            Dahai(actor=0, pai="E", tsumogiri=False),
+        ]
+
+    def test_a_call_the_turns_took_for_a_draw(self) -> None:
+        """副露比捨牌晚確認,排序器排成摸打,而步驟排出去就不會改了。手牌看到的是鳴牌。"""
+        moves = [OwnMove(Move.CALL, ("1m", "2m")), OwnMove(Move.DISCARD, ("E",))]
+        steps = [Step(T, 3), Step(D, 3, "3m"), Step(T, 0), Step(D, 0, "E")]
+        stream = compose(log(steps=steps, moves=moves))
+        assert not stream.stalled
+        assert body(stream.events)[-2:] == [
+            Chi(actor=0, target=3, pai="3m", consumed=["1m", "2m"]),
+            Dahai(actor=0, pai="E", tsumogiri=False),
+        ]
 
 
 class TestLegality:
@@ -523,7 +556,7 @@ class TestOtherMelds:
     def test_a_closed_kan_of_fives_holds_the_red(self) -> None:
         steps = [Step(T, 1), Step(C, 1), Step(T, 1), Step(D, 1, "1s")]
         melds: list[list[tuple[str, ...]]] = [[], [("5s", "5s", "5s")], [], []]
-        events = body(compose(log(steps=steps, melds=melds)).events)
+        events = body(compose(log(steps=steps, melds=melds, doras=[(0, "9m"), (3, "3s")])).events)
         assert events[1] == Ankan(actor=1, consumed=["5sr", "5s", "5s", "5s"])
 
     def test_an_open_kan_of_fives_holds_the_red(self) -> None:
@@ -541,7 +574,8 @@ class TestOtherMelds:
     def test_a_closed_kan_has_no_target(self) -> None:
         steps = [Step(T, 1), Step(C, 1), Step(T, 1), Step(D, 1, "1s")]
         melds: list[list[tuple[str, ...]]] = [[], [("C", "C", "C")], [], []]
-        events = body(compose(log(steps=steps, melds=melds)).events)
+        doras = [(0, "9m"), (3, "3s")]
+        events = body(compose(log(steps=steps, melds=melds, doras=doras)).events)
         assert events[1] == Ankan(actor=1, consumed=["C"] * 4)
 
 
@@ -595,3 +629,158 @@ class TestMarks:
         early = compose(log(steps=steps, melds=[[], [], [("?", "?", "?")], []])).events
         late = compose(log(steps=steps, melds=[[], [], [("6p", "7p", "8p")], []])).events
         assert early[:3] == late[:3]
+
+
+class TestNoCallsAfterReach:
+    """libriichi 遇到立直之後的鳴牌不是報錯,是整個行程崩潰。"""
+
+    @staticmethod
+    def _start():
+        from mia.mjai.events import StartKyoku
+
+        hand = ["1m", "1m", "2m", "3m", "4p", "5p", "6p", "7s", "8s", "9s", "E", "E", "S"]
+        return StartKyoku(
+            bakaze="E", kyoku=1, honba=0, kyotaku=0, oya=0, dora_marker="1p",
+            tehais=[hand, ["?"] * 13, ["?"] * 13, ["?"] * 13], scores=[25000] * 4,
+        )
+
+    def test_a_pon_after_reach_stops_the_stream(self) -> None:
+        from mia.mjai.events import Dahai, Pon, ReachAccepted
+        from mia.tracker.stream import _legal_length
+
+        events = [
+            self._start(),
+            ReachAccepted(actor=0),
+            Dahai(actor=1, pai="1m", tsumogiri=False),
+            Pon(actor=0, target=1, pai="1m", consumed=["1m", "1m"]),
+        ]
+        assert _legal_length(events) == 3
+
+    def test_someone_elses_reach_does_not_stop_me(self) -> None:
+        from mia.mjai.events import Dahai, Pon, ReachAccepted
+        from mia.tracker.stream import _legal_length
+
+        events = [
+            self._start(),
+            ReachAccepted(actor=2),
+            Dahai(actor=1, pai="1m", tsumogiri=False),
+            Pon(actor=0, target=1, pai="1m", consumed=["1m", "1m"]),
+        ]
+        assert _legal_length(events) == 4
+
+    def test_a_concealed_kan_is_still_fine_after_reach(self) -> None:
+        from mia.mjai.events import Ankan, ReachAccepted
+        from mia.tracker.stream import _legal_length
+
+        events = [self._start(), ReachAccepted(actor=1), Ankan(actor=1, consumed=["W"] * 4)]
+        assert _legal_length(events) == 3
+
+
+class TestTheRiverOverMisreadFaces:
+    """河裡有把握的牌比副露的牌面可靠,湊不成一組時聽河的。"""
+
+    @staticmethod
+    def _meld(pai: str | None, guess: str | None, faces: tuple[str, ...]) -> MjaiEvent:
+        steps = [Step(T, 1), Step(D, 1, pai, guess), Step(C, 2, target=1), Step(D, 2, "9m")]
+        melds: list[list[tuple[str, ...]]] = [[], [], [faces], []]
+        return body(compose(log(steps=steps, melds=melds)).events)[2]
+
+    def test_a_triple_that_cannot_hold_the_tile(self) -> None:
+        """5 索吃進來,牌面讀成三張 2 索。"""
+        meld = self._meld("5s", None, ("2s", "2s", "2s"))
+        assert isinstance(meld, Chi)
+        assert meld.pai == "5s"
+
+    def test_an_honor_that_cannot_hold_the_tile(self) -> None:
+        meld = self._meld("8s", None, ("P", "P", "W"))
+        assert isinstance(meld, Chi)
+        assert meld.pai == "8s"
+
+    def test_faces_that_fit_are_kept(self) -> None:
+        """橫放的被鳴牌常常認不到,只認到另外兩張。"""
+        meld = self._meld("5s", None, ("6s", "7s", "?"))
+        assert isinstance(meld, Chi)
+        assert sorted(meld.consumed) == ["6s", "7s"]
+
+    def test_a_guess_does_not_outrank_the_faces(self) -> None:
+        """沒把握的牌本來就可能是錯的。"""
+        meld = self._meld(None, "5s", ("2s", "2s", "2s"))
+        assert isinstance(meld, Pon)
+        assert meld.pai == "2s"
+
+
+class TestPhantomAnkans:
+    """別家的暗槓一定翻寶牌。沒有翻就是副露長度讀錯了。"""
+
+    STEPS = (Step(T, 1), Step(C, 1), Step(T, 1), Step(D, 1, "2p"))
+
+    def test_no_new_dora_no_kan(self) -> None:
+        stream = compose(log(steps=list(self.STEPS)))
+        assert body(stream.events) == [
+            Tsumo(actor=1, pai="?"),
+            Dahai(actor=1, pai="2p", tsumogiri=False),
+        ]
+
+    def test_a_new_dora_makes_it_real(self) -> None:
+        stream = compose(log(steps=list(self.STEPS), doras=[(0, "9m"), (1, "3s")]))
+        assert any(isinstance(event, Ankan) for event in stream.events)
+
+    def test_each_kan_needs_its_own_dora(self) -> None:
+        steps = [*self.STEPS, Step(T, 2), Step(C, 2), Step(T, 2), Step(D, 2, "3p")]
+        stream = compose(log(steps=steps, doras=[(0, "9m"), (1, "3s")]))
+        assert sum(isinstance(event, Ankan) for event in stream.events) == 1
+
+
+class TestResync:
+    """手牌與排序對不上時,用畫面上現在的手牌重寫自己的動作,事件流才不會停到局尾。"""
+
+    TILES = ("2m", "3m", "4p", "5p", "6p", "7s", "8s", "9s", "E", "E", "S", "S", "1p")
+
+    def _steps(self) -> list[Step]:
+        return [Step(T, 0), Step(D, 0, "N", serial=0), Step(T, 1), Step(D, 1, "2p")]
+
+    def test_the_stream_runs_again_with_the_hand_on_screen(self) -> None:
+        stalled = log(steps=self._steps(), moves=[OwnMove(Move.DISCARD, ("1m",))])
+        assert compose(stalled).stalled
+        fresh = resynced(stalled, self.TILES, None)
+        assert fresh is not None
+        tehai, moves = fresh
+        repaired = KyokuLog(
+            hud=HUD, tehai=tehai, doras=[(0, "9m")], steps=self._steps(), moves=moves
+        )
+        stream = compose(repaired)
+        assert not stream.stalled
+        assert stream.events[0].tehais[0] == list(self.TILES)  # type: ignore[attr-defined]
+        assert Dahai(actor=0, pai="N", tsumogiri=True) in stream.events
+
+    def test_the_tile_just_drawn_stays_a_draw(self) -> None:
+        stalled = log()
+        fresh = resynced(stalled, [*self.TILES, "P"], "P")
+        assert fresh is not None
+        tehai, moves = fresh
+        assert tehai == self.TILES
+        assert moves == [OwnMove(Move.DRAW, ("P",))]
+
+    def test_what_left_the_hand_is_put_back_in_the_deal(self) -> None:
+        """鳴牌拿出去的兩張與鳴完打的牌,配牌裡一定有,不然打的是手上沒有的牌。"""
+        call = OwnMove(Move.CALL, ("E", "E"))
+        steps = [Step(T, 3), Step(D, 3, "E"), Step(C, 0, target=3), Step(D, 0, "N", serial=0)]
+        stalled = log(steps=steps, moves=[call])
+        tiles = [*self.TILES[:8], *self.TILES[10:12]]
+        fresh = resynced(stalled, tiles, None)
+        assert fresh is not None
+        tehai, moves = fresh
+        assert sorted(tehai) == sorted([*tiles, "E", "E", "N"])
+        assert moves == [call, OwnMove(Move.DISCARD, ("N",))]
+
+    def test_it_gives_up_when_even_the_count_is_wrong(self) -> None:
+        assert resynced(log(), self.TILES[:10], None) is None
+
+    def test_a_turn_nobody_saw_cannot_be_rewritten(self) -> None:
+        stalled = log(steps=[Step(T, 0), Step(D, 0, serial=0), Step(C, 1, target=0)], moves=[
+            OwnMove(Move.DRAW, ("N",)), OwnMove(Move.DISCARD, ("N",))
+        ])
+        assert resynced(stalled, self.TILES, None) is None
+
+    def test_a_drawn_tile_that_is_not_in_the_hand_is_refused(self) -> None:
+        assert resynced(log(), self.TILES, "P") is None

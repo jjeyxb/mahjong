@@ -10,7 +10,7 @@ from mia.tracker.kyoku import KyokuSignal, KyokuWatcher
 from mia.tracker.melds import MeldWatcher, guess_meld
 from mia.tracker.rivers import UNKNOWN, Discard, RiverWatcher
 from mia.tracker.round import ReachWatcher, RoundWatcher
-from mia.tracker.stream import KyokuLog, Stream, compose
+from mia.tracker.stream import KyokuLog, Stream, compose, resynced
 from mia.tracker.turns import Action, Step, TurnTracker
 
 __all__ = [
@@ -34,4 +34,5 @@ __all__ = [
     "TurnTracker",
     "compose",
     "guess_meld",
+    "resynced",
 ]

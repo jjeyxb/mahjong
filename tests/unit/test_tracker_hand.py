@@ -134,6 +134,35 @@ class TestASwapWithACall:
         assert len(watcher.moves) == 2
 
 
+class TestKanOnTheReachedHand:
+    """立直之後嶺上自動摸切,手牌來不及讀到中間那一副。"""
+
+    REST = ("2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "E", "S")
+
+    def test_the_quads_gone_without_the_replacement(self) -> None:
+        """14 張直接變 10 張。實測事件流停在暗槓前,那一局最後十幾手沒有建議。"""
+        watcher = HandWatcher()
+        watcher.observe(["1m", "1m", "1m", *self.REST])
+        watcher.observe(["1m", "1m", "1m", *self.REST, "1m"], "1m")
+        assert watcher.observe(self.REST) == [OwnMove(Move.CALL, ("1m",) * 4)]
+        assert watcher.stuck == 0
+
+    def test_the_river_then_explains_the_replacement(self) -> None:
+        watcher = HandWatcher()
+        watcher.observe(["1m", "1m", "1m", *self.REST])
+        watcher.observe(["1m", "1m", "1m", *self.REST, "1m"], "1m")
+        watcher.observe(self.REST)
+        assert watcher.catch_up(1, "P") == [
+            OwnMove(Move.DRAW, ("P",)),
+            OwnMove(Move.DISCARD, ("P",), tsumogiri=True),
+        ]
+
+    def test_three_of_a_kind_gone_is_a_called_kan(self) -> None:
+        watcher = HandWatcher()
+        watcher.observe(["1m", "1m", "1m", *self.REST])
+        assert watcher.observe(self.REST) == [OwnMove(Move.CALL, ("1m",) * 3)]
+
+
 class TestAddedKan:
     """畫面沒變就不會重讀,所以這裡每副手牌都只給一次。"""
 

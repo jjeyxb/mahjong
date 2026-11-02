@@ -156,6 +156,125 @@ class TestCalls:
         assert shape(steps) == [(T, 1), (C, 1), (T, 1), (D, 1)]
 
 
+class TestAWallThatIsAhead:
+    """牌讀得晚,再下一家已經摸了:余牌多減一張。"""
+
+    def test_ones_own_discard_does_not_wait(self) -> None:
+        """自己有沒有槓手牌看得到。等的話實測下家、對家的牌全部晚 3 秒。"""
+        turns = TurnTracker(oya=3)
+        turns.tick(1, wall=69)
+        turns.tick(2, [(3, "1m")], wall=69)
+        turns.see_wall(3, 67)
+        assert shape(turns.tick(4, [(0, "2m")], wall=67)) == [(T, 0), (D, 0)]
+
+    def test_the_dealers_first_discard_does_not_wait(self) -> None:
+        """那時候還沒讀過余牌。實測莊家第一張每局都晚 4 秒,後面全部跟著晚。"""
+        turns = TurnTracker(oya=0)
+        assert shape(turns.tick(1, [(0, "1m")])) == [(T, 0), (D, 0)]
+
+    def test_a_call_of_ones_own_still_counts(self) -> None:
+        turns = TurnTracker(oya=3)
+        turns.tick(1, wall=69)
+        turns.tick(2, [(3, "1m")], wall=69)
+        assert (C, 0) in shape(turns.tick(3, [(0, "2m")], melds=[0], wall=69))
+
+    def test_a_skipped_seat_before_ones_own_tile_waits_a_moment(self) -> None:
+        turns = TurnTracker(oya=0)
+        turns.tick(1, wall=69)
+        turns.tick(2, [(0, "1m")], wall=69)
+        turns.see_wall(2.5, 68)
+        turns.tick(3, [(1, "2m")], wall=68)
+        turns.see_wall(4, 66)
+        assert turns.tick(5, [(0, "3m")], wall=66) == []
+        steps = turns.tick(6.1, wall=66)
+        assert shape(steps)[-2:] == [(T, 0), (D, 0)]
+
+    def test_another_seat_waits_a_moment_for_a_kan(self) -> None:
+        turns = TurnTracker(oya=0)
+        turns.tick(1, wall=69)
+        turns.tick(2, [(0, "1m")], wall=69)
+        turns.see_wall(3, 67)
+        assert turns.tick(4, [(1, "2m")], wall=67) == []
+
+    def test_then_it_is_a_plain_discard(self) -> None:
+        turns = TurnTracker(oya=0)
+        turns.tick(1, wall=69)
+        turns.tick(2, [(0, "1m")], wall=69)
+        turns.see_wall(3, 67)
+        turns.tick(4, [(1, "2m")], wall=67)
+        assert shape(turns.tick(5.1, wall=67)) == [(T, 1), (D, 1)]
+
+    def test_a_kan_that_shows_up_in_time_is_still_a_kan(self) -> None:
+        turns = TurnTracker(oya=0)
+        turns.tick(1, wall=69)
+        turns.tick(2, [(0, "1m")], wall=69)
+        turns.see_wall(3, 67)
+        turns.tick(4, [(1, "2m")], wall=67)
+        steps = turns.tick(4.5, melds=[1], wall=67)
+        assert (C, 1) in shape(steps)
+
+    def test_the_tiles_behind_it_are_not_held_up(self) -> None:
+        turns = TurnTracker(oya=3)
+        turns.tick(1, wall=69)
+        turns.tick(2, [(3, "1m")], wall=69)
+        turns.see_wall(3, 67)
+        steps = turns.tick(4, [(0, "2m"), (1, "3m")], wall=67)
+        assert shape(steps) == [(T, 0), (D, 0), (T, 1), (D, 1)]
+
+
+class TestABatchOfTiles:
+    """中途才開始看,或畫面被蓋了好幾秒。"""
+
+    def test_it_goes_around_the_table(self) -> None:
+        turns = TurnTracker(oya=1)
+        steps = turns.jump(5, [(1, "1m"), (1, "2m"), (2, "3m"), (3, "4m"), (0, "5m")], wall=65)
+        assert shape(steps)[1::2] == [(D, 1), (D, 2), (D, 3), (D, 0), (D, 1)]
+
+    def test_a_seat_with_fewer_tiles_is_skipped(self) -> None:
+        turns = TurnTracker(oya=0)
+        steps = turns.jump(5, [(0, "1m"), (0, "2m"), (0, "3m"), (2, "4m")])
+        assert shape(steps)[1::2] == [(D, 0), (D, 2), (D, 0), (D, 0)]
+
+    def test_each_seat_keeps_its_own_order(self) -> None:
+        turns = TurnTracker(oya=0)
+        steps = turns.jump(5, [(0, "1m", None, 0), (0, "2m", None, 1), (1, "3m", None, 0)])
+        assert [s.pai for s in steps if s.action is D and s.actor == 0] == ["1m", "2m"]
+
+    def test_the_wall_is_believed(self) -> None:
+        turns = TurnTracker(oya=0)
+        turns.jump(5, [(0, "1m"), (1, "2m"), (2, "3m"), (3, "4m")], wall=60)
+        assert turns.drawn == 10
+
+    def test_it_carries_on_afterwards(self) -> None:
+        turns = TurnTracker(oya=0)
+        turns.jump(5, [(0, "1m"), (1, "2m"), (2, "3m"), (3, "4m")], wall=66)
+        turns.tick(6, wall=65)
+        assert shape(turns.tick(7, [(0, "5m")], wall=65)) == [(T, 0), (D, 0)]
+
+    def test_tiles_still_waiting_go_first(self) -> None:
+        turns = TurnTracker(oya=0)
+        turns.tick(1, wall=69)
+        turns.tick(2, [(2, "1m")], wall=69)
+        steps = turns.jump(3, [(0, "2m"), (1, "3m"), (3, "4m")])
+        assert [s.pai for s in steps if s.action is D] == ["2m", "3m", "1m", "4m"]
+
+
+class TestTheWallBetweenRounds:
+    def test_a_fresh_wall_keeps_a_tile_from_waiting(self) -> None:
+        """看的是牌落下之前的余牌。太舊的話自己那次摸牌沒算進去,看起來像鳴牌。"""
+        turns = TurnTracker(oya=0)
+        turns.tick(1, wall=69)
+        assert shape(turns.tick(2, [(0, "1m")], wall=69)) == [(T, 0), (D, 0)]
+        turns.see_wall(2.5, 68)
+        assert shape(turns.tick(3, [(1, "2m")], wall=68)) == [(T, 1), (D, 1)]
+
+    def test_an_unread_wall_changes_nothing(self) -> None:
+        turns = TurnTracker(oya=0)
+        turns.tick(1, wall=69)
+        turns.see_wall(2, None)
+        assert shape(turns.tick(3, [(0, "1m")], wall=69)) == [(T, 0), (D, 0)]
+
+
 class TestNextUp:
     @staticmethod
     def _waiting(*discard: tuple[int, str | None]) -> TurnTracker:

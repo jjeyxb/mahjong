@@ -22,6 +22,13 @@
 
 代價是停下來之後多等一幀才出答案,15 fps 下約 67 ms。
 
+**但不能只靠靜止。** 實打時手牌區常常停不下來:滑鼠滑過手牌,經過的牌會抬起來,摸牌那一格也有
+動畫。實測手上有摸牌時相鄰兩幀只有一成完全相同,摸牌到建議大多要等滿一秒強制讀。所以動的時候也
+看一眼(:meth:`VisionWorker._glance`),只重認變了的那幾格:
+
+* 另外十三張認出來跟停下來時一樣,摸到的牌又有把握,就交出去,不等動畫演完。
+* 整手都有把握,連續兩眼答案一樣,就當作停下來了。
+
 刻意用完全相等而不是「差異小於門檻」:門檻要靠實測資料訂,而門檻訂高了會漏掉
 真的變化 —— 那個錯誤表現成「手牌卡在上一巡」,非常難察覺。完全相等沒有這個
 風險,而實測靜止畫面的擷取結果本來就是位元組相同的。
@@ -166,6 +173,13 @@ class VisionWorker(threading.Thread):
         self._templates: TemplateSet | None = None
         self._tiles: dict[bytes, Match] = {}
         self._doubtful: tuple[list[str], str | None] | None = None
+        self._forced_doubt: tuple[list[str], str | None] | None = None
+        # 上一次靜止時的十三張,與已經先交出去的那一手。見 _glance。
+        self._resting: tuple[str, ...] | None = None
+        self._peeked: tuple[list[str], str | None] | None = None
+        # 上一眼看到的手牌,與因為連續兩眼一樣而讀過的那一手。
+        self._glanced: tuple[tuple[str, ...], str | None] | None = None
+        self._glance_read: tuple[tuple[str, ...], str | None] | None = None
         self._quiet = 0
         self._previous: np.ndarray | None = None
         #: 手牌區連續變動了幾幀。0 表示現在這個畫面已經認過了。
@@ -313,6 +327,10 @@ class VisionWorker(threading.Thread):
             self._previous = tall.copy()
             self._doubtful = None
             self._unsettled += 1
+            if self._glance(tall, headroom):
+                self._unsettled = 0
+                self._read(tall, headroom)
+                return
             if self._unsettled < _MAX_UNSETTLED:
                 self.skipped += 1
                 return
@@ -327,6 +345,41 @@ class VisionWorker(threading.Thread):
 
         self._unsettled = 0
         self._read(tall, headroom, forced=forced)
+
+    def _glance(self, tall: np.ndarray, headroom: int) -> bool:
+        """手牌區還在動也看一眼。回傳 ``True`` 表示可以當成停下來了,呼叫端照常讀一次。
+
+        只重認變了的那幾格(``_tiles`` 記著認過的格子),快篩之後一格約 4 毫秒。摸到的牌封包之後
+        0.22 秒就認得出來,三場 687 次摸牌,第一次有把握就交,動畫中途沒有認錯過:半透明的牌分數
+        過不了門檻。其他時候要連續兩眼一樣才算,動畫中途的讀數不會連兩幀一樣。
+        """
+        assert self._templates is not None
+        hand = read_hand(tall[headroom:])
+        seen = None
+        if hand.is_plausible:
+            try:
+                concealed, drawn = classify_hand(
+                    tall, hand, self._templates, headroom=headroom, memo=self._tiles
+                )
+            except ValueError:
+                concealed, drawn = (), None
+            matches = (*concealed, *(m for m in (drawn,) if m is not None))
+            if matches and all(m.is_confident for m in matches):
+                seen = (tuple(m.label for m in concealed), drawn.label if drawn else None)
+        previous, self._glanced = self._glanced, seen
+        if seen is None:
+            return False
+        labels, drawn_label = seen
+        if drawn_label is not None and labels == self._resting:
+            offer = ([*labels, drawn_label], drawn_label)
+            if offer != self._peeked and self._sink is not None:
+                self._peeked = offer
+                self._sink.offer_hand(*offer)
+            return False
+        if seen != previous or seen == self._glance_read:
+            return False
+        self._glance_read = seen
+        return True
 
     def _offer_doubtful(self) -> None:
         """沒把握的手牌,畫面一直沒變就交出去。見 :data:`_STILL_FRAMES`。"""
@@ -435,8 +488,21 @@ class VisionWorker(threading.Thread):
         # 危險度要知道自己手上有什麼。**含剛摸的那張** —— 那張正是
         # 使用者現在要決定切不切的牌。
         offer = ([m.label for m in matches], drawn.label if drawn is not None else None)
-        if confident or forced:
+        if confident and drawn is None:
+            self._resting = tuple(offer[0])
+        elif drawn is None:
+            self._resting = None
+        if offer == self._peeked:
+            # 先交過了。再交一次也沒事,只是白白叫醒牌桌。
+            self._forced_doubt = None
+        elif confident or (forced and offer == self._forced_doubt):
+            self._peeked = None
             self._sink.offer_hand(*offer)
+            self._forced_doubt = None
+        elif forced:
+            # 手牌區一直在動時等不到靜止,改成連續兩次強制讀取都一樣才交出去。實測打牌特效貼著
+            # 手牌右邊,被讀成一張沒有摸牌間隙的牌,記成摸牌之後整局晚一輪。那一幀只閃一下。
+            self._forced_doubt = offer
         else:
             self._doubtful, self._quiet = offer, 0
 

@@ -14,7 +14,8 @@
 它讀錯的時候看得出來
 --------------------
 點數帶著兩層天然的檢查碼:最小單位是 100,而**四家總和 + 場上立直棒 x 1000
-= 開局總點數**(四人場 100000)。這一層比任何信心門檻都強 —— 見
+= 開局總點數**(四人場預設 100000,改過的友人場見
+:class:`~mia.tracker.round.RoundWatcher`)。這一層比任何信心門檻都強 —— 見
 :attr:`Hud.scores_agree`。莊家也一樣:局數決定莊家是幾號座位,紅東的位置說他
 坐在自己的哪一邊,兩個合起來就是**自己的絕對座位**。
 
@@ -23,7 +24,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import cv2
@@ -53,14 +54,18 @@ _MIN_WIDTH = 2
 _SCORE = 0.60
 _MARGIN = 0.05
 
-#: 場風的門檻要高得多。它是**開放集合**:模板只有東與南,西入時要能棄權,而不是
-#: 硬選一個。實測正解 0.94 以上,另一個模板 0.74 以下。
+#: 場風的門檻要高得多。它是**開放集合**:模板沒有北,北場時要能棄權,而不是硬選一個。
+#: 實測正解 0.94 以上,別的模板 0.77 以下。
 _WIND_SCORE = 0.85
 
 #: 一段比一般的字寬這麼多倍,就是兩個字黏在一起。
 _JOINED = 1.6
 
-#: 四人場開局的總點數。見 :attr:`Hud.scores_agree`。
+#: 第一個字比最高的字矮到這個比例以下,就是負號。
+_MINUS = 0.5
+
+#: 四人場開局的總點數,預設起始 25000。改過的友人場由
+#: :class:`~mia.tracker.round.RoundWatcher` 從第一局算出來。見 :attr:`Hud.scores_agree`。
 _TOTAL = 100000
 
 #: 四個方向的點數要轉幾次 90 度(順時針)才會是正的,依視角座位。
@@ -116,9 +121,10 @@ class HudDigits:
       只有即時對局的模板時,牌譜畫面的 3 與 8 分不開(差距 0.03),30 幾張整段讀不到。
       同一個字可以有多份,檔名寫成 ``3_web.png``,底線之前才是字。
     * ``round`` 第幾局的青色斜體。
-    * ``stick`` 本場與供託的白色斜體。**只有 0 ~ 4**:素材裡沒見過更大的。
-      5 以上會比不過門檻而回 ``None``,不會被說成別的數字。
-    * ``wind`` 場風。**只有東與南**:素材裡沒有西入。
+    * ``stick`` 本場與供託的白色斜體。**只有 0 ~ 5**:素材裡沒見過更大的。更大的數字不靠模板,
+      本場由 :class:`~mia.tracker.round.RoundWatcher` 從上一局推,供託由 :meth:`Hud.with_sticks`
+      從點數算。
+    * ``wind`` 場風。**只有東、南、西**:素材打不到北場。北一樣由上一局推出來。
     """
 
     def __init__(self, sets: dict[str, dict[str, list[np.ndarray]]]) -> None:
@@ -170,7 +176,8 @@ class Hud:
     """一張畫面讀到的 HUD。每個欄位讀不到就是 ``None``。
 
     Attributes:
-        bakaze: 場風。認得 ``E`` 與 ``S``,西入回 ``None``。
+        bakaze: 場風。認得東南西,北場回 ``None``,由
+            :class:`~mia.tracker.round.RoundWatcher` 推出來。
         kyoku: 第幾局,1 起算。
         wall: 余幾張。
         honba: 本場數。
@@ -186,21 +193,48 @@ class Hud:
     kyotaku: int | None = None
     scores: tuple[int | None, ...] = (None, None, None, None)
     dealer: int | None = None
+    total: int = _TOTAL
 
     @property
     def scores_agree(self) -> bool:
         """點數對不對得起來:四家總和 + 立直棒 x 1000 = 開局總點數。
 
         任何一位數讀錯都會過不了,所以這個比信心門檻可靠得多。
-
-        Note:
-            前提是開局 25000 的四人場。友人場改過起始點數的話會永遠過不了 ——
-            方向是「不敢用」,不是用錯。
         """
         if self.kyotaku is None or any(score is None for score in self.scores):
             return False
         total = sum(score for score in self.scores if score is not None)
-        return total + self.kyotaku * 1000 == _TOTAL
+        return total + self.kyotaku * 1000 == self.total
+
+    def filled(self) -> Hud:
+        """只有一家讀不到的話,從總和把它算回來。
+
+        **只有開局能用。** 局數資訊要點數對得起來才算讀穩,而讀不穩的話整局沒有事件流:實測
+        一家的 34400 有一位數認不出來,那一局 100 秒一個事件都沒有。開局點數不會動,所以算
+        得回來。局中不行:別家立直時棒子先多一根、點數的動畫還沒演完,差的 1000 點會算到讀不
+        到的那一家頭上,實測憑空多了一次立直。見 :meth:`~mia.tracker.round.ReachWatcher.observe`。
+        """
+        hud = self.with_sticks()
+        if hud.kyotaku is None or hud.scores.count(None) != 1:
+            return hud
+        known = sum(score for score in hud.scores if score is not None)
+        missing = self.total - hud.kyotaku * 1000 - known
+        if missing % 100:
+            return hud
+        return replace(
+            hud, scores=tuple(missing if score is None else score for score in hud.scores)
+        )
+
+    def with_sticks(self) -> Hud:
+        """供託讀不到時,從四家點數算回來。
+
+        桌面上的總點數是固定的,少掉的就是立直棒。模板只有 0 ~ 5,數字再大也算得出來;算出來不是
+        整千就是點數的動畫還沒演完,維持讀不到。
+        """
+        if self.kyotaku is not None or None in self.scores:
+            return self
+        sticks, rest = divmod(self.total - sum(s for s in self.scores if s is not None), 1000)
+        return self if rest or sticks < 0 else replace(self, kyotaku=sticks)
 
     @property
     def own_seat(self) -> int | None:
@@ -223,6 +257,11 @@ def _crop(image: np.ndarray, table: Rect, field: tuple[float, float, float, floa
 
 def _digits(patch: np.ndarray) -> list[np.ndarray]:
     """切成一個一個數字,每個縮成 :data:`_DIGIT`。由左而右。"""
+    return [cv2.resize(glyph, _DIGIT, interpolation=cv2.INTER_AREA) for glyph in _glyphs(patch)]
+
+
+def _glyphs(patch: np.ndarray) -> list[np.ndarray]:
+    """切成一個一個字的灰階圖,維持原本的大小。由左而右。"""
     if patch.size == 0:
         return []
     ink = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)[:, :, 2] > _INK
@@ -240,8 +279,7 @@ def _digits(patch: np.ndarray) -> list[np.ndarray]:
     for left, right in _split_joined(spans):
         rows = np.flatnonzero(ink[:, left:right].any(axis=1))
         glyph = patch[rows[0] : rows[-1] + 1, left:right]
-        grey = cv2.cvtColor(glyph, cv2.COLOR_BGR2GRAY)
-        out.append(cv2.resize(grey, _DIGIT, interpolation=cv2.INTER_AREA))
+        out.append(cv2.cvtColor(glyph, cv2.COLOR_BGR2GRAY))
     return out
 
 
@@ -266,17 +304,28 @@ def _split_joined(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
 
 def _number(patch: np.ndarray, digits: HudDigits, name: str) -> int | None:
     """讀一個數字欄位。有一位認不出來就整個不算。"""
-    found = [digits.best(name, glyph) for glyph in _digits(patch)]
+    return _read_glyphs(_digits(patch), digits, name)
+
+
+def _read_glyphs(glyphs: list[np.ndarray], digits: HudDigits, name: str) -> int | None:
+    found = [digits.best(name, glyph) for glyph in glyphs]
     if not found or None in found:
         return None
     return int("".join(ch for ch in found if ch is not None))
 
 
 def _score(image: np.ndarray, table: Rect, position: int, digits: HudDigits) -> int | None:
-    patch = _crop(image, table, _SCORES[position])
-    value = _number(np.rot90(patch, -_TURNS[position]), digits, "score")
+    patch = np.rot90(_crop(image, table, _SCORES[position]), -_TURNS[position])
+    glyphs = _glyphs(patch)
+    # 關掉擊飛的友人場,點數可以是負的。負號比數字矮得多,不必有模板。實測兩家負分時點數過不了
+    # 檢查碼,一局從頭到尾沒有事件流。
+    negative = len(glyphs) > 1 and glyphs[0].shape[0] < _MINUS * max(g.shape[0] for g in glyphs)
+    resized = [cv2.resize(g, _DIGIT, interpolation=cv2.INTER_AREA) for g in glyphs[negative:]]
+    value = _read_glyphs(resized, digits, "score")
     # 點數的最小單位是 100。尾數不對就是讀錯了(或那裡根本不是點數)。
-    return value if value is not None and value % 100 == 0 else None
+    if value is None or value % 100:
+        return None
+    return -value if negative else value
 
 
 def _dealer(image: np.ndarray, table: Rect) -> int | None:
