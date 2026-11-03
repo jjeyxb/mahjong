@@ -33,7 +33,7 @@ import numpy as np
 from mia.utils.geometry import Rect
 from mia.utils.paths import ASSETS_DIR
 
-__all__ = ["DEALER_SEATS", "Hud", "HudDigits", "read_hud", "read_wall"]
+__all__ = ["DEALER_SEATS", "Hud", "HudDigits", "read_hud", "read_turn", "read_wall"]
 
 #: 中央面板在牌桌矩形裡的位置。下面的欄位都用「面板座標」量,較好對照截圖。
 _PANEL = (0.4142, 0.2948, 0.175, 0.2)
@@ -103,6 +103,19 @@ _CORNERS = (
     _on_panel(350, 0, 430, 50),
     _on_panel(5, 0, 60, 45),
 )
+#: 四邊的燈,依視角座位:輪到誰,誰那一邊就亮。框只框燈,不碰點數(金色的字一樣是暖色)。
+_LIGHTS = (
+    _on_panel(150, 243, 292, 264),
+    _on_panel(364, 90, 394, 188),
+    _on_panel(150, 20, 290, 46),
+    _on_panel(50, 90, 82, 188),
+)
+#: 燈一明一暗地閃,暗的時候是橘的,亮的時候是黃的:看色相與飽和度,不看亮度。
+_LIGHT_HSV = ((10, 120, 110), (40, 255, 255))
+#: 亮著的那一邊至少多少比例是燈的顏色、其他邊最多多少。
+_LIT = 0.15
+_DARK = 0.08
+
 #: 左上角面板下緣,緊貼著 ``x`` 後面的那一位數。
 #: 左上角面板在牌桌矩形裡的位置。與 ROI 設定的 ``dora_indicators`` 同一塊。
 _CORNER_PANEL = (0.0133, 0.0385, 0.1475, 0.1319)
@@ -338,6 +351,25 @@ def _dealer(image: np.ndarray, table: Rect) -> int | None:
         red.append(float(mask.mean()))
     lit = [position for position, share in enumerate(red) if share >= _RED]
     return lit[0] if len(lit) == 1 else None
+
+
+def read_turn(image: np.ndarray, table: Rect) -> int | None:
+    """中央面板哪一邊的燈亮著:輪到的那一家(視角座位)。不是剛好一邊就棄權。
+
+    燈跟著「現在輪到誰」走,不跟著摸牌:打完牌之後燈留在打牌的人那邊,直到下一家摸牌或有人鳴牌
+    才移走。真人鳴牌前會猶豫好幾秒(一場中位 2.96 秒),這段時間燈一直在打牌的人那邊、余牌不變。
+    """
+    shares = []
+    for field in _LIGHTS:
+        patch = _crop(image, table, field)
+        if patch.size == 0:
+            return None
+        hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+        shares.append(float(cv2.inRange(hsv, *_LIGHT_HSV).mean() / 255))
+    lit = [position for position, share in enumerate(shares) if share >= _LIT]
+    if len(lit) != 1 or sorted(shares)[-2] > _DARK:
+        return None
+    return lit[0]
 
 
 def read_wall(image: np.ndarray, table: Rect, digits: HudDigits) -> int | None:

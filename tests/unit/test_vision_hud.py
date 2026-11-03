@@ -11,7 +11,15 @@ import pytest
 
 from mia.tracker import ReachWatcher, RoundWatcher
 from mia.utils.geometry import Rect
-from mia.vision.hud import _MINUS, Hud, HudDigits, _glyphs, _split_joined, read_hud
+from mia.vision.hud import (
+    _MINUS,
+    Hud,
+    HudDigits,
+    _glyphs,
+    _split_joined,
+    read_hud,
+    read_turn,
+)
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 TABLE = Rect(0, 174, 2536, 1430)
@@ -46,6 +54,26 @@ class TestOnARealFrame:
 
     def test_the_scores_add_up(self, hud: Hud) -> None:
         assert hud.scores_agree
+
+
+class TestTheTurnLight:
+    def test_it_is_toimens_turn(self) -> None:
+        image = cv2.imread(str(FIXTURES / "table_full.jpg"))
+        assert read_turn(image, TABLE) == 2
+
+    def test_a_dark_panel_reads_nothing(self) -> None:
+        """燈閃到暗的那一下、結算畫面:沒有一邊亮著就棄權,讓上層沿用上一次的。"""
+        blank = np.full((1430, 2536, 3), 30, dtype=np.uint8)
+        assert read_turn(blank, Rect(0, 0, 2536, 1430)) is None
+
+    def test_two_lights_read_nothing(self) -> None:
+        image = cv2.imread(str(FIXTURES / "table_full.jpg"))
+        lit = image.copy()
+        # 把對家那條燈複製一份到自己那邊:兩邊都亮,不知道是誰。
+        top = (slice(TABLE.y + 448, TABLE.y + 466), slice(1219, 1339))
+        bottom = (slice(TABLE.y + 666, TABLE.y + 684), slice(1219, 1339))
+        lit[bottom] = image[top]
+        assert read_turn(lit, TABLE) is None
 
 
 class TestItAbstains:

@@ -90,6 +90,24 @@ def test_the_length_moves_only_when_a_group_is_confirmed() -> None:
     assert w.length(0) == 3.0
 
 
+def test_a_group_on_its_way_is_growing() -> None:
+    """量到一組的長度、還沒確認:排序器有余牌佐證時可以先用。確認之後就不算了。"""
+    w = watcher()
+    assert not w.growing(0)
+    feed(w, 3.0)
+    assert w.growing(0)
+    assert not w.growing(1)
+    feed(w, 3.0)
+    assert not w.growing(0)
+
+
+def test_a_kan_sized_growth_is_not_growing() -> None:
+    """像槓的要多讀一次才分得出是不是動畫中途,不能先用。"""
+    w = watcher()
+    feed(w, 3.9)
+    assert not w.growing(0)
+
+
 class TestGuessMeld:
     def test_one_honour_is_the_whole_group(self) -> None:
         """字牌不能吃,認出一張就知道是碰(或槓)。"""

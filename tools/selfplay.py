@@ -36,6 +36,9 @@
 * 自動打牌只在全電腦的桌上動手,見 :func:`autoplay.cpu_table`。這支工具與
   ``tools/autoplay.py`` 一樣留在 ``tools/``,不進發佈版。
 * 打牌的 Mortal 與給建議的 Mortal 是兩個:前者看封包,後者只看畫面。
+* 打牌預設用愛鳴牌的權重(``--play``),給建議的維持標準權重(``--mortal``)。辨識最弱的是
+  副露,自己多鳴,別家的牌河、立直、退守也跟著變,素材裡的副露就多。給建議的不換,同答案率
+  才跟之前的場次比得起來。
 
 產出(``data/recordings/selfplay-<時間>/``):
 
@@ -94,8 +97,11 @@ from mia.utils.geometry import Rect
 from mia.utils.logging import logger, setup_logging
 from mia.utils.paths import DATA_DIR
 
-#: 打牌與給建議用的權重。
+#: 給建議用的權重。
 DEFAULT_WEIGHTS = "models/mortal_298k.pth"
+
+#: 打牌用的權重:愛鳴牌,見模組說明的「規則」。對局測出的副露率 0.33,不愛鳴牌是 0.26。
+PLAY_WEIGHTS = "models/style_call_high.pth"
 
 #: 與 ``tools/gt.py`` 的自動打牌同一個畫布。
 CANVAS = "1280x720"
@@ -396,7 +402,7 @@ def play(args: argparse.Namespace, config: AppConfig) -> Path | None:
         session_id=name,
         backend=backend.name,
         change_threshold=_CHANGE_THRESHOLD,
-        notes="selfplay.py:對電腦的四人半莊",
+        notes=f"selfplay.py:對電腦的四人半莊,打牌用 {Path(args.play).name}",
     )
     session = writer.path
     log = RunLog(session / VISION_LOG)
@@ -415,7 +421,7 @@ def play(args: argparse.Namespace, config: AppConfig) -> Path | None:
     dump = session / "ws.jsonl"
     command = [
         sys.executable, str(ROOT / "tools/gt.py"), "cdp", "--out", str(dump),
-        "--autoplay", "mortal", "--mortal", args.mortal, "--cpu-room",
+        "--autoplay", "mortal", "--mortal", args.play, "--cpu-room",
         *(("--overtime",) if args.overtime else ()),
     ]
     print(f"session:{session}", flush=True)
@@ -626,7 +632,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--games", type=int, default=1, help="連打幾場")
     parser.add_argument("--name", help="session 名稱,預設用時間。--games 大於 1 時不能給")
     parser.add_argument("--root", type=Path, default=DATA_DIR / "recordings")
-    parser.add_argument("--mortal", default=DEFAULT_WEIGHTS, help="打牌與給建議用的權重")
+    parser.add_argument("--mortal", default=DEFAULT_WEIGHTS, help="給建議與比對用的權重")
+    parser.add_argument("--play", default=PLAY_WEIGHTS, help="打牌用的權重,預設愛鳴牌")
     parser.add_argument(
         "--overtime", action="store_true", help="1 位必要點數設最大、關掉擊飛,一定打進西入"
     )

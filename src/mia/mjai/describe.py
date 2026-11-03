@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from mia.mjai.events import (
     Ankan,
@@ -33,7 +33,7 @@ from mia.mjai.events import (
 )
 from mia.mjai.tiles import HONOR_NAMES, HONOR_ORDER, UNKNOWN, normalize_red
 
-__all__ = ["describe"]
+__all__ = ["describe", "tile_text"]
 
 _SEATS = ("自家", "下家", "對家", "上家")
 _NUMBERS = "一二三四五六七八九"
@@ -41,15 +41,22 @@ _SUITS = {"m": "萬", "p": "筒", "s": "索"}
 _WINDS = dict(zip(HONOR_ORDER, HONOR_NAMES, strict=True))
 
 
-def describe(event: MjaiEvent, *, seat: int | None = None, exact_discards: bool = True) -> str:
+def describe(
+    event: MjaiEvent,
+    *,
+    seat: int | None = None,
+    exact_discards: bool = True,
+    tile: Callable[[str], str] | None = None,
+) -> str:
     """一個事件的中文說明。
 
     Args:
         event: 事件。
         seat: 自己坐哪。不知道時(對局中途接上)改用絕對座位講。
-        exact_discards: 別家的 ``tsumogiri`` 是真的嗎。畫面那條路分不出摸切與手切,
-            一律填 ``False``,照實寫成「手切」就是在說謊。
+        exact_discards: 別家的 ``tsumogiri`` 是真的嗎。不是的話只寫「打」,不寫摸切或手切。
+        tile: 牌怎麼寫,收 MJAI 記法。預設是中文牌名(「三萬」);Log 視窗用它換成牌面圖。
     """
+    name = tile or _tile
     who = _who(getattr(event, "actor", None), seat)
     match event:
         case StartGame():
@@ -59,21 +66,21 @@ def describe(event: MjaiEvent, *, seat: int | None = None, exact_discards: bool 
         case EndKyoku():
             return "本局結束"
         case StartKyoku():
-            return _start_kyoku(event, seat)
+            return _start_kyoku(event, seat, name)
         case Tsumo():
-            return f"{who} 摸牌" if event.pai == UNKNOWN else f"{who} 摸 {_tile(event.pai)}"
+            return f"{who} 摸牌" if event.pai == UNKNOWN else f"{who} 摸 {name(event.pai)}"
         case Dahai():
-            return f"{who} {_how(event, seat, exact_discards)} {_tile(event.pai)}"
+            return f"{who} {_how(event, seat, exact_discards)} {name(event.pai)}"
         case Chi() | Pon() | Daiminkan():
             verb = {Chi: "吃", Pon: "碰", Daiminkan: "大明槓"}[type(event)]
-            hand = "、".join(_tile(tile) for tile in event.consumed)
-            return f"{who} {verb} {_who(event.target, seat)}的 {_tile(event.pai)},用 {hand}"
+            hand = "、".join(name(tile) for tile in event.consumed)
+            return f"{who} {verb} {_who(event.target, seat)}的 {name(event.pai)},用 {hand}"
         case Ankan():
-            return f"{who} 暗槓 {_tiles(event.consumed)}"
+            return f"{who} 暗槓 {_tiles(event.consumed, name)}"
         case Kakan():
-            return f"{who} 加槓 {_tile(event.pai)}"
+            return f"{who} 加槓 {name(event.pai)}"
         case Dora():
-            return f"翻開新的寶牌指示牌 {_tile(event.dora_marker)}"
+            return f"翻開新的寶牌指示牌 {name(event.dora_marker)}"
         case Reach():
             return f"{who} 宣告立直"
         case ReachAccepted():
@@ -88,17 +95,17 @@ def describe(event: MjaiEvent, *, seat: int | None = None, exact_discards: bool 
     return event.TYPE
 
 
-def _start_kyoku(event: StartKyoku, seat: int | None) -> str:
+def _start_kyoku(event: StartKyoku, seat: int | None, name: Callable[[str], str]) -> str:
     parts = [
         f"{_WINDS.get(event.bakaze, event.bakaze)}{_NUMBERS[event.kyoku - 1]}局 "
         f"{event.honba} 本場",
         f"供託 {event.kyotaku}",
         f"莊家是{_who(event.oya, seat)}",
-        f"寶牌指示牌 {_tile(event.dora_marker)}",
+        f"寶牌指示牌 {name(event.dora_marker)}",
         "點數 " + _scores(event.scores, seat),
     ]
     if seat is not None:
-        parts.append("配牌 " + _tiles(event.tehais[seat]))
+        parts.append("配牌 " + _tiles(event.tehais[seat], name))
     return ",".join(parts)
 
 
@@ -132,8 +139,13 @@ def _ordered(values: Sequence[int], seat: int | None) -> list[tuple[int, int]]:
     return [(actor, values[actor]) for actor in actors]
 
 
-def _tiles(tiles: Sequence[str]) -> str:
-    return " ".join(_tile(tile) for tile in tiles)
+def _tiles(tiles: Sequence[str], name: Callable[[str], str]) -> str:
+    return " ".join(name(tile) for tile in tiles)
+
+
+def tile_text(tile: str) -> str:
+    """牌的中文名(「三萬」「赤五筒」「東」)。:func:`describe` 預設就是這樣寫牌。"""
+    return _tile(tile)
 
 
 def _tile(tile: str) -> str:

@@ -60,6 +60,7 @@ from mia.mjai.table import TableTracker
 from mia.mjai.tiles import ms_to_mjai, normalize_red
 from mia.tracker import (
     UNKNOWN,
+    Action,
     DoraWatcher,
     HandWatcher,
     KyokuLog,
@@ -79,10 +80,12 @@ from mia.tracker import (
     resynced,
 )
 from mia.tracker.melds import KAN_WIDTH
+from mia.tracker.tedashi import HOLD, TsumogiriWatcher
 from mia.utils.geometry import Rect
 from mia.utils.logging import logger
-from mia.vision.hud import Hud, HudDigits, read_hud, read_wall
+from mia.vision.hud import Hud, HudDigits, read_hud, read_turn, read_wall
 from mia.vision.roi import MissingRoiError, RoiSet
+from mia.vision.tiles.backs import read_backs
 from mia.vision.tiles.classify import (
     DEFAULT_SKIN,
     MIN_BRIGHTNESS,
@@ -102,7 +105,6 @@ from mia.vision.tiles.melds import (
     read_meld_faces,
 )
 from mia.vision.tiles.river import (
-    COLUMNS,
     CONFIDENT,
     DEFAULT_CORNERS,
     SEATS,
@@ -113,7 +115,9 @@ from mia.vision.tiles.river import (
     face_size,
     find_sideways,
     read_river,
+    row_end,
     search_window,
+    slot,
 )
 
 __all__ = ["TableLink", "TableWorker"]
@@ -318,10 +322,15 @@ class TableWorker(threading.Thread):
         self._own_reach: int | None = None
         self._readings: dict[tuple[int, int], tuple[str | None, str | None]] = {}
         self._melds = MeldWatcher(units=tuple(GROUP_LENGTH[seat] for seat in SEATS))
-        # 認牌面慢(一組約 0.5 秒),放到另一條執行緒。見 _read_melds。
+        # 認牌面慢(一組約 1 秒),放到另一條執行緒。見 _read_melds。
         self._faces = ThreadPoolExecutor(max_workers=1, thread_name_prefix="meld-faces")
         self._pending_faces: list[_PendingFaces] = []
         self._meld_reds: dict[tuple[int, int], frozenset[str]] = {}
+        #: 只在橫的框認到一張牌的副露 ``(誰, 第幾組)``。見 :attr:`KyokuLog.meld_sideways`。
+        self._meld_sideways: set[tuple[int, int]] = set()
+        # 別家的手牌形狀,與排進事件流時決定的摸切。見 :mod:`mia.tracker.tedashi`。
+        self._tedashi = TsumogiriWatcher()
+        self._tsumogiri: dict[tuple[int, int | None], bool] = {}
         self._known: list[list[str]] = [[] for _ in SEATS]
         # 每家每一格的最佳猜測,沒信心的也留著:Mortal 不收 ?。
         self._guess: list[dict[int, str]] = [{} for _ in SEATS]
@@ -438,9 +447,12 @@ class TableWorker(threading.Thread):
         table = calibration.table_rect
         flats = [DEFAULT_CORNERS[seat].rectify(image, table) for seat in SEATS]
         rivers = [read_river(flat) for flat in flats]
+        self._watch_backs(image, table)
         if not self._round_due(flats, rivers, bool(hands)):
             if self._turns is not None and self._digits is not None:
-                self._turns.see_wall(self._turn_clock(), read_wall(image, table, self._digits))
+                clock = self._turn_clock()
+                self._turns.see_wall(clock, read_wall(image, table, self._digits))
+                self._turns.see_light(clock, read_turn(image, table))
             return
         self.reads += 1
         if not self._load_digits():
@@ -495,12 +507,34 @@ class TableWorker(threading.Thread):
         """這次要不要整輪走完。手牌變了、有牌停穩了,或離上一輪夠久了才要。"""
         landed = self._watch_landing(flats, rivers)
         now = time.monotonic()
+        held = self._turns is not None and self._turns.held(self._turn_clock())
         if self._began is not None and not (
-            urgent or landed or now - self._last_round >= self._interval
+            urgent or landed or held or now - self._last_round >= self._interval
         ):
             return False
         self._last_round = now
         return True
+
+    def _watch_backs(self, image: np.ndarray, table: Rect) -> None:
+        """量三家手牌的牌背,每次看河都量:手切的樣子只維持一秒左右。三家約 3 毫秒。"""
+        if self._kyoku.empty:
+            return
+        now = time.monotonic()
+        for position, seat in enumerate(SEATS[1:], 1):
+            shape = read_backs(image, table, seat, self._melds.groups[position])
+            self._tedashi.observe(position, now, shape)
+
+    def _decide_tsumogiri(self, steps: Sequence[Step]) -> None:
+        """別家的捨牌排進事件流的這一刻,決定是不是摸切,之後不改:改了引擎就要整局重送。"""
+        now = time.monotonic()
+        for step in steps:
+            if step.action is not Action.DAHAI or step.actor == 0:
+                continue
+            key = (step.actor, step.serial)
+            if key not in self._tsumogiri:
+                verdict = self._tedashi.tsumogiri(step.actor, now)
+                if verdict is not None:
+                    self._tsumogiri[key] = verdict
 
     def _watch_landing(self, flats: Sequence[np.ndarray], rivers: Sequence[River]) -> bool:
         """還沒讀定的格子有沒有停穩。
@@ -658,7 +692,7 @@ class TableWorker(threading.Thread):
         memo = self._cells.get(key)
         if memo is not None and memo[0] == pixels:
             return memo[1], memo[2]
-        size = face_size(seat=SEATS[position], row=cell // COLUMNS)
+        size = face_size(seat=SEATS[position], row=slot(cell)[1])
         match = classify_river_tile(window, self._templates, size=size)
         # 只有沒把握的才比第二份,86% 的格子用不到:一格 56 → 38 毫秒,讀對的張數一樣,有信心的
         # 還多一點。牌桌每多花一毫秒,輪到自己時的建議就晚一毫秒。
@@ -758,7 +792,7 @@ class TableWorker(threading.Thread):
             match = classify(
                 search_window(flat, river.cells[cell]),
                 self._reds,
-                size=face_size(seat=SEATS[position], row=cell // COLUMNS),
+                size=face_size(seat=SEATS[position], row=slot(cell)[1]),
             )
             if match.margin >= CONFIDENT[1]:
                 known[cell] = ms_to_mjai(match.label)
@@ -811,8 +845,7 @@ class TableWorker(threading.Thread):
         candidates = [
             k
             for k, pai in enumerate(known)
-            if pai == UNKNOWN and k in filled and (k // COLUMNS * COLUMNS + COLUMNS - 1) != k
-            and (k + 1) in filled
+            if pai == UNKNOWN and k in filled and row_end(k) != k and (k + 1) in filled
         ]
         if not candidates:
             return None
@@ -900,7 +933,7 @@ class TableWorker(threading.Thread):
         不看「那一家自己的河」:對家河的第三列常常不連續(``docs/cv_mjai.md``
         §3.6),牌譜實測那樣會把對家一整段的副露擋掉(22 張)。
         """
-        assert self._templates is not None
+        assert self._river_templates is not None
         self._collect_meld_faces()
         now = self._turn_clock()
         if now - self._meld_read < _MELD_GAP:
@@ -922,6 +955,9 @@ class TableWorker(threading.Thread):
             start = self._melds.length(position)
             lead, length = occupied_span(image, table, MELD_VIEWS[seat])
             fresh = self._melds.observe(position, length)
+            if fresh and position:
+                # 手牌短了一截,之前的形狀不能再拿來比。
+                self._tedashi.forget(position)
             self._turn_melds.extend([position] * fresh)
             step = (length - start) / fresh if fresh else 0.0
             # 第一組的長度含開頭的空白。Steam 全螢幕自己那家空白比較大,碰會量成槓。
@@ -932,12 +968,16 @@ class TableWorker(threading.Thread):
             for index in range(fresh):
                 # 組數**現在**就算數(副露威脅不等牌面),牌面認好了再填進來。
                 melds.append(guess_meld(()))
+                if position == 0:
+                    # 自己鳴了什麼看手牌少了哪幾張,事件流不用這裡的牌面。認一組要一秒,
+                    # 會跟牌河搶核心,而那時正要給鳴牌之後的建議。
+                    continue
                 future = self._faces.submit(
                     read_meld_faces,
                     image,
                     table,
                     seat,
-                    self._templates,
+                    self._river_templates,
                     start=start + index * step,
                     end=start + (index + 1) * step,
                     # 一次長了兩組:前一組後面緊接著下一組,尾端不能往外放寬。
@@ -950,9 +990,13 @@ class TableWorker(threading.Thread):
     def _collect_meld_faces(self) -> None:
         """把認好的牌面填回去。
 
-        為什麼不在這一輪直接認:一組約 0.5 秒,而剛有人鳴牌、下一張打出來
+        為什麼不在這一輪直接認:一組約 1 秒,而剛有人鳴牌、下一張打出來
         的牌正是最需要危險度的時候。:func:`cv2.matchTemplate` 會放開 GIL,
-        ``_faces`` 那條執行緒與這條真的是並行的。
+        ``_faces`` 那條執行緒與這條真的是並行的:實測同時認副露,讀一輪牌河只從 0.71 秒
+        變 0.73 秒。
+
+        用的是牌河那份模板:多了從真實畫面平均出來的牌面,副露同樣是攤平後的立體牌。十二場
+        別家 126 組吃碰,只用素材時直放的牌認到 68%,加上這份 87%。
 
         **只認一次。** 試過沒認全的組隔幾秒拿新畫面再認、結果併起來:兩場牌譜
         八個視角一組都沒有多認出來。漏的是系統性的(上家太糊、跨框的誤讀讓
@@ -974,10 +1018,15 @@ class TableWorker(threading.Thread):
             except Exception as exc:  # noqa: BLE001 - 認不出來就是未知,不要讓整輪失敗
                 logger.warning("副露牌面認不成:%s", exc)
                 continue
-            self._table.players[job.position].melds[job.index] = guess_meld(
+            meld = guess_meld(
                 (normalize_red(ms_to_mjai(face)) for face in faces.tiles),
                 repeated=(normalize_red(ms_to_mjai(face)) for face in faces.repeated),
             )
+            self._table.players[job.position].melds[job.index] = meld
+            known = [tile for tile in meld if tile != UNKNOWN]
+            upright = {normalize_red(ms_to_mjai(face)) for face in faces.upright}
+            if len(known) == 1 and known[0] not in upright:
+                self._meld_sideways.add((job.position, job.index))
             if faces.red_suits:
                 self._meld_reds[(job.position, job.index)] = faces.red_suits
         self._pending_faces = pending
@@ -1133,6 +1182,8 @@ class TableWorker(threading.Thread):
         discards, melds = self._own_first(discards, melds)
         wall = read_wall(image, table, self._digits)
         self._wall = wall if wall is not None else self._wall
+        if self._turns is not None:
+            self._turns.see_light(self._turn_clock(), read_turn(image, table))
         moved = sum(move.move is Move.DISCARD for move in self._own.moves)
         # 河裡已經比手牌多一張時,這副手牌是舊的,不是又輪到自己。鳴完打牌常常這樣:手牌還是鳴牌
         # 之後那一副,打掉的牌先到了河裡,這時不等副露,鳴牌就排成了摸牌。
@@ -1187,7 +1238,23 @@ class TableWorker(threading.Thread):
             if (drawn - self._turns.drawn) * 2 < len(discards):
                 return []
             return self._turns.jump(tick, discards, wall)
-        return self._turns.tick(tick, discards, melds, wall, hurry=hurry, kans=kans)
+        growing = [position for position in range(1, len(SEATS)) if self._melds.growing(position)]
+        # 上家不等:上家打完就輪到自己。見 mia.tracker.tedashi。
+        now = time.monotonic()
+        undecided = [p for p in (1, 2) if not self._tedashi.tegiri_seen(p, now)]
+        self._turns.hold = HOLD / max(self._interval, 0.001) if self._began is not None else 0.0
+        steps = self._turns.tick(
+            tick,
+            discards,
+            melds,
+            wall,
+            hurry=hurry,
+            kans=kans,
+            growing=growing,
+            undecided=undecided,
+        )
+        self._decide_tsumogiri(steps)
+        return steps
 
     def _turn_clock(self) -> float:
         """:class:`TurnTracker` 的「輪」,一秒算一輪。
@@ -1224,6 +1291,9 @@ class TableWorker(threading.Thread):
         return replace(stream, doubt=self._doubt(stream))
 
     def _kyoku_log(self, settled: Hud) -> KyokuLog:
+        next_up = self._turns.next_up if self._turns is not None else None
+        if next_up is not None:
+            self._decide_tsumogiri([next_up])
         return KyokuLog(
             hud=settled,
             tehai=self._own.tehai,
@@ -1231,11 +1301,13 @@ class TableWorker(threading.Thread):
             steps=list(self.steps),
             melds=[list(player.melds) for player in self._table.players],
             meld_reds=dict(self._meld_reds),
+            meld_sideways=set(self._meld_sideways),
             reaches=self._reaches(),
             own_reach=self._own_reach,
             moves=list(self._own.moves),
             readings=dict(self._readings),
-            next_up=self._turns.next_up if self._turns is not None else None,
+            next_up=next_up,
+            tsumogiri=dict(self._tsumogiri),
         )
 
     def _stuck(self, stream: Stream) -> bool:
@@ -1308,6 +1380,9 @@ class TableWorker(threading.Thread):
         self._kamicha_then = 0
         self._dora_marks = []
         self._meld_reds = {}
+        self._meld_sideways = set()
+        self._tedashi.reset()
+        self._tsumogiri = {}
         self._reach_marks = {}
         self._own_reach = None
         self._readings = {}

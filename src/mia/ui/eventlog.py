@@ -10,6 +10,11 @@
 新的顯示。郵箱每個 slot 只留最新一筆,累加的話也會掉事件。
 
 只有換局才把上一局收起來留著。
+
+摸切與手切
+----------
+畫面那條路的別家摸切、手切是看手牌形狀估的(見 :mod:`mia.tracker.tedashi`,約九成三),
+引擎吃的就是這個值,所以照樣寫出來,Log 才看得出引擎拿到了什麼。
 """
 
 from __future__ import annotations
@@ -18,13 +23,20 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from mia.mjai.describe import describe
+from mia.mjai.describe import describe, tile_text
 from mia.mjai.events import MjaiEvent, StartKyoku
+from mia.mjai.tiles import HONOR_ORDER, UNKNOWN, normalize_red
 
-__all__ = ["PACKET_SOURCE", "EventLog", "LogLine"]
+__all__ = ["PACKET_SOURCE", "TILE_MARK", "EventLog", "LogLine"]
 
-#: 封包那條路的名字。只有它的摸切與手切是真的。
+#: 封包那條路的名字。
 PACKET_SOURCE = "封包"
+
+#: :attr:`LogLine.marked` 裡夾住一張牌(MJAI 記法)的記號。是控制字元,說明文字裡不會出現。
+TILE_MARK = "\x1f"
+
+#: 認得的牌。其餘的(``?``、認不得的記法)寫成文字。
+_TILES = frozenset([*(f"{n}{s}" for s in "mps" for n in range(1, 10)), *HONOR_ORDER])
 
 #: 最多留幾行。一局約 150 則,夠看完一場半莊。
 _MAX_LINES = 2000
@@ -38,11 +50,13 @@ class LogLine:
         text: 中文說明。
         mjai: MJAI 格式(一行 JSON)。
         heading: 是不是一局的開頭。
+        marked: 同一句話,但每張牌寫成 ``TILE_MARK + 牌 + TILE_MARK``,給視窗換成牌面圖。
     """
 
     text: str
     mjai: str
     heading: bool = False
+    marked: str = ""
 
 
 class EventLog:
@@ -71,7 +85,7 @@ class EventLog:
         self.source, self.note = source, note
         if events and events != self._events:
             changed = True
-            self._take(source, seat, events)
+            self._take(seat, events)
         if changed:
             self._notify()
 
@@ -83,7 +97,7 @@ class EventLog:
         self._current.clear()
         self._notify()
 
-    def _take(self, source: str, seat: int | None, events: tuple[MjaiEvent, ...]) -> None:
+    def _take(self, seat: int | None, events: tuple[MjaiEvent, ...]) -> None:
         """只重算變動的部分:一局尾巴一輪要比兩百則,而前面幾乎都沒變。"""
         if self._events and not _same_round(self._events[0], events[0]):
             self._past.extend(self._current)
@@ -95,8 +109,7 @@ class EventLog:
             if old != new:
                 break
             kept += 1
-        exact = source == PACKET_SOURCE
-        self._current[kept:] = [_line(event, seat, exact) for event in events[kept:]]
+        self._current[kept:] = [_line(event, seat) for event in events[kept:]]
         self._events = events
 
     def _notify(self) -> None:
@@ -111,7 +124,14 @@ def _same_round(old: MjaiEvent, new: MjaiEvent) -> bool:
     return type(old) is type(new)
 
 
-def _line(event: MjaiEvent, seat: int | None, exact: bool) -> LogLine:
-    text = describe(event, seat=seat, exact_discards=exact)
+def _line(event: MjaiEvent, seat: int | None) -> LogLine:
+    text = describe(event, seat=seat)
+    marked = describe(event, seat=seat, tile=_mark)
     mjai = json.dumps(event.to_dict(), ensure_ascii=False, separators=(",", ":"))
-    return LogLine(text, mjai, heading=isinstance(event, StartKyoku))
+    return LogLine(text, mjai, heading=isinstance(event, StartKyoku), marked=marked)
+
+
+def _mark(tile: str) -> str:
+    if tile == UNKNOWN or normalize_red(tile) not in _TILES:
+        return tile_text(tile)
+    return f"{TILE_MARK}{tile}{TILE_MARK}"

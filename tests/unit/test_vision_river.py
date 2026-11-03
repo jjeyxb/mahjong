@@ -25,12 +25,14 @@ from mia.vision.tiles.river import (
     COLUMNS,
     DEFAULT_CORNERS,
     FACE,
+    OVERFLOW,
     ROWS,
     SEARCH_BELOW,
     SEATS,
     SIDEWAYS_FACE,
     SIDEWAYS_ROOM,
     SIDEWAYS_SHIFT,
+    SLOTS,
     River,
     RiverView,
     classify_river_tile,
@@ -39,9 +41,11 @@ from mia.vision.tiles.river import (
     find_sideways,
     is_face_up,
     read_river,
+    row_end,
     search_window,
     sideways_face_size,
     sideways_shift,
+    slot,
 )
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
@@ -102,9 +106,12 @@ class TestRiverView:
         assert quad.tolist() == [[10, 20], [110, 20], [110, 220], [10, 220]]
 
     def test_rectify_produces_the_canonical_grid(self, table_image: np.ndarray) -> None:
-        """三列,再往下多一截給認牌的搜尋窗。格子的位置不變。"""
+        """三列,再往下多一截給認牌的搜尋窗,往右多幾格給第三排接著長。格子的位置不變。"""
         flat = DEFAULT_CORNERS["own"].rectify(table_image, TABLE)
-        assert flat.shape[:2] == (ROWS * CELL[1] + SEARCH_BELOW, COLUMNS * CELL[0] + SIDEWAYS_ROOM)
+        assert flat.shape[:2] == (
+            ROWS * CELL[1] + SEARCH_BELOW,
+            (COLUMNS + OVERFLOW) * CELL[0] + SIDEWAYS_ROOM,
+        )
 
     @pytest.mark.parametrize("seat", SEATS)
     def test_every_seat_has_corners(self, seat: str) -> None:
@@ -312,6 +319,58 @@ class TestTileBacksAreNotDiscards:
         assert read_river(self._flat(_hsv(30, 6, 200))).count == 1
 
 
+class TestTheThirdRowGrows:
+    """雀魂不開第四排,第 19 張起接在第三排後面。
+
+    真人東三局下家打了 20 張,只切 18 格時最後兩張整張看不到。電腦場 132 局也有 23 家次
+    打超過 18 張。
+    """
+
+    def _flat(
+        self, slots: range | tuple[int, ...], *, columns: int = COLUMNS + OVERFLOW
+    ) -> np.ndarray:
+        flat = np.full((ROWS * CELL[1], columns * CELL[0], 3), 70, dtype=np.uint8)
+        face_w, face_h = face_size()
+        for index in slots:
+            column, row = slot(index)
+            x = column * CELL[0] + (CELL[0] - face_w) // 2
+            y = row * CELL[1] + (CELL[1] - face_h) // 2
+            flat[y : y + face_h, x : x + face_w] = 210
+        return flat
+
+    def test_the_slots_after_18_stay_on_the_third_row(self) -> None:
+        assert slot(17) == (5, 2)
+        assert slot(18) == (6, 2)
+        assert slot(SLOTS - 1) == (COLUMNS + OVERFLOW - 1, ROWS - 1)
+        assert row_end(5) == 5
+        assert row_end(12) == SLOTS - 1
+
+    def test_twenty_tiles_are_all_counted(self) -> None:
+        river = read_river(self._flat(range(20)))
+        assert river.count == 20
+        assert river.is_plausible()
+
+    def test_something_far_out_is_not_a_tile(self) -> None:
+        """延伸的那一帶已經不是牌河:上家那邊再過去是自家的頭像。前一格沒牌就不算,
+        不然那一家會破一個洞,整幀被丟掉。
+        """
+        river = read_river(self._flat((*range(18), SLOTS - 1)))
+        assert river.count == 18
+        assert river.is_plausible()
+
+    def test_a_narrow_image_reads_only_18(self) -> None:
+        """攤平圖沒有延伸的那一段(舊的寬度)就只讀 18 格,不會切到圖外面。"""
+        river = read_river(self._flat(range(20), columns=COLUMNS))
+        assert river.count == 18
+        assert len(river.cells) == SLOTS
+
+    def test_a_sideways_tile_on_the_third_row_pushes_the_overflow_too(self) -> None:
+        plain = read_river(self._flat(range(20)))
+        moved = read_river(self._flat(range(20)), sideways=14)
+        shifts = [b.x - a.x for a, b in zip(plain.cells, moved.cells, strict=True)]
+        assert shifts == [0] * 15 + [sideways_shift()] * (SLOTS - 15)
+
+
 class TestTwoScalesMustAgree:
     """同一格用兩個模板高度各認一次,答案不一樣就棄權。
 
@@ -508,7 +567,7 @@ class TestTheSidewaysReachTile:
         moved = read_river(self._flat(table_image), sideways=8, scale=self.SCALE)
         shifts = [b.x - a.x for a, b in zip(plain.cells, moved.cells, strict=True)]
         push = sideways_shift(self.SCALE)
-        assert shifts == [0] * 9 + [push] * 3 + [0] * 6
+        assert shifts == [0] * 9 + [push] * 3 + [0] * (SLOTS - 12)
 
     def test_a_river_without_a_sideways_tile_is_untouched(
         self, table_image: np.ndarray

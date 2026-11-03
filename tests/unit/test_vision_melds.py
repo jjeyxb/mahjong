@@ -23,6 +23,7 @@ from mia.vision.tiles.melds import (
     MeldStrip,
     MeldView,
     _red_score,
+    _scan,
     _shortlist,
     occupied_length,
     read_melds,
@@ -139,6 +140,21 @@ class TestOccupiedLength:
     def test_four_daiminkan_fit(self) -> None:
         """四組大明槓約 17.3 張寬,13 格裝不下。"""
         assert EXTENT * 1.0 >= 4 * (3 + 1.33)
+
+
+class TestUprightOrSideways:
+    """橫放的是被鳴的牌,上層要知道認到的牌是直的還是橫的,才分得出吃碰。"""
+
+    def test_each_hit_knows_how_it_lay(self) -> None:
+        templates = TemplateSet.load_river()
+        faces = dict(templates.scaled((52, 75)))
+        plane = np.full((300, 500, 3), 90, np.uint8)
+        plane[100:175, 100:152] = faces["3s"]
+        # 中心對準一個掃描框的中心 (350, 150),框中央才夠格算是牌面。
+        plane[124:176, 312:387] = cv2.rotate(faces["6p"], cv2.ROTATE_90_COUNTERCLOCKWISE)
+        polygon = np.array([[0, 0], [500, 0], [500, 300], [0, 300]], np.float32)
+        lay = {hit.label: hit.upright for hit in _scan(plane, polygon, "kamicha", templates)}
+        assert lay == {"3s": True, "6p": False}
 
 
 class TestTheShortlist:

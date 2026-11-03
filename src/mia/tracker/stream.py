@@ -121,6 +121,10 @@ class KyokuLog:
         melds: 四家的副露,牌面認到多少算多少,依發生順序。
         meld_reds: 副露裡看到赤五 ``(誰, 第幾組) -> 花色``。見
             :attr:`~mia.vision.tiles.melds.MeldFaces.red_suits`。
+        meld_sideways: 只認到一張、而且只在橫的框裡認到的副露 ``(誰, 第幾組)``。那張是
+            被鳴的牌,分不出吃碰。見 :attr:`~mia.vision.tiles.melds.MeldFaces.upright`。
+        tsumogiri: 別家的捨牌是不是摸切 ``(誰, 第幾張) -> 摸切``,排進事件流那一刻看手牌的
+            形狀決定,之後不改。見 :mod:`mia.tracker.tedashi`。
         reaches: 別家立直 ``(誰, 他的第幾張捨牌是宣言牌)``。
         own_reach: 自己立直,宣言牌是自己第幾次打牌。與別家分開數:宣言牌一打出就
             被鳴走時,河裡從沒有過那一張,而手牌一定看得到。
@@ -139,6 +143,8 @@ class KyokuLog:
         default_factory=lambda: [[] for _ in range(_SEATS)]
     )
     meld_reds: dict[tuple[int, int], frozenset[str]] = field(default_factory=dict)
+    meld_sideways: set[tuple[int, int]] = field(default_factory=set)
+    tsumogiri: dict[tuple[int, int | None], bool] = field(default_factory=dict)
     reaches: list[tuple[int, int]] = field(default_factory=list)
     own_reach: int | None = None
     moves: list[OwnMove] = field(default_factory=list)
@@ -453,10 +459,27 @@ class _Composer:
         else:
             pai = self._discarded(step)
             self.sure = step.pai is not None and normalize_red(step.pai) == normalize_red(pai)
-            self.events.append(Dahai(actor=step.actor, pai=pai, tsumogiri=False))
+            tsumogiri = self._tsumogiri(step, reached=reached)
+            self.events.append(Dahai(actor=step.actor, pai=pai, tsumogiri=tsumogiri))
         if reached:
             self.events.append(ReachAccepted(actor=step.actor))
         return True
+
+    def _tsumogiri(self, step: Step, *, reached: bool) -> bool:
+        """別家這張是不是摸切。規則推得出來的照規則,其餘看手牌的形狀(:attr:`KyokuLog.tsumogiri`)。
+
+        鳴了之後打的一定是手切;立直之後(宣言牌以外)一定是摸切。都不是又沒量到就填手切,
+        與之前一樣。
+        """
+        last = self.events[-1] if self.events else None
+        if isinstance(last, Chi | Pon) and last.actor == step.actor:
+            return False
+        accepted = any(
+            isinstance(event, ReachAccepted) and event.actor == step.actor for event in self.events
+        )
+        if accepted and not reached:
+            return True
+        return self.log.tsumogiri.get((step.actor, step.serial), False)
 
     def _own_kans(self) -> None:
         """手牌看到自己槓了、排序器不知道的:加槓不變長,而打之前副露還沒確認。"""
@@ -524,10 +547,11 @@ class _Composer:
         step = self._unseen_call(step, known)
         known = self._agreeing(known)
         red_suits = self.log.meld_reds.get((step.actor, index), frozenset())
+        sideways = (step.actor, index) in self.log.meld_sideways
         self.events.append(
             self._open_kan(step, known)
             if step.kan
-            else self._with_red(self._open_meld(step, known), red_suits)
+            else self._with_red(self._open_meld(step, known, sideways=sideways), red_suits)
         )
         return True
 
@@ -656,17 +680,26 @@ class _Composer:
         consumed = self._red_in_kan([self._pick(tile) for _ in range(_COPIES - 1)], pai)
         return Daiminkan(actor=step.actor, target=step.target, pai=pai, consumed=consumed)
 
-    def _open_meld(self, step: Step, known: list[str]) -> Chi | Pon:
-        """別家的吃碰。``pai`` 是剛打出來的牌;牌面說不是的話聽牌面的。"""
+    def _open_meld(self, step: Step, known: list[str], *, sideways: bool = False) -> Chi | Pon:
+        """別家的吃碰。``pai`` 是剛打出來的牌;牌面說不是的話聽牌面的。
+
+        ``sideways`` 表示唯一認到的那張是橫放的,見 :attr:`KyokuLog.meld_sideways`。
+        """
         assert step.target is not None
         at = self._last_dahai()
         pai = self.events[at].pai  # type: ignore[attr-defined]
         plain = normalize_red(pai)
         adjacent = step.actor == (step.target + 1) % _SEATS
         triple = len(known) == 3 and len(set(known)) == 1
-        # 只認到被鳴的那張:吃的話另外兩張是直放的,比橫放的這張好認,不會偏偏只認到它。
-        # 但場上已經湊不出兩張時只可能是吃(嵌張的中間那張就是這樣)。
-        lone = len(known) == 1 and normalize_red(known[0]) == plain and self.left[plain] >= 2
+        # 只在直的框認到被鳴的那張:吃的直放牌不會是被鳴的牌,所以是碰。只在橫的框認到就是
+        # 被鳴的那張本身,分不出來:對家的直放索子常常認不出來,十二場有 6 組吃因此被當成碰,
+        # 而從上家鳴數牌是吃 67 次、碰 0 次。場上已經湊不出兩張時也只可能是吃(嵌張的中間那張)。
+        lone = (
+            len(known) == 1
+            and not sideways
+            and normalize_red(known[0]) == plain
+            and self.left[plain] >= 2
+        )
         if (
             triple
             or lone

@@ -83,6 +83,19 @@ class MeldWatcher:
         """這一家目前採信的長度。新長出來的組就在這個長度之後。"""
         return self._base[position]
 
+    def growing(self, position: int) -> bool:
+        """這一家量到長了一組吃碰的長度,還沒確認。
+
+        確認要隔一段時間再讀一次一樣的,鳴牌的人打出來的牌就得等它。排序器有別的證據(余牌沒減)
+        時可以先用這個,見 :meth:`~mia.tracker.turns.TurnTracker.tick`。像槓的不算:槓要多讀一次
+        才分得出是不是動畫中途。
+        """
+        pending = self._pending[position]
+        if not pending:
+            return False
+        grown = pending[-1] - self._base[position]
+        return grown < KAN_WIDTH * self.units[position]
+
     def observe(self, position: int, length: float | None) -> int:
         """收一家的一次讀數,回傳**新**長出來幾組(通常是 0)。
 

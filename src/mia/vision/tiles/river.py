@@ -1,4 +1,4 @@
-"""讀出四家的牌河:攤平成俯視圖,再切成 6x3 的網格。
+"""讀出四家的牌河:攤平成俯視圖,再切成 6x3 的網格,第三排放不下的往後接。
 
 與 :mod:`~mia.vision.tiles.hand` 的差別在於**牌是躺著的**。手牌立在自己面前,
 正對鏡頭,所以一組固定比例的槽位就夠;牌河平躺在桌上,而鏡頭是斜的,四家
@@ -47,12 +47,14 @@ __all__ = [
     "CONFIDENT",
     "DEFAULT_CORNERS",
     "FACE",
+    "OVERFLOW",
     "ROWS",
     "SEARCH_ABOVE",
     "SEARCH_BELOW",
     "SEATS",
     "SIDEWAYS_FACE",
     "SIDEWAYS_SHIFT",
+    "SLOTS",
     "River",
     "RiverView",
     "classify_river_tile",
@@ -63,13 +65,44 @@ __all__ = [
     "find_sideways",
     "is_face_up",
     "read_river",
+    "row_end",
     "search_window",
+    "slot",
     "tile_masks",
 ]
 
 #: 牌河的格數。雀魂固定 6 格一排、三排。
 COLUMNS = 6
 ROWS = 3
+
+#: 第三排滿了之後,同一排往後接幾格。
+#:
+#: 雀魂不開第四排,第 19 張起接在第三排後面。別家一鳴牌,下一家就多摸幾次,所以一家打到
+#: 19、20 張並不罕見:電腦場 132 局有 23 家次,真人東三局下家打了 20 張。只切 18 格時這
+#: 幾張整張看不到,等於漏牌。
+#:
+#: 只接 3 格:上家的第三排往下長,第 10 格就碰到自家的頭像。電腦場最多 20 張,21 張夠用。
+OVERFLOW = 3
+
+#: 一家牌河最多讀幾格。
+SLOTS = COLUMNS * ROWS + OVERFLOW
+
+
+def slot(index: int) -> tuple[int, int]:
+    """第幾格落在哪一 ``(欄, 列)``。第 18 格起是第三列的第 7 欄以後。"""
+    row = min(index // COLUMNS, ROWS - 1)
+    return index - row * COLUMNS, row
+
+
+def row_end(index: int) -> int:
+    """這一格所在那一列的最後一格。"""
+    row = slot(index)[1]
+    return SLOTS - 1 if row == ROWS - 1 else row * COLUMNS + COLUMNS - 1
+
+
+def _row_columns(row: int) -> int:
+    return COLUMNS + OVERFLOW if row == ROWS - 1 else COLUMNS
+
 
 #: 四家,與 ``data/roi_ref/roi.yaml`` 的鍵一致。順序是**出牌順序** ——
 #: 自己、下家、對家、上家。
@@ -342,9 +375,10 @@ class RiverView:
             cell: 攤平後一格的大小。
 
         Returns:
-            ``(3 * cell高 + 下方延伸, 6 * cell寬 + 右方延伸)`` 的 BGR 影像,牌面是正的。
+            ``(3 * cell高 + 下方延伸, (6 + 3) * cell寬 + 右方延伸)`` 的 BGR 影像,牌面是正的。
             比三列高一截,是給認牌的搜尋窗往下看用的(:data:`SEARCH_BELOW`)。
-            右邊多一截見 :data:`SIDEWAYS_ROOM`。格子的位置不變,延伸的部分只是平面的延伸。
+            右邊多的 3 格給第三排接著長(:data:`OVERFLOW`),再多一截見 :data:`SIDEWAYS_ROOM`。
+            格子的位置不變,延伸的部分只是平面的延伸。
         """
         width, height = cell
         target = np.array(
@@ -354,7 +388,9 @@ class RiverView:
         matrix = cv2.getPerspectiveTransform(self.quad(table), target)
         below = _below(cell)
         room = round(SIDEWAYS_ROOM * width / CELL[0])
-        return cv2.warpPerspective(image, matrix, (COLUMNS * width + room, ROWS * height + below))
+        return cv2.warpPerspective(
+            image, matrix, ((COLUMNS + OVERFLOW) * width + room, ROWS * height + below)
+        )
 
 
 #: 四家的角點。
@@ -542,7 +578,7 @@ class River:
 
     Attributes:
         cells: 每一格在**攤平後影像**上的矩形,由遠而近、由左而右。長度固定
-            18 —— 空格也留著,因為「第幾格」要對得上捨牌順序。
+            :data:`SLOTS` —— 空格也留著,因為「第幾格」要對得上捨牌順序。
         occupied: 每一格有沒有牌。
         sideways: 哪一格是橫放的立直宣言牌,沒有就是 ``None``。格子的位置
             已經把它算進去了 —— 這個欄位留著是為了讓上層說得出
@@ -587,7 +623,11 @@ def read_river(
     sideways: int | None = None,
     scale: float = 1.0,
 ) -> River:
-    """在**攤平後**的影像上切 18 格,並判斷每一格有沒有牌。
+    """在**攤平後**的影像上切 :data:`SLOTS` 格,並判斷每一格有沒有牌。
+
+    第三排後面接的那幾格(:data:`OVERFLOW`)要前一格有牌才算。那一帶已經不是牌河,
+    離得遠的東西(上家那邊是自家的頭像)不能湊成一張牌,讓 :meth:`River.is_plausible`
+    整家丟掉。
 
     Args:
         flat: :meth:`RiverView.rectify` 的輸出。
@@ -609,12 +649,15 @@ def read_river(
     cells: list[Rect] = []
     occupied: list[bool] = []
     clipped: list[int] = []
-    for index in range(COLUMNS * ROWS):
-        column, row = index % COLUMNS, index // COLUMNS
+    for index in range(SLOTS):
+        column, row = slot(index)
         shift = _shift_of(index, sideways, scale)
         rect = Rect(column * width + shift, row * height, width, height)
         cells.append(rect)
-        if rect.x + rect.width <= COLUMNS * width:
+        if column >= COLUMNS and (not occupied[-1] or (column + 1) * width > flat.shape[1]):
+            occupied.append(False)
+            continue
+        if rect.x + rect.width <= _row_columns(row) * width:
             occupied.append(_occupied(flat, _face_of(rect, cell)))
             continue
         # 挪出去了。**有無要用沒挪的位置判,不能判成空的。**
@@ -644,7 +687,7 @@ def _shift_of(index: int, sideways: int | None, scale: float = 1.0) -> int:
     """
     if sideways is None or index <= sideways:
         return 0
-    return sideways_shift(scale) if index // COLUMNS == sideways // COLUMNS else 0
+    return sideways_shift(scale) if slot(index)[1] == slot(sideways)[1] else 0
 
 
 def sideways_shift(scale: float = 1.0) -> int:
@@ -746,7 +789,7 @@ def _sideways_patch(flat: np.ndarray, index: int, cell: tuple[int, int]) -> np.n
     對封包真值逐幀比過,換成這個窗之後立直偵測的命中、漏判、誤判**完全不變**。
     """
     width, height = cell
-    column, row = index % COLUMNS, index // COLUMNS
+    column, row = slot(index)
     x = column * width
     rect = Rect(x, row * height, min(round(width * _SIDEWAYS_WINDOW), flat.shape[1] - x), height)
     return search_window(flat, rect, cell)
@@ -867,10 +910,8 @@ def _shift_helps(
     見 :func:`find_sideways` 第三關。沒有後續可驗的時候回 ``False`` ——
     寧可漏掉,因為那種情況下漏掉不會錯任何一張牌。
     """
-    column, row = index % COLUMNS, index // COLUMNS
-    after = [
-        c for c in range(column + 1, COLUMNS) if river.occupied[row * COLUMNS + c]
-    ]
+    column, row = slot(index)
+    after = [c for c in range(column + 1, _row_columns(row)) if river.occupied[row * COLUMNS + c]]
     if not after:
         return False
     plain = _confident_count(flat, after, row, 0, templates, cell)

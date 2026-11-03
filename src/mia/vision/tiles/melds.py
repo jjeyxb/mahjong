@@ -30,6 +30,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import cv2
@@ -376,15 +377,31 @@ _WINDOW = (100, 140)
 #: 實測 15 x 20 與 25 x 40 認出來的完全一樣,後者快三倍以上。
 _STEP = (25, 40)
 
-#: 模板尺寸。副露比牌河離鏡頭遠一點、角度也不同,上家又更小一號:四槓子
+#: 模板尺寸,依座位。副露比牌河離鏡頭遠一點、角度也不同,上家又更小一號:四槓子
 #: 那場上家的字牌要 0.82 ~ 0.9 倍才認得到。
-_SIZES = ((64, 92), (58, 83), (52, 75))
+#:
+#: 對家與下家反而比較大:攤平之後對家一張牌約 80 x 100,比 64 x 92 的模板還大,小的尺寸
+#: 把六到八索認成九筒、五六筒認成二筒。十二場 126 組別家的吃碰,對家換大一號 26 → 30 組對、
+#: 下家 40 → 41;上家換大的是 39 → 25。
+#:
+#: 每多一種尺寸,每一框就多比一輪。六場的命中:上家全部落在 52 x 75,下家 102 個在 64 x 92、
+#: 7 個在 70 x 100,對家 76 x 108 只有 3 個,所以只留用得到的。
+_SIZES: dict[str, tuple[tuple[int, int], ...]] = {
+    "own": ((64, 92), (58, 83), (52, 75)),
+    "shimocha": ((70, 100), (64, 92)),
+    "toimen": ((70, 100), (64, 92)),
+    "kamicha": ((52, 75),),
+}
 
 #: 粗篩:先在一半大小的圖上比完 37 張,只留分數最高的幾張到原尺寸比。一框要比
 #: 37 張 x 2 個覆核尺度 x 3 種大小,一組副露 2 ~ 8 秒,而有人鳴牌時正需要這些牌面。
 _COARSE_WINDOW = (_WINDOW[0] // 2, _WINDOW[1] // 2)
 _COARSE_FACE = (29, 41)
 _COARSE_KEEP = 6
+
+#: 粗篩最像的那張也低於這個分數,這一框就不必細比:六場 5662 個框,最後認得出來的粗篩
+#: 最低 0.424,低於 0.4 的認不出來的框佔 27%。
+_COARSE_FLOOR = 0.4
 
 #: 雀魂記法裡的赤五與普通五。
 _RED_TWIN = {"0m": "5m", "5m": "0m", "0p": "5p", "5p": "0p", "0s": "5s", "5s": "0s"}
@@ -408,8 +425,12 @@ _SAME_PLACE = (45, 60)
 #: 不同的牌最近 100(直的一張約 90 寬)。
 _APART = 100
 
-#: 帶子在長度以外、內外兩側各放寬幾格(副露那一格)。框中心落在範圍內就掃。
+#: 帶子在長度方向放寬幾格(副露那一格)。框中心落在範圍內就掃。
 _PAD = 0.5
+
+#: 帶子內外兩側各放寬幾格。十二場認對的牌面,框中心都在帶子裡(離內緣 0.09 ~ 0.95 格),
+#: 原本兩側各放寬半格,掃的框多一倍,多出來的只認到桌邊的假白。
+_ACROSS = 0.15
 
 #: 找赤五的框(寬, 高),牌河平面的像素。一張直放的牌面大小;橫放的把兩邊對調。
 _RED_WINDOW = (60, 84)
@@ -474,6 +495,7 @@ def read_meld_faces(
         frozenset(hit.label for hit in hits),
         frozenset(repeated),
         frozenset(suit for suit, floor in _RED_MELD.items() if score >= floor),
+        frozenset(hit.label for hit in hits if hit.upright),
     )
 
 
@@ -488,11 +510,14 @@ class MeldFaces:
             「吃,其中一張是 6 萬」。
         red_suits: 這組的牌如果是這幾種花色,裡面的五是赤五。這裡只看顏色,不知道
             這組是什麼花色;牌面常常認不全,花色要上層從牌河與規則推。
+        upright: 其中在**直的**框裡認到的。橫放的那張是被鳴的牌,只認到它的話分不出吃碰;
+            直的認到跟被鳴的牌一樣,才一定是碰。
     """
 
     tiles: frozenset[str]
     repeated: frozenset[str] = frozenset()
     red_suits: frozenset[str] = frozenset()
+    upright: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -503,6 +528,7 @@ class _Hit:
     x: int
     y: int
     label: str
+    upright: bool = True
 
 
 def _meld_plane(
@@ -534,10 +560,10 @@ def _meld_plane(
     tail = end + _PAD if open_end else end
     strip = np.array(
         [
-            [head * width, -_PAD * height],
-            [head * width, (1 + _PAD) * height],
-            [tail * width, (1 + _PAD) * height],
-            [tail * width, -_PAD * height],
+            [head * width, -_ACROSS * height],
+            [head * width, (1 + _ACROSS) * height],
+            [tail * width, (1 + _ACROSS) * height],
+            [tail * width, -_ACROSS * height],
         ],
         dtype=np.float32,
     )
@@ -562,10 +588,12 @@ def _scan(
             centre = (x + window_width / 2, y + window_height / 2)
             if cv2.pointPolygonTest(polygon, centre, False) < 0:
                 continue
-            for window in _windows(plane, x, y):
-                label, score = _classify(window, templates, haku=_HAKU_SCORE[seat])
+            for index, window in enumerate(_windows(plane, x, y)):
+                label, score = _classify(
+                    window, templates, sizes=_SIZES[seat], haku=_HAKU_SCORE[seat]
+                )
                 if label is not None:
-                    hits.append(_Hit(score, x, y, label))
+                    hits.append(_Hit(score, x, y, label, upright=index == 0))
     kept: list[_Hit] = []
     near_x, near_y = _SAME_PLACE
     for hit in sorted(hits, key=lambda h: h.score, reverse=True):
@@ -627,12 +655,19 @@ def _shortlist(window: np.ndarray, templates: TemplateSet) -> set[str]:
         (float(cv2.matchTemplate(small, face, cv2.TM_CCOEFF_NORMED).max()), label)
         for label, face in templates.scaled(_COARSE_FACE)
     ]
-    kept = {label for _, label in sorted(scores, reverse=True)[:_COARSE_KEEP]}
+    ranked = sorted(scores, reverse=True)
+    if ranked[0][0] < _COARSE_FLOOR:
+        return set()
+    kept = {label for _, label in ranked[:_COARSE_KEEP]}
     return kept | {_RED_TWIN[label] for label in kept if label in _RED_TWIN}
 
 
 def _classify(
-    window: np.ndarray, templates: TemplateSet, *, haku: float
+    window: np.ndarray,
+    templates: TemplateSet,
+    *,
+    sizes: Sequence[tuple[int, int]],
+    haku: float,
 ) -> tuple[str | None, float]:
     """這一框是哪張牌;沒把握回 ``(None, 0)``。"""
     width, height = _WINDOW
@@ -640,8 +675,10 @@ def _classify(
     if face_coverage(centre) < _FACE_MIN:
         return None, 0.0
     labels = _shortlist(window, templates)
+    if not labels:
+        return None, 0.0
     best: tuple[str | None, float] = (None, 0.0)
-    for size in _SIZES:
+    for size in sizes:
         match = classify_river_tile(window, templates, size=size, labels=labels)
         floor = haku if match.label == "5z" else CONFIDENT[0]
         if match.score >= max(floor, best[1]) and match.margin >= CONFIDENT[1]:

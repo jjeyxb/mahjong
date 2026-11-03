@@ -483,6 +483,49 @@ class TestOtherMelds:
         events = body(compose(log(steps=steps, melds=melds)).events)
         assert events[2] == Daiminkan(actor=3, target=1, pai="7p", consumed=["7p", "7p", "7p"])
 
+    def test_the_hand_shape_says_tsumogiri(self) -> None:
+        steps = [Step(T, 1), Step(D, 1, "7p", serial=0)]
+        kyoku = log(steps=steps, tsumogiri={(1, 0): True})
+        assert body(compose(kyoku).events)[1] == Dahai(actor=1, pai="7p", tsumogiri=True)
+
+    def test_after_a_call_it_is_never_tsumogiri(self) -> None:
+        steps = [Step(T, 1), Step(D, 1, "7p"), Step(C, 2, target=1), Step(D, 2, "1s", serial=0)]
+        melds: list[list[tuple[str, ...]]] = [[], [], [("7p", "7p", "7p")], []]
+        kyoku = log(steps=steps, melds=melds, tsumogiri={(2, 0): True})
+        assert body(compose(kyoku).events)[3] == Dahai(actor=2, pai="1s", tsumogiri=False)
+
+    def test_after_reach_it_is_always_tsumogiri(self) -> None:
+        steps = [Step(T, 1), Step(D, 1, "7p", serial=0), Step(T, 2), Step(D, 2, "1s")]
+        steps += [Step(T, 3), Step(D, 3, "2s"), Step(T, 0), Step(D, 0, "9p")]
+        steps += [Step(T, 1), Step(D, 1, "8p", serial=1)]
+        moves = [OwnMove(Move.DRAW, ("9p",)), OwnMove(Move.DISCARD, ("9p",), tsumogiri=True)]
+        kyoku = log(steps=steps, moves=moves, reaches=[(1, 0)])
+        events = body(compose(kyoku).events)
+        assert Dahai(actor=1, pai="7p", tsumogiri=False) in events
+        assert events[-1] == Dahai(actor=1, pai="8p", tsumogiri=True)
+
+    def test_a_lone_upright_face_is_a_pon(self) -> None:
+        """直的框認到被鳴的 7 筒:吃的直放牌不會是被鳴的那張。"""
+        called = self._called(("7p", "?", "?"))
+        assert called == Pon(actor=2, target=1, pai="7p", consumed=["7p", "7p"])
+
+    def test_a_lone_sideways_face_is_a_chi(self) -> None:
+        """只在橫的框認到 7 筒:那就是被鳴的那張,另外兩張沒認到,而上家打的數牌多半是吃。"""
+        steps = [Step(T, 1), Step(D, 1, "7p"), Step(C, 2, target=1), Step(D, 2, "1s")]
+        melds: list[list[tuple[str, ...]]] = [[], [], [("7p", "?", "?")], []]
+        kyoku = log(steps=steps, melds=melds, meld_sideways={(2, 0)})
+        called = body(compose(kyoku).events)[2]
+        assert isinstance(called, Chi)
+        assert called.pai == "7p"
+
+    def test_a_sideways_honour_is_still_a_pon(self) -> None:
+        steps = [Step(T, 1), Step(D, 1, "C"), Step(C, 2, target=1), Step(D, 2, "1s")]
+        melds: list[list[tuple[str, ...]]] = [[], [], [("C", "C", "C")], []]
+        kyoku = log(steps=steps, melds=melds, meld_sideways={(2, 0)})
+        assert body(compose(kyoku).events)[2] == Pon(
+            actor=2, target=1, pai="C", consumed=["C", "C"]
+        )
+
     def test_a_lone_face_with_no_copies_left_is_a_chi(self) -> None:
         """只認到被鳴的 5 筒,而另外三張都看得到了:碰不了,只可能是吃。"""
         steps = [Step(T, 2), Step(D, 2, "5p"), Step(C, 3, target=2), Step(D, 3, "E")]

@@ -85,6 +85,55 @@ class TestCalls:
         assert turns.tick(3, [(1, "5p")], wall=69) == []
         assert shape(turns.tick(4, melds=[1], wall=69)) == [(C, 1), (D, 1)]
 
+    def test_a_growing_meld_lets_the_call_through_at_once(self) -> None:
+        """下家吃:余牌沒減,副露區也已經長了一組,不必等第二次讀到一樣的長度。"""
+        turns = self._after_first_discard()
+        steps = turns.tick(3, [(1, "5p")], wall=69, growing=[1])
+        assert shape(steps) == [(C, 1), (D, 1)]
+        assert steps[0].target == 0
+
+    def test_the_meld_confirmed_later_is_not_another_call(self) -> None:
+        turns = self._after_first_discard()
+        turns.tick(3, [(1, "5p")], wall=69, growing=[1])
+        turns.tick(4, melds=[1], wall=68)
+        assert turns._melds == []  # noqa: SLF001
+        assert shape(turns.tick(5, [(2, "1p")], wall=67)) == [(T, 2), (D, 2)]
+        assert shape(turns.tick(6, [(3, "2p")], wall=66)) == [(T, 3), (D, 3)]
+
+    def test_a_growing_meld_without_a_wall_reading_still_waits(self) -> None:
+        """余牌讀不到時 ``unseen`` 一律是 0,不能拿來當沒人摸牌的證據。"""
+        turns = TurnTracker(oya=0)
+        turns.tick(1)
+        turns.tick(2, [(0, "1m")])
+        assert turns.tick(3, [(1, "5p")], growing=[1]) == []
+
+    def test_a_growing_meld_on_another_seat_does_not_count(self) -> None:
+        turns = self._after_first_discard()
+        assert turns.tick(3, [(1, "5p")], wall=69, growing=[3]) == []
+
+    def test_an_undecided_seat_waits_a_little(self) -> None:
+        """摸切手切還沒看出來:多等一下再排,也先不接在尾巴。"""
+        turns = self._after_first_discard()
+        turns.hold = 0.5
+        turns.tick(3, wall=68)
+        assert turns.tick(4, [(1, "5p")], wall=68, undecided=[1]) == []
+        assert turns.next_up is None
+        assert turns.held(4.6)
+        assert shape(turns.tick(4.6, wall=68, undecided=[1])) == [(T, 1), (D, 1)]
+
+    def test_a_decided_seat_does_not_wait(self) -> None:
+        turns = self._after_first_discard()
+        turns.hold = 0.5
+        turns.tick(3, wall=68)
+        assert shape(turns.tick(4, [(1, "5p")], wall=68, undecided=[2])) == [(T, 1), (D, 1)]
+
+    def test_own_turn_does_not_wait_for_it(self) -> None:
+        turns = self._after_first_discard()
+        turns.hold = 0.5
+        turns.tick(3, wall=68)
+        steps = turns.tick(4, [(1, "5p")], wall=68, undecided=[1], hurry=True)
+        assert shape(steps) == [(T, 1), (D, 1)]
+
     def test_a_plain_draw_that_outran_the_wall(self) -> None:
         """動作很快的時候,摸牌與打牌落在同一輪,上一輪的余牌還沒看到。"""
         turns = self._after_first_discard()
@@ -349,3 +398,91 @@ class TestItDoesNotDrift:
         for tick in range(5, 5 + WAIT):
             turns.tick(tick, wall=67)
         assert turns.drawn == 3
+
+
+class TestTheTurnLight:
+    """中央面板的燈說輪到誰。見 ``mia/tracker/turns.py``「中央的燈」。"""
+
+    def _after_first_discard(self) -> TurnTracker:
+        """莊家(自己)摸打了第一張,燈亮在莊家那邊。"""
+        turns = TurnTracker(oya=0)
+        turns.see_light(0.5, 0)
+        turns.tick(1, wall=69)
+        turns.tick(2, [(0, "1m")], wall=69)
+        return turns
+
+    def test_a_draw_the_wall_missed_is_still_a_draw(self) -> None:
+        """余牌多算了一張:下家正常摸打,看起來卻像沒人摸牌。真人鳴牌前猶豫好幾秒,余牌一直不動,
+        沒有燈的話這張牌等不到副露,被當成假的丟掉。"""
+        turns = self._after_first_discard()
+        turns.see_light(2.5, 1)
+        assert shape(turns.tick(3, [(1, "2m")], wall=69)) == [(T, 1), (D, 1)]
+
+    def test_without_the_light_it_waits(self) -> None:
+        turns = self._after_first_discard()
+        assert turns.tick(3, [(1, "2m")], wall=69) == []
+
+    def test_a_draw_counted_twice_is_absorbed(self) -> None:
+        """燈換過來之後的余牌說這次摸牌已經算過了:之前多算了一張,不再加。"""
+        turns = self._after_first_discard()
+        turns.drawn += 1
+        turns.see_light(2.5, 1)
+        turns.see_wall(2.6, 68)
+        turns.tick(3, [(1, "2m")], wall=68)
+        assert turns.drawn == 2
+
+    def test_a_plain_draw_still_counts(self) -> None:
+        turns = self._after_first_discard()
+        turns.see_light(2.5, 1)
+        turns.tick(3, [(1, "2m")], wall=68)
+        assert turns.drawn == 2
+
+    def test_a_jump_is_a_call_at_once(self) -> None:
+        """燈從莊家直接跳到對家:對家碰了。不必等副露確認。"""
+        turns = self._after_first_discard()
+        turns.see_light(2.5, 2)
+        assert shape(turns.tick(3, [(2, "5p")], wall=69)) == [(C, 2), (D, 2)]
+
+    def test_the_meld_confirmed_later_is_not_another_call(self) -> None:
+        turns = self._after_first_discard()
+        turns.see_light(2.5, 2)
+        turns.tick(3, [(2, "5p")], wall=69)
+        turns.tick(4, melds=[2], wall=69)
+        turns.see_light(4.5, 3)
+        assert shape(turns.tick(5, [(3, "7s")], wall=68)) == [(T, 3), (D, 3)]
+
+    def test_a_growing_meld_on_the_next_seat_is_still_a_chi(self) -> None:
+        turns = self._after_first_discard()
+        turns.see_light(2.5, 1)
+        assert shape(turns.tick(3, [(1, "2m")], wall=69, growing=[1])) == [(C, 1), (D, 1)]
+
+    def test_a_light_that_has_not_moved_yet_changes_nothing(self) -> None:
+        """電腦打得快,牌常常比燈先到:照余牌推。"""
+        turns = self._after_first_discard()
+        turns.see_light(2.5, 0)
+        turns.tick(3, wall=68)
+        assert shape(turns.tick(4, [(1, "2m")], wall=68)) == [(T, 1), (D, 1)]
+
+    def test_another_seat_in_between_is_left_to_the_wall(self) -> None:
+        """燈經過了別家:中間有看不到的動作,照余牌推。"""
+        turns = self._after_first_discard()
+        turns.see_light(2.5, 1)
+        turns.see_light(2.8, 2)
+        assert turns.tick(3, [(2, "5p")], wall=69) == []
+
+    def test_an_old_light_is_not_this_turn(self) -> None:
+        """這一家上一輪的燈:這一輪的還沒換過來,照余牌推。"""
+        turns = self._after_first_discard()
+        turns.see_light(2.5, 1)
+        turns.tick(3, [(1, "2m")], wall=68)
+        for seat, tick in ((2, 4), (3, 5), (0, 6)):
+            turns.see_light(tick - 0.5, seat)
+            turns.tick(tick, [(seat, "9p")], wall=68 - seat)
+        assert turns.last == 0
+        assert turns.tick(10, [(1, "3m")], wall=65) == []
+
+    def test_an_unread_light_is_not_a_change(self) -> None:
+        turns = self._after_first_discard()
+        turns.see_light(2.4, 1)
+        turns.see_light(2.5, None)
+        assert shape(turns.tick(3, [(1, "2m")], wall=69)) == [(T, 1), (D, 1)]

@@ -6,10 +6,12 @@ import json
 from dataclasses import replace
 
 import pytest
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QPixmap
 
 from mia.mjai.events import Dahai, MjaiEvent, StartGame, StartKyoku, Tsumo
-from mia.ui.eventlog import PACKET_SOURCE, EventLog
-from mia.ui.overlay.log import EventLogWindow
+from mia.ui.eventlog import PACKET_SOURCE, TILE_MARK, EventLog
+from mia.ui.overlay.log import EventLogWindow, _with_tiles
 from mia.ui.state import UiState
 
 SCREEN = "圖像辨識"
@@ -41,6 +43,24 @@ class Counter:
         self.calls += 1
 
 
+class TestTilesInText:
+    def test_tiles_are_marked(self) -> None:
+        log = EventLog()
+        log.update(SCREEN, 0, _round(1, Dahai(actor=1, pai="5pr", tsumogiri=True)))
+        assert log.lines[-1].text == "下家 摸切 赤五筒"
+        assert log.lines[-1].marked == f"下家 摸切 {TILE_MARK}5pr{TILE_MARK}"
+
+    def test_an_unknown_tile_stays_text(self) -> None:
+        log = EventLog()
+        log.update(SCREEN, 0, _round(1, Dahai(actor=1, pai="?", tsumogiri=False)))
+        assert TILE_MARK not in log.lines[-1].marked
+
+    def test_without_pictures_the_names_come_back(self) -> None:
+        marked = f"碰 {TILE_MARK}E{TILE_MARK} <b>"
+        assert _with_tiles(marked, pictures=False) == "碰 東 &lt;b&gt;"
+        assert 'src="tile:E"' in _with_tiles(marked, pictures=True)
+
+
 class TestEventLog:
     def test_each_event_has_both_forms(self) -> None:
         log = EventLog()
@@ -62,7 +82,7 @@ class TestEventLog:
         log.update(SCREEN, 0, _round(1, wrong))
         log.update(SCREEN, 0, _round(1, right))
         assert len(log.lines) == 2
-        assert log.lines[-1].text == "下家 打 五筒"
+        assert log.lines[-1].text == "下家 手切 五筒"
 
     def test_a_shorter_stream_drops_the_tail(self) -> None:
         """暫時接在尾巴的牌,排出來不一樣就收回去。"""
@@ -146,9 +166,16 @@ class TestWindow:
         widget.set_shown(True)
         log.update(PACKET_SOURCE, 0, _round(1, Tsumo(actor=0, pai="3p")))
         text = widget._body.toPlainText()  # noqa: SLF001
-        assert "自家 摸 三筒" in text
+        assert "自家 摸" in text
+        assert 'src="tile:3p"' in widget._body.toHtml()  # noqa: SLF001
         assert '{"type":"tsumo","actor":0,"pai":"3p"}' in text
         assert widget._source.text() == "封包 · 2 則"  # noqa: SLF001
+
+    def test_the_tile_picture_is_loaded(self, window) -> None:
+        widget, _ = window
+        picture = widget._body.loadResource(2, QUrl("tile:5mr"))  # noqa: SLF001
+        assert isinstance(picture, QPixmap)
+        assert not picture.isNull()
 
     def test_what_happened_while_hidden_shows_up(self, window) -> None:
         widget, log = window

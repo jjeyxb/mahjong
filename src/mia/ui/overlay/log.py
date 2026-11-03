@@ -7,13 +7,17 @@
 
 鎖定之後滑鼠穿透,捲不動,所以永遠跟著最新的事件。沒鎖定時往上捲就停在原地,捲回最
 底下才繼續跟。
+
+牌畫成牌面圖,用的是手牌那一欄同一套 :class:`~mia.ui.widgets.tiles.TileIcons`。素材不在時
+退回中文牌名。
 """
 
 from __future__ import annotations
 
+import re
 from html import escape
 
-from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtCore import QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import QFontDatabase, QResizeEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -22,12 +26,15 @@ from PySide6.QtWidgets import (
     QSizeGrip,
     QTextBrowser,
     QVBoxLayout,
+    QWidget,
 )
 
-from mia.ui.eventlog import EventLog, LogLine
+from mia.mjai.describe import tile_text
+from mia.ui.eventlog import TILE_MARK, EventLog, LogLine
 from mia.ui.overlay.hud import HudWindow
 from mia.ui.state import UiState
 from mia.ui.style import ACCENT
+from mia.ui.widgets.tiles import TILE_ASPECT, TileIcons
 
 __all__ = ["EventLogWindow"]
 
@@ -56,6 +63,28 @@ _BODY_STYLE = (
 
 _EMPTY = "還沒有事件。AI 建議要開著,對局開始後才有事件流。"
 
+#: 牌面圖的高度,邏輯像素。說明文字是 13px,圖比字高一點才認得出牌。
+_TILE_HEIGHT = 26
+
+#: 圖片網址的 scheme:``tile:5mr``。
+_SCHEME = "tile"
+
+_MARKED = re.compile(f"{TILE_MARK}([^{TILE_MARK}]+){TILE_MARK}")
+
+
+class _TileBrowser(QTextBrowser):
+    """``tile:<牌>`` 的圖片向 :class:`TileIcons` 要,依螢幕的裝置像素比畫。"""
+
+    def __init__(self, parent: QWidget, icons: TileIcons) -> None:
+        super().__init__(parent)
+        self._icons = icons
+
+    def loadResource(self, kind: int, name: QUrl | str) -> object:
+        url = QUrl(name) if isinstance(name, str) else name
+        if url.scheme() == _SCHEME:
+            return self._icons.pixmap(url.path(), _TILE_HEIGHT, self.devicePixelRatioF())
+        return super().loadResource(kind, name)
+
 
 class EventLogWindow(HudWindow):
     """Log 視窗。
@@ -81,7 +110,13 @@ class EventLogWindow(HudWindow):
         self._note.setWordWrap(True)
         layout.addWidget(self._note)
 
-        self._body = QTextBrowser(self)
+        try:
+            self._icons: TileIcons | None = TileIcons()
+        except FileNotFoundError:
+            self._icons = None
+        self._body = (
+            _TileBrowser(self, self._icons) if self._icons is not None else QTextBrowser(self)
+        )
         self._body.setStyleSheet(_BODY_STYLE)
         self._body.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._body.setOpenLinks(False)
@@ -200,8 +235,9 @@ class EventLogWindow(HudWindow):
         self._source.setText(f"{self._log.source} · {len(lines)} 則" if lines else "")
         self._note.setText(self._log.note)
         self._note.setVisible(bool(self._log.note))
+        pictures = self._icons is not None
         self._body.setHtml(
-            "".join(_html(line, self._mono) for line in lines)
+            "".join(_html(line, self._mono, pictures=pictures) for line in lines)
             or f'<p style="color:{_MUTED}">{_EMPTY}</p>'
         )
         if following:
@@ -214,13 +250,32 @@ class EventLogWindow(HudWindow):
         bar.setValue(bar.maximum())
 
 
-def _html(line: LogLine, mono: str) -> str:
+def _html(line: LogLine, mono: str, *, pictures: bool = True) -> str:
     colour = ACCENT if line.heading else _TEXT
     weight = 600 if line.heading else 400
+    text = _with_tiles(line.marked, pictures=pictures) if line.marked else escape(line.text)
     return (
         '<p style="margin:0 0 6px 0">'
         f'<span style="color:{colour};font-size:13px;font-weight:{weight}">'
-        f"{escape(line.text)}</span><br>"
+        f"{text}</span><br>"
         f'<span style="color:{_MUTED};font-size:10px;font-family:{escape(mono)}">'
         f"{escape(line.mjai)}</span></p>"
     )
+
+
+def _with_tiles(marked: str, *, pictures: bool) -> str:
+    """把夾起來的牌換成牌面圖;沒有素材就換回中文牌名。其餘文字照常跳脫。"""
+    width = round(_TILE_HEIGHT * TILE_ASPECT)
+    parts = _MARKED.split(marked)
+    out = []
+    for index, part in enumerate(parts):
+        if index % 2 == 0:
+            out.append(escape(part))
+        elif pictures:
+            out.append(
+                f'<img src="{_SCHEME}:{escape(part)}" width="{width}" height="{_TILE_HEIGHT}"'
+                f' align="middle" title="{escape(tile_text(part))}">'
+            )
+        else:
+            out.append(escape(tile_text(part)))
+    return "".join(out)
