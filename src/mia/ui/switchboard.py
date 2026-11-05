@@ -23,6 +23,7 @@ __all__ = [
     "GameLauncher",
     "HandRoiPicker",
     "PlatformPicker",
+    "RecognitionPicker",
     "StylePicker",
     "Switchboard",
     "TableRectPicker",
@@ -136,6 +137,12 @@ class DangerSourcePicker(Protocol):
     #: 現在**真的在跑**的那條路。與上面那個勾選不是同一件事:
     #: 沒有封包來源時本來就走圖像辨識,使用者沒勾也一樣。
     def danger_source_name(self) -> str | None: ...
+
+
+class RecognitionPicker(Protocol):
+    def can_pick_recognition(self) -> bool: ...
+    def recognition_backend(self) -> str: ...
+    def set_recognition_backend(self, value: str) -> None: ...
 
 
 class AdviceSourcePicker(Protocol):

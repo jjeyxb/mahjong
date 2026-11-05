@@ -26,11 +26,14 @@ pytest.importorskip("PySide6", reason="UI 測試需要 PySide6")
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage
-from PySide6.QtWidgets import QPushButton
+from PySide6.QtWidgets import QCheckBox, QLabel, QPushButton
 
 from mia.calibration.canvas import PRESETS as CANVAS_PRESETS
+from mia.ui.overlay.window import OverlayWindow
 from mia.ui.panel.window import PAGES as _PAGES
-from mia.ui.panel.window import PanelWindow, present
+from mia.ui.panel.window import InfoDot, PanelWindow, _Page, present
+from mia.ui.state import MIN_HUD_OPACITY, UiState
+from mia.ui.theme import ChoiceButtons
 from mia.ui.widgets.tiles import (
     _PAD_FRACTION,
     _RADIUS_FRACTION,
@@ -371,18 +374,88 @@ class TestNavigation:
         window.show_page(1)
         assert window._stack.currentIndex() == 1  # noqa: SLF001
 
-    def test_the_settings_strip_is_hidden_when_empty(self, panel) -> None:
-        """設定頁的內容本身就是設定,頂端不該再留一條空白的橫線。"""
+    def test_the_general_page_has_no_subpages(self, panel) -> None:
+        """一般設定整頁就是設定,再掛「主頁 | 設定」會是一個只有一邊有東西的切換。"""
         _, window = panel
-        settings_page = window._stack.widget(len(_PAGES))  # noqa: SLF001
-        assert not shown(settings_page._settings)  # noqa: SLF001
+        assert not isinstance(window._stack.widget(len(_PAGES)), _Page)  # noqa: SLF001
 
-    def test_every_feature_page_shows_its_strip(self, panel) -> None:
-        """功能頁都有開關,所以設定列一定看得到。"""
+    def test_every_feature_page_has_its_own_settings(self, panel) -> None:
+        """設定跟著功能走:每個功能頁的「設定」子頁都有東西。"""
         _, window = panel
         for index in range(len(_PAGES)):
             page = window._stack.widget(index)  # noqa: SLF001
-            assert shown(page._settings), f"第 {index} 頁的設定列不見了"  # noqa: SLF001
+            assert isinstance(page, _Page)
+            assert page.has_settings(), f"第 {index} 頁的設定子頁是空的"
+
+    def test_a_page_opens_on_its_main_subpage(self, panel) -> None:
+        _, window = panel
+        for index in range(len(_PAGES)):
+            assert window._stack.widget(index).subpage() == 0  # noqa: SLF001
+
+    def test_the_settings_subpage_can_be_opened(self, panel) -> None:
+        _, window = panel
+        window.show_page(0, settings=True)
+        assert window._advice_page.subpage() == 1  # noqa: SLF001
+        window.show_page(0)
+        assert window._advice_page.subpage() == 0  # noqa: SLF001
+
+    def test_the_switch_is_outside_the_subpages(self, panel) -> None:
+        """開關在頂端,兩個子頁都看得到 —— 在設定子頁改完想立刻打開,不必切回去。"""
+        _, window = panel
+        page = window._advice_page  # noqa: SLF001
+        switch = window._switches[features.ADVICE]  # noqa: SLF001
+        assert not page.settings.isAncestorOf(switch)
+        assert not window._advice.isAncestorOf(switch)  # noqa: SLF001
+
+    def test_feature_settings_live_on_their_own_page(self, panel) -> None:
+        """迴歸:原本「使用圖像辨識」在全域設定頁、風格擠在 AI 建議的頂端橫列。"""
+        _, window = panel
+        advice = window._advice_page.settings  # noqa: SLF001
+        danger = window._danger_page.settings  # noqa: SLF001
+        analysis = window._analysis_page.settings  # noqa: SLF001
+        assert advice.isAncestorOf(window._style_picker)  # noqa: SLF001
+        assert advice.isAncestorOf(window._compare_picker)  # noqa: SLF001
+        assert advice.isAncestorOf(window._advice_vision_only)  # noqa: SLF001
+        assert danger.isAncestorOf(window._danger_vision_only)  # noqa: SLF001
+        assert analysis.isAncestorOf(window._hand_roi_button)  # noqa: SLF001
+        general = window._settings_page  # noqa: SLF001
+        for widget in (window._advice_vision_only, window._danger_vision_only):  # noqa: SLF001
+            assert not general.isAncestorOf(widget)
+
+
+class TestInfoDots:
+    """每段設定的說明收在標題旁的 ⓘ 裡,不再印在控制項底下。"""
+
+    def test_every_feature_setting_has_an_info_dot(self, panel) -> None:
+        _, window = panel
+        for page in (window._advice_page, window._analysis_page, window._danger_page):  # noqa: SLF001
+            dots = page.settings.findChildren(InfoDot)
+            assert dots, "設定子頁沒有任何 ⓘ"
+            assert all(dot.text and dot.toolTip() == dot.text for dot in dots)
+
+    def test_the_explanations_are_not_printed_under_the_controls(self, panel) -> None:
+        """迴歸:原本每段底下多一行灰字。"""
+        _, window = panel
+        texts = [label.text() for label in window._advice_page.settings.findChildren(QLabel)]  # noqa: SLF001
+        assert not any("重啟引擎" in text for text in texts)
+
+    def test_the_table_rect_section_has_one_too(self, panel) -> None:
+        _, window = panel
+        dots = window._settings_page.findChildren(InfoDot)  # noqa: SLF001
+        assert any("牌河" in dot.text for dot in dots)
+
+    def test_hovering_shows_the_text_at_once(self, panel, monkeypatch) -> None:
+        """不等 Qt 內建 tooltip 的延遲 —— 這個圖示存在的目的就是被滑過去。"""
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import QEnterEvent
+        from PySide6.QtWidgets import QToolTip
+
+        _, window = panel
+        dot = window._advice_page.settings.findChildren(InfoDot)[0]  # noqa: SLF001
+        shown_text: list[str] = []
+        monkeypatch.setattr(QToolTip, "showText", lambda _pos, text, *_a: shown_text.append(text))
+        dot.enterEvent(QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1)))
+        assert shown_text == [dot.text]
 
 
 class TestCandidateCount:
@@ -763,14 +836,12 @@ class TestOverlayControls:
         _, window = wired
         assert not window._overlay_expanded.isEnabled()  # noqa: SLF001
         assert not window._overlay_danger.isEnabled()  # noqa: SLF001
-        assert not window._overlay_locked.isEnabled()  # noqa: SLF001
 
     def test_showing_it_enables_the_other_two(self, wired) -> None:
         _, window = wired
         window._overlay_shown.setChecked(True)  # noqa: SLF001
         assert window._overlay_expanded.isEnabled()  # noqa: SLF001
         assert window._overlay_danger.isEnabled()  # noqa: SLF001
-        assert window._overlay_locked.isEnabled()  # noqa: SLF001
 
     def test_expanding_reaches_the_overlay(self, wired) -> None:
         overlay, window = wired
@@ -785,11 +856,12 @@ class TestOverlayControls:
         window._overlay_danger.setChecked(True)  # noqa: SLF001
         assert overlay.danger_shown
 
-    def test_locking_reaches_the_overlay(self, wired) -> None:
-        overlay, window = wired
-        window._overlay_shown.setChecked(True)  # noqa: SLF001
-        window._overlay_locked.setChecked(True)  # noqa: SLF001
-        assert overlay.locked
+    def test_there_is_no_lock_checkbox_any_more(self, wired) -> None:
+        """鎖定改成 Overlay 右上角那顆鎖 —— 兩邊都能鎖的話,兩個控制項會對不上。"""
+        _, window = wired
+        texts = [box.text() for box in window._settings_page.findChildren(QCheckBox)]  # noqa: SLF001
+        assert not any(text == "鎖定位置(滑鼠可穿透)" for text in texts)
+        assert not hasattr(window, "_overlay_locked")
 
     def test_closing_the_panel_closes_the_overlay(self, wired) -> None:
         """少了這一段,顯示中的 Overlay 會是最後一個還開著的視窗,Qt 於是不
@@ -824,7 +896,6 @@ class TestWithoutAnOverlay:
         assert not window._overlay_shown.isEnabled()  # noqa: SLF001
         assert not window._overlay_expanded.isEnabled()  # noqa: SLF001
         assert not window._overlay_danger.isEnabled()  # noqa: SLF001
-        assert not window._overlay_locked.isEnabled()  # noqa: SLF001
 
     def test_the_tooltip_explains_why(self, panel) -> None:
         _, window = panel
@@ -1179,22 +1250,34 @@ class TestPlatformPicker:
         qtbot.addWidget(window)
         return window, picker, board
 
-    def test_both_versions_are_listed(self, qtbot) -> None:
+    def test_both_versions_are_buttons(self, qtbot) -> None:
+        """只有兩個選項,做成兩顆並排的按鈕,不是下拉選單。"""
         window, _, _ = self._window(qtbot)
-        combo = window._platform_picker  # noqa: SLF001
-        assert [combo.itemData(i) for i in range(combo.count())] == list(platforms.PLATFORMS)
+        buttons = window._platform_picker  # noqa: SLF001
+        assert isinstance(buttons, ChoiceButtons)
+        assert buttons.values() == list(platforms.PLATFORMS)
 
     def test_it_starts_on_the_remembered_version(self, qtbot) -> None:
         """記住的是「我現在都玩 Steam 版」,不是臨時的調整。"""
         window, _, _ = self._window(qtbot, platforms.STEAM)
-        combo = window._platform_picker  # noqa: SLF001
-        assert combo.currentData() == platforms.STEAM
+        buttons = window._platform_picker  # noqa: SLF001
+        assert buttons.current() == platforms.STEAM
+        assert buttons.button(platforms.STEAM).isChecked()
+        assert not buttons.button(platforms.WEB).isChecked()
 
     def test_picking_steam_reaches_the_runtime(self, qtbot) -> None:
         window, picker, _ = self._window(qtbot)
-        combo = window._platform_picker  # noqa: SLF001
-        combo.setCurrentIndex(list(platforms.PLATFORMS).index(platforms.STEAM))
+        buttons = window._platform_picker  # noqa: SLF001
+        buttons.button(platforms.STEAM).click()
         assert picker.asked == [platforms.STEAM]
+        assert buttons.button(platforms.STEAM).isChecked()
+        assert not buttons.button(platforms.WEB).isChecked(), "另一顆要變暗"
+
+    def test_clicking_the_current_one_does_nothing(self, qtbot) -> None:
+        """換版本會重啟畫面辨識,按到已經選中的那顆不該觸發。"""
+        window, picker, _ = self._window(qtbot)
+        window._platform_picker.button(platforms.WEB).click()  # noqa: SLF001
+        assert picker.asked == []
 
     def test_a_platform_disables_the_switches_it_cannot_feed(
         self, qtbot, monkeypatch
@@ -1204,8 +1287,7 @@ class TestPlatformPicker:
             platforms.SUPPORTED, platforms.STEAM, (features.VISION, features.DANGER)
         )
         window, _, _ = self._window(qtbot)
-        combo = window._platform_picker  # noqa: SLF001
-        combo.setCurrentIndex(list(platforms.PLATFORMS).index(platforms.STEAM))
+        window._platform_picker.button(platforms.STEAM).click()  # noqa: SLF001
         switches = window._switches  # noqa: SLF001
         assert switches[features.VISION].isEnabled()
         assert switches[features.DANGER].isEnabled()
@@ -1217,16 +1299,14 @@ class TestPlatformPicker:
             platforms.SUPPORTED, platforms.STEAM, (features.VISION, features.DANGER)
         )
         window, _, _ = self._window(qtbot)
-        combo = window._platform_picker  # noqa: SLF001
-        combo.setCurrentIndex(list(platforms.PLATFORMS).index(platforms.STEAM))
+        window._platform_picker.button(platforms.STEAM).click()  # noqa: SLF001
         tip = window._switches[features.ADVICE].toolTip()  # noqa: SLF001
         assert "資料來源" in tip
 
     def test_steam_can_turn_advice_on(self, qtbot) -> None:
         """Steam 版的 AI 建議走畫面,開關要能按。"""
         window, _, _ = self._window(qtbot)
-        combo = window._platform_picker  # noqa: SLF001
-        combo.setCurrentIndex(list(platforms.PLATFORMS).index(platforms.STEAM))
+        window._platform_picker.button(platforms.STEAM).click()  # noqa: SLF001
         assert window._switches[features.ADVICE].isEnabled()  # noqa: SLF001
 
     def test_no_picker_means_the_menu_is_disabled(self, qtbot) -> None:
@@ -1302,10 +1382,10 @@ class TestAdviceSourcePicker:
     def test_changing_platform_redraws_it_without_restarting(self, qtbot) -> None:
         window, picker = self._window(qtbot)
         box = window._advice_vision_only  # noqa: SLF001
-        window._platform_picker.setCurrentIndex(1)  # noqa: SLF001
+        window._platform_picker.button(platforms.STEAM).click()  # noqa: SLF001
         assert box.isChecked()
         assert not box.isEnabled()
-        window._platform_picker.setCurrentIndex(0)  # noqa: SLF001
+        window._platform_picker.button(platforms.WEB).click()  # noqa: SLF001
         assert not box.isChecked()
         assert box.isEnabled()
         assert picker.asked == []
@@ -1322,6 +1402,7 @@ class FakeLogWindow:
     def __init__(self, *, shown: bool = False) -> None:
         self.shown = shown
         self.locked = False
+        self.opacity = 1.0
         self.asked: list[tuple[str, bool]] = []
         self.closed = False
 
@@ -1332,8 +1413,62 @@ class FakeLogWindow:
     def set_locked(self, on: bool) -> None:
         self.asked.append(("locked", on))
 
+    def set_opacity(self, value: float) -> None:
+        self.opacity = value
+
     def close(self) -> None:
         self.closed = True
+
+
+class TestHudOpacity:
+    """一條滑軌,同時調 Overlay 與事件流 Log。"""
+
+    def _window(self, qtbot, tmp_path, **kwargs):
+        state = UiState.load(tmp_path / "ui.json")
+        overlay = OverlayWindow(ViewModel(), ui_state=state)
+        qtbot.addWidget(overlay)
+        log = FakeLogWindow()
+        window = PanelWindow(ViewModel(), overlay=overlay, event_log=log, **kwargs)
+        qtbot.addWidget(window)
+        return window, overlay, log, state
+
+    def test_it_lives_on_the_general_page(self, qtbot, tmp_path) -> None:
+        window, *_ = self._window(qtbot, tmp_path)
+        assert window._settings_page.isAncestorOf(window._opacity_slider)  # noqa: SLF001
+
+    def test_it_starts_opaque(self, qtbot, tmp_path) -> None:
+        window, *_ = self._window(qtbot, tmp_path)
+        assert window._opacity_slider.value() == 0  # noqa: SLF001
+        assert window._opacity_value.text() == "0%"  # noqa: SLF001
+
+    def test_one_slider_moves_every_floating_window(self, qtbot, tmp_path) -> None:
+        window, overlay, log, state = self._window(qtbot, tmp_path)
+        window._opacity_slider.setValue(40)  # noqa: SLF001
+        assert overlay.opacity == pytest.approx(0.6)
+        assert overlay.windowOpacity() == pytest.approx(0.6, abs=0.01)
+        assert log.opacity == pytest.approx(0.6)
+        assert UiState.load(state.path).hud_opacity == pytest.approx(0.6)
+        assert window._opacity_value.text() == "40%"  # noqa: SLF001
+
+    def test_it_cannot_make_them_invisible(self, qtbot, tmp_path) -> None:
+        """看不見的視窗照樣擋著點擊(沒鎖定時)。"""
+        window, overlay, *_ = self._window(qtbot, tmp_path)
+        slider = window._opacity_slider  # noqa: SLF001
+        slider.setValue(slider.maximum())
+        assert overlay.opacity == pytest.approx(MIN_HUD_OPACITY)
+
+    def test_it_starts_where_it_was_left(self, qtbot, tmp_path) -> None:
+        state = UiState.load(tmp_path / "ui.json")
+        state.hud_opacity = 0.7
+        overlay = OverlayWindow(ViewModel(), ui_state=state)
+        qtbot.addWidget(overlay)
+        window = PanelWindow(ViewModel(), overlay=overlay)
+        qtbot.addWidget(window)
+        assert window._opacity_slider.value() == 30  # noqa: SLF001
+
+    def test_no_floating_windows_no_slider(self, panel) -> None:
+        _, window = panel
+        assert not window._opacity_slider.isEnabled()  # noqa: SLF001
 
 
 class TestLogSettings:
@@ -1354,11 +1489,12 @@ class TestLogSettings:
         assert window._log_shown.isChecked()  # noqa: SLF001
         assert log.asked == []
 
-    def test_lock_needs_the_window_open(self, qtbot) -> None:
+    def test_there_is_no_lock_checkbox_any_more(self, qtbot) -> None:
+        """鎖定改成 Log 視窗右上角那顆鎖,與 Overlay 一樣。"""
         window = self._window(qtbot, FakeLogWindow())
-        assert not window._log_locked.isEnabled()  # noqa: SLF001
-        window._log_shown.setChecked(True)  # noqa: SLF001
-        assert window._log_locked.isEnabled()  # noqa: SLF001
+        assert not hasattr(window, "_log_locked")
+        texts = [box.text() for box in window._settings_page.findChildren(QCheckBox)]  # noqa: SLF001
+        assert not any("鎖定 Log" in text for text in texts)
 
     def test_it_is_independent_from_the_overlay_boxes(self, qtbot) -> None:
         log = FakeLogWindow()
@@ -1415,24 +1551,21 @@ class TestTableRectPicker:
         qtbot.addWidget(window)
         return window
 
-    def test_it_lives_on_the_danger_page(self, qtbot) -> None:
-        """**靠這個框最深的是牌河與寶牌**,所以它在放銃分析那一頁。
+    def test_it_lives_on_the_general_page(self, qtbot) -> None:
+        """三個功能走畫面時都吃這個框,所以它在一般設定,跟遊戲視窗尺寸放一起。
 
-        四家牌河的四個角與寶牌面板的位置全部相對它推導,框歪 3% 格線就
-        整排歪,而純畫面那條路就讀不到東西。手牌有退路(向聽分析那一頁
-        可以直接框手牌範圍,框了之後這個框對手牌就沒有影響),牌河沒有。
-
-        原本在向聽分析頁 —— 那是牌河 CV 還沒重啟之前的擺法。
+        曾經在向聽分析頁,後來搬到放銃分析頁(靠它最深的是牌河),
+        使用者指名要放一般設定。
         """
         window = self._window(qtbot, FakeTableRectPicker())
-        on_danger = window._danger_page.findChildren(QPushButton)  # noqa: SLF001
-        assert window._table_rect_button in on_danger  # noqa: SLF001
+        on_general = window._settings_page.findChildren(QPushButton)  # noqa: SLF001
+        assert window._table_rect_button in on_general  # noqa: SLF001
 
-    def test_it_is_not_on_the_analysis_page_any_more(self, qtbot) -> None:
+    def test_it_is_not_on_any_feature_page_any_more(self, qtbot) -> None:
         """搬家要搬乾淨 —— 兩頁各有一顆長得一樣的按鈕最難察覺。"""
         window = self._window(qtbot, FakeTableRectPicker())
-        on_analysis = window._analysis_page.findChildren(QPushButton)  # noqa: SLF001
-        assert window._table_rect_button not in on_analysis  # noqa: SLF001
+        for page in (window._advice_page, window._analysis_page, window._danger_page):  # noqa: SLF001
+            assert window._table_rect_button not in page.findChildren(QPushButton)  # noqa: SLF001
 
     def test_clear_is_disabled_until_something_is_framed(self, qtbot) -> None:
         """沒框過的時候「改回自動」沒有意義 —— 按了什麼都不會發生,

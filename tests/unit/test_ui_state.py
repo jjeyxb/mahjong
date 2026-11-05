@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from mia.ui.state import UiState
+from mia.ui.state import MIN_HUD_OPACITY, UiState
 
 
 class TestDefaults:
@@ -167,3 +167,24 @@ class TestBrokenFiles:
         blocker = tmp_path / "檔案"
         blocker.write_text("", encoding="utf-8")
         UiState().save(blocker / "ui.json")
+
+
+class TestHudOpacity:
+    def test_it_round_trips(self, tmp_path) -> None:
+        state = UiState.load(tmp_path / "ui.json")
+        state.hud_opacity = 0.65
+        state.save()
+        assert UiState.load(tmp_path / "ui.json").hud_opacity == pytest.approx(0.65)
+
+    @pytest.mark.parametrize(("raw", "expected"), [(0, MIN_HUD_OPACITY), (5, 1.0), (1, 1.0)])
+    def test_out_of_range_is_clamped(self, tmp_path, raw, expected) -> None:
+        """手改成 0 的人要的是「最透明」,不是預設的不透明。"""
+        target = tmp_path / "ui.json"
+        target.write_text(json.dumps({"hud_opacity": raw}), encoding="utf-8")
+        assert UiState.load(target).hud_opacity == pytest.approx(expected)
+
+    @pytest.mark.parametrize("raw", ["半透明", True, None, [0.5]])
+    def test_a_wrong_type_gives_the_default(self, tmp_path, raw) -> None:
+        target = tmp_path / "ui.json"
+        target.write_text(json.dumps({"hud_opacity": raw}), encoding="utf-8")
+        assert UiState.load(target).hud_opacity == 1.0

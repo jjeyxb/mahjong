@@ -141,6 +141,7 @@ class VisionWorker(threading.Thread):
         hand_roi: HandRoiChoice | None = None,
         table_rect: TableRectChoice | None = None,
         sink: TableSink | None = None,
+        recognize_hand: bool = True,
     ) -> None:
         super().__init__(name="vision", daemon=True)
         #: 要找瀏覽器視窗還是原生客戶端。兩版同時開著時這是唯一分得開的判據
@@ -161,10 +162,11 @@ class VisionWorker(threading.Thread):
         self._backend = backend
         self._window = window
         self._skin = skin
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
         self.status = WorkerStatus("畫面")
 
         self._sink = sink
+        self._recognize_hand = recognize_hand
         self._calibrator = StableCalibrator(
             config.calibration, canvas=canvas, manual=table_rect, unity=platform != WEB
         )
@@ -192,7 +194,7 @@ class VisionWorker(threading.Thread):
     # ------------------------------------------------------------------ 生命週期
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_event.set()
 
     def run(self) -> None:
         self.status.alive = True
@@ -207,15 +209,16 @@ class VisionWorker(threading.Thread):
                 self._backend.close()
 
     def _run(self) -> None:
-        if self._config.roi.own_hand is None:
+        if self._recognize_hand and self._config.roi.own_hand is None:
             self.status.say("設定裡沒有 own_hand ROI,畫面辨識停用(先跑 tools/roi_annotate.py)")
             return
 
-        try:
-            self._templates = TemplateSet.load(self._skin)
-        except (OSError, ValueError) as exc:
-            self.status.say(f"載入牌面模板失敗:{exc}")
-            return
+        if self._recognize_hand:
+            try:
+                self._templates = TemplateSet.load(self._skin)
+            except (OSError, ValueError) as exc:
+                self.status.say(f"載入牌面模板失敗:{exc}")
+                return
 
         if self._backend is None:
             from mia.capture.factory import create_backend
@@ -224,11 +227,11 @@ class VisionWorker(threading.Thread):
 
         interval = 1.0 / self._config.capture.target_fps
         next_tick = time.monotonic()
-        while not self._stop.is_set():
+        while not self._stop_event.is_set():
             now = time.monotonic()
             if now < next_tick:
                 # 用 Event.wait 而不是 sleep:停止訊號才不用等滿一個週期
-                self._stop.wait(next_tick - now)
+                self._stop_event.wait(next_tick - now)
                 continue
             next_tick = max(now, next_tick + interval)
             self._tick()
@@ -252,6 +255,11 @@ class VisionWorker(threading.Thread):
                 self._failures = 0
             return
         self._failures = 0
+
+        if not self._recognize_hand:
+            if self._sink is not None:
+                self._offer(frame)
+            return
 
         # 使用者自己框過的話,校正整段跳過 —— 那正是這條路的意義。
         # 每一幀都重讀這個格子,所以重框是立刻生效的,不必重啟執行緒。
@@ -292,6 +300,10 @@ class VisionWorker(threading.Thread):
         calibration = self._calibrator.feed(frame)
         if calibration is not None:
             self._sink.offer_frame(frame.image, calibration)
+        elif not self._recognize_hand:
+            failure = self._calibrator.failure
+            done, need = self._calibrator.progress
+            self.status.say(f"牌桌校正失敗:{failure}" if failure else f"牌桌校正中 {done}/{need}")
 
     def _crop_manual(self, image: np.ndarray) -> tuple[np.ndarray, int] | None:
         """使用者框的那一塊。沒框過回 ``None``,呼叫端就走校正那條路。
@@ -407,12 +419,12 @@ class VisionWorker(threading.Thread):
             )
         except WindowNotFoundError:
             self.status.say(f"找不到{self._platform_name}的遊戲視窗 —— 雀魂開著嗎?")
-            self._stop.wait(_WINDOW_RETRY)
+            self._stop_event.wait(_WINDOW_RETRY)
             return None
         except CaptureError as exc:
             # 權限被拒是最常見的一種:macOS 首次執行必須手動授權螢幕錄製
             self.status.say(f"擷取後端無法使用:{exc}")
-            self._stop.wait(_WINDOW_RETRY)
+            self._stop_event.wait(_WINDOW_RETRY)
             return None
 
         logger.info("擷取目標:{}", self._window)

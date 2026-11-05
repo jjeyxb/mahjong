@@ -22,6 +22,9 @@
 * **未鎖定**:畫一圈虛線邊框,可以拖,滑鼠事件停在 Overlay 上。
 * **鎖定**:邊框收起來,整個視窗對滑鼠透明,點擊直接穿到遊戲。
 
+鎖本身是右上角外側一顆獨立的小視窗(:mod:`mia.ui.overlay.lock`),
+Overlay 穿透的時候它照樣點得到。
+
 預設未鎖定,因為第一次開起來一定得先把它拖到想要的位置。
 
 顏色為什麼寫死
@@ -221,6 +224,8 @@ class OverlayWindow(HudWindow):
         super().__init__()
         self._switchboard = switchboard
         self._ui_state = ui_state if ui_state is not None else UiState.load()
+        self._attach_lock()
+        self._apply_opacity(self.opacity)
         self._state = viewmodel.state
         self._icons = TileIcons(skin)
         self._rows: list[_CandidateRow] = []
@@ -242,7 +247,7 @@ class OverlayWindow(HudWindow):
         layout.addWidget(self._candidates)
         layout.addWidget(self._build_dangers())
 
-        self._hint = QLabel("拖曳移動 —— 擺好之後到設定頁鎖定", self)
+        self._hint = QLabel("拖曳移動 —— 擺好之後按右上角的鎖", self)
         self._hint.setStyleSheet(f"color: {_ACCENT}; font-size: 11px;")
         layout.addWidget(self._hint)
 
@@ -401,7 +406,10 @@ class OverlayWindow(HudWindow):
         self._render()
 
     def set_locked(self, on: bool) -> None:
-        """鎖定 = 對滑鼠透明。解鎖 = 可以拖。"""
+        """鎖定 = 對滑鼠透明。解鎖 = 可以拖。
+
+        右上角那顆鎖按下去就是呼叫這裡。
+        """
         self._ui_state.overlay_locked = on
         self._ui_state.save()
         self._apply_lock(on)

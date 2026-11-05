@@ -9,7 +9,17 @@ UI 不該知道 live 的存在(它也要服務錄影重播),live 不該知道 Qt
 
 from __future__ import annotations
 
-__all__ = ["ADVICE", "DANGER", "NAMES", "VISION", "AdviceSourceChoice", "DangerSourceChoice"]
+from typing import ClassVar
+
+__all__ = [
+    "ADVICE",
+    "DANGER",
+    "NAMES",
+    "VISION",
+    "AdviceSourceChoice",
+    "DangerSourceChoice",
+    "RecognitionChoice",
+]
 
 #: 功能 1:螢幕擷取 → 手牌 → 向聽 / 進張。
 VISION = "vision"
@@ -77,3 +87,22 @@ class AdviceSourceChoice(DangerSourceChoice):
     與放銃分析不同的是這個**給玩家選**:走畫面完全不讀封包,代價是慢一點、偶爾認錯。
     只有網頁版有得選,Steam 版沒有封包,本來就只有這一條。
     """
+
+
+class RecognitionChoice:
+    """Selected screen-recognition backend; packet sources are independent."""
+
+    NAMES: ClassVar[dict[str, str]] = {
+        "template": "樣板比對",
+        "yolo": "YOLO",
+        "hybrid": "混合辨識",
+    }
+
+    def __init__(self, value: str = "template") -> None:
+        self.value = value if value in self.NAMES else "template"
+
+    def set(self, value: str) -> bool:
+        if value not in self.NAMES or value == self.value:
+            return False
+        self.value = value
+        return True

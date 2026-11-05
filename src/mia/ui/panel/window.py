@@ -1,13 +1,15 @@
-"""側邊視窗:左側功能列 + 每頁自己的設定列 + 狀態列。
+"""側邊視窗:左側功能列 + 每頁「主頁 | 設定」兩個子頁 + 狀態列。
 
 ```
 ┌──────┬──────────────────────────┐
-│ AI   │ 風格 [標準 ▾] 比較 [不比較▾]│  ← 該頁的設定
-│ 建議 ├──────────────────────────┤
-│      │                          │
-│ 向聽 │  內容                     │
+│ MIA  │ [主頁] 設定          ( ●) │  ← 子頁切換 + 這一頁的開關
+│ AI   ├──────────────────────────┤
+│ 建議 │                          │
+│ 向聽 │  主頁:內容               │
+│ 分析 │  設定:只屬於這個功能的選項│
+│ 放銃 │                          │
 │ 分析 │                          │
-│      │                          │
+│ 一般 │                          │
 │ 設定 │                          │
 └──────┴──────────────────────────┘
 │ 狀態列                           │
@@ -15,7 +17,10 @@
 
 **左側直排而不是頂端分頁。** 功能只會越加越多(Overlay、風格比較、錄製),
 頂端分頁一多就開始擠成兩排或出現左右箭頭;直排往下長不會擠到內容,而且每頁
-的頂端就空出來放那一頁自己的設定。這個排法參考 MAA。
+的頂端就空出來放那一頁自己的子頁切換。這個排法參考 MAA。
+
+**設定跟著功能走。** 每個功能頁有自己的「設定」子頁,一般設定頁只放不屬於
+任何一個功能的東西。見 :class:`_Page`。
 
 分頁而不是把所有內容塞一頁的理由沒有變:功能 1(向聽/進張)與功能 2(AI 建議)
 是兩條獨立的路 —— 前者不碰連線,後者不碰畫面。擠在一起會讓「只有一邊在運作」
@@ -26,9 +31,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QSignalBlocker, Qt
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtCore import QEvent, QPoint, QRectF, QSignalBlocker, Qt
+from PySide6.QtGui import QCloseEvent, QEnterEvent, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
+    QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -40,8 +47,10 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QPushButton,
     QScrollArea,
+    QSlider,
     QStackedWidget,
     QStatusBar,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -50,14 +59,12 @@ from mia import APP_ABBR, APP_TITLE, features, platforms
 from mia.calibration.canvas import PRESETS as CANVAS_PRESETS
 from mia.calibration.canvas import Canvas
 from mia.ui.icon import app_icon
+from mia.ui.state import MIN_HUD_OPACITY
 from mia.ui.style import (
-    ACCENT,
-    ACCENT_HOVER,
-    ACCENT_PRESSED,
     CAPTION,
     MUTED,
-    MUTED_COLOR,
     Hairline,
+    mix,
 )
 from mia.ui.switchboard import (
     AdviceSourcePicker,
@@ -66,10 +73,21 @@ from mia.ui.switchboard import (
     GameLauncher,
     HandRoiPicker,
     PlatformPicker,
+    RecognitionPicker,
     StylePicker,
     Switchboard,
     TableRectPicker,
     is_on,
+)
+from mia.ui.theme import (
+    COMBO_WIDTH,
+    AlignedComboBox,
+    ChoiceButtons,
+    controls_stylesheet,
+    nav_stylesheet,
+    polish_combo,
+    segmented_stylesheet,
+    start_button_stylesheet,
 )
 from mia.ui.viewmodel import ViewModel, ViewState
 from mia.ui.widgets.advice import AdviceTab
@@ -112,10 +130,60 @@ def _scrollable(content: QWidget) -> QScrollArea:
     return area
 
 
-class _Page(QWidget):
-    """一個功能頁:頂端一條設定列,底下是內容。
+#: 功能頁頂端的兩個子頁。
+SUBPAGES = ("主頁", "設定")
 
-    設定列**沒有控制項時整條隱藏**,不留一條空白的橫線 —— 那會讓人以為
+
+class _Segmented(QWidget):
+    """「主頁 | 設定」那一排切換。
+
+    選中的那一顆與左側功能列的藥丸同一個顏色 —— 兩者的意思都是「你現在在
+    這裡」。樣式由 :meth:`PanelWindow._apply_theme` 套在這個容器上
+    (:func:`mia.ui.theme.segmented_stylesheet`),顏色要從 palette 算。
+    """
+
+    def __init__(self, labels: tuple[str, ...], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        self.group = QButtonGroup(self)
+        self.group.setExclusive(True)
+        for index, label in enumerate(labels):
+            button = QPushButton(label, self)
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.group.addButton(button, index)
+            layout.addWidget(button)
+        self.group.button(0).setChecked(True)
+
+    def select(self, index: int) -> None:
+        button = self.group.button(index)
+        if button is not None:
+            button.click()
+
+
+class _Page(QWidget):
+    """一個功能頁:頂端「主頁 | 設定」+ 開關,底下是兩個子頁。
+
+    ```
+    ┌──────────────────────────────┐
+    │ [主頁] 設定             ( ●) │  ← 開關:這一頁有沒有在運作
+    ├──────────────────────────────┤
+    │  主頁:這個功能的內容          │
+    │  設定:只屬於這個功能的選項    │
+    └──────────────────────────────┘
+    ```
+
+    **設定跟著功能走,不集中到一頁。** 以前「使用圖像辨識」放在全域設定頁、
+    「風格」擠在 AI 建議頁頂端的一條橫列上 —— 想調 AI 建議得記得兩個地方。
+    現在每個功能的東西都在自己那一頁的「設定」裡,一般設定頁只剩不屬於
+    任何一個功能的東西(玩哪一版、視窗多大、Overlay、Log)。
+
+    開關放在頂端而不是「主頁」裡:兩個子頁都看得到它。在設定子頁改完選項
+    想立刻打開,不必再切回去。
+
+    沒有任何設定時「設定」那一顆按鈕隱藏 —— 點進去一片空白會讓人以為
     有東西沒載出來。
     """
 
@@ -125,52 +193,79 @@ class _Page(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self._settings = QWidget(self)
-        self._settings_layout = QHBoxLayout(self._settings)
+        self._header = QWidget(self)
+        header = QHBoxLayout(self._header)
         # 左緣要與底下內容的 12px 對齊 —— 差幾個像素不會有人說得出哪裡怪,
-        # 但整頁會看起來像沒對好。
-        self._settings_layout.setContentsMargins(12, 8, 12, 8)
-        self._settings_layout.setSpacing(8)
-        self._settings_layout.addStretch(1)
-        self._settings.setVisible(False)
+        # 但整頁會看起來像沒對好。按鈕自己有 14px 的內距,所以這裡退 6。
+        header.setContentsMargins(6, 8, 12, 8)
+        header.setSpacing(8)
+        self._tabs = _Segmented(SUBPAGES, self._header)
+        self._tabs.group.button(1).setVisible(False)
+        header.addWidget(self._tabs)
+        header.addStretch(1)
+        self._header_layout = header
 
-        self._rule = _rule(self)
-        self._rule.setVisible(False)
+        self._body = QStackedWidget(self)
+        self._body.addWidget(content)
+        self.settings = QWidget(self)
+        self._form = QVBoxLayout(self.settings)
+        self._form.setContentsMargins(12, 12, 12, 12)
+        self._form.setSpacing(8)
+        self._form.addStretch(1)
+        self.settings_area = _scrollable(self.settings)
+        self._body.addWidget(self.settings_area)
+        self._tabs.group.idClicked.connect(self._body.setCurrentIndex)
+        self._groups = 0
 
-        layout.addWidget(self._settings)
-        layout.addWidget(self._rule)
-        layout.addWidget(content, 1)
+        layout.addWidget(self._header)
+        layout.addWidget(_rule(self))
+        layout.addWidget(self._body, 1)
 
-    def add_setting(self, label: str, widget: QWidget) -> None:
-        """在設定列加一個「說明 + 控制項」。加在伸縮元件之前,所以會靠左排。"""
-        index = self._settings_layout.count() - 1
-        caption = QLabel(label, self._settings)
-        caption.setStyleSheet(CAPTION)
-        self._settings_layout.insertWidget(index, caption)
-        self._settings_layout.insertWidget(index + 1, widget)
-        self._reveal()
+    def add_group(self, title: str, *widgets: QWidget, info: str = "") -> None:
+        """在設定子頁加一段:標題(旁邊的 ⓘ 帶說明)、控制項。段與段之間一條細線。
+
+        說明**不直接印在控制項底下**:每段都多一行灰字,整頁一半是說明,
+        要找的控制項反而被淹掉。收進 ⓘ 之後,想知道的人移過去就看得到。
+        """
+        index = self._form.count() - 1  # 伸縮元件之前
+        items: list[QWidget] = []
+        if self._groups:
+            items.append(_rule(self.settings))
+        items.append(_section(title, self.settings, info=info))
+        items.extend(widgets)
+        for offset, item in enumerate(items):
+            self._form.insertWidget(index + offset, item)
+        self._groups += 1
+        self._tabs.group.button(1).setVisible(True)
 
     def add_trailing(self, widget: QWidget) -> None:
-        """加在設定列**最右邊**(伸縮元件之後)。
+        """加在頂端**最右邊**。
 
-        開關放右邊而不是跟其他設定排在一起:它決定「這一頁有沒有在運作」,
-        與「候選列幾個」不是同一個層級的東西。混在一排裡會讓人以為它也只是
-        一個顯示選項。
+        開關放右邊而不是跟子頁切換排在一起:它決定「這一頁有沒有在運作」,
+        與「現在看哪一個子頁」不是同一個層級的東西。
         """
-        self._settings_layout.addWidget(widget)
-        self._reveal()
+        self._header_layout.addWidget(widget)
 
-    def _reveal(self) -> None:
-        self._settings.setVisible(True)
-        self._rule.setVisible(True)
+    def has_settings(self) -> bool:
+        return self._groups > 0
+
+    def show_subpage(self, index: int) -> None:
+        self._tabs.select(index)
+
+    def subpage(self) -> int:
+        return self._body.currentIndex()
 
 
 #: 左邊導覽列的功能頁,依序。**頁數不等於功能數** —— 放銃分析有兩條路
 #: (封包與純畫面)但只有一頁:它們算的是同一件事、投到同一個格子,
 #: 各開一頁會變成兩頁長得一模一樣。頁是依「看到什麼」分的,開關依「哪條路」。
 #:
-#: 「設定」不在這裡 —— 它不是功能頁(沒有開關,設定列是空的)。
+#: 「一般設定」不在這裡 —— 它不是功能頁(沒有開關,也沒有主頁)。
 PAGES = ("AI 建議", "向聽分析", "放銃分析")
+
+#: 功能列最後一項:不屬於任何一個功能的設定。叫「一般設定」而不是「設定」,
+#: 免得跟每一頁頂端那顆「設定」搞混。
+GENERAL = "一般設定"
 
 #: 設定頁 AI 建議「使用圖像辨識」的說明。
 _ADVICE_SOURCE_TIP = (
@@ -227,6 +322,7 @@ class PanelWindow(QMainWindow):
         table_rect: TableRectPicker | None = None,
         danger_source: DangerSourcePicker | None = None,
         advice_source: AdviceSourcePicker | None = None,
+        recognition: RecognitionPicker | None = None,
         event_log: EventLogWindow | None = None,
         overlay: OverlayWindow | None = None,
     ) -> None:
@@ -250,6 +346,7 @@ class PanelWindow(QMainWindow):
         self._table_rect = table_rect
         self._danger_source = danger_source
         self._advice_source = advice_source
+        self._recognition = recognition
         self._event_log = event_log
         self._overlay = overlay
         self._switches: dict[str, ToggleSwitch] = {}
@@ -267,26 +364,27 @@ class PanelWindow(QMainWindow):
         # 正好貼著視窗左緣與分隔線,看起來像那一列破了一個洞;留白 + 圓角
         # 才看得出「這是一個被選起來的項目」。這個畫法與 Finder 側邊欄一致。
         #
-        # 顏色取 ``palette(highlight)``(系統強調色)而不是 MIA 的綠:綠在這個
-        # 程式裡的意思是「這個東西正在運作」—— 開關、「開始遊戲」、建議的那
-        # 一張牌都是。拿去表示「現在看哪一頁」會讓那個意思被稀釋。
-        self._nav.setStyleSheet(
-            "QListWidget { background: palette(window); border: none;"
-            " padding: 6px 6px; outline: none; }"
-            "QListWidget::item { padding: 10px 6px; border-radius: 7px;"
-            " margin-bottom: 2px; }"
-            "QListWidget::item:selected { background: palette(highlight);"
-            " color: palette(highlighted-text); }"
-        )
+        # 顏色是**中性的灰**,不是 MIA 的綠也不是系統藍:綠在這個程式裡的意思
+        # 是「這個東西正在運作」,藍是「這個勾選打開了」。「現在看哪一頁」
+        # 不該借用任何一個 —— 樣式在 _apply_theme 設(見 mia.ui.theme)。
         self._stack = QStackedWidget(self)
 
         self._advice_page = self._add_page(PAGES[0], self._advice)
         self._analysis_page = self._add_page(PAGES[1], self._analysis)
         self._danger_page = self._add_page(PAGES[2], self._danger)
-        self._settings_page = self._add_page("設定", _scrollable(self._build_settings()))
+        # 一般設定**不是** _Page:它整頁就是設定,再掛一個「主頁 | 設定」
+        # 會變成一個只有一邊有東西的切換。
+        self._settings_page = _scrollable(self._build_settings())
+        self._stack.addWidget(self._settings_page)
+        self._nav.addItem(QListWidgetItem(GENERAL))
         self._build_advice_settings()
         self._build_analysis_settings()
         self._build_danger_settings()
+        self._recognition_pickers: list[QComboBox] = []
+        for page in (self._advice_page, self._analysis_page, self._danger_page):
+            self._add_recognition_picker(page)
+        #: 給測試用的那一個;三個永遠同值。
+        self._recognition_picker = self._recognition_pickers[0]
         # 開關最後加,才會排在設定列最右邊
         self._add_switch(self._advice_page, features.ADVICE)
         self._add_switch(self._analysis_page, features.VISION)
@@ -313,7 +411,56 @@ class PanelWindow(QMainWindow):
         status.addWidget(self._notice, 1)
         self.setStatusBar(status)
 
+        self._apply_theme()
+        # 一打開焦點會落在第一個收得到鍵盤的控制項 —— AI 建議頁的候選數框,
+        # 於是那個框一直亮著藍色外框加游標,像是在等人輸入。放在功能列上,
+        # 那裡沒有焦點框,方向鍵還能換頁。
+        self._nav.setFocus()
         self.apply(viewmodel.state)
+
+    # ------------------------------------------------------------------ 外觀
+
+    def _themed(self) -> list[QWidget]:
+        """套控制項樣式的容器。
+
+        **只套在放控制項的地方**(各頁的設定子頁、一般設定、AI 建議的候選數),
+        不套在整個視窗上:頂端的「主頁 | 設定」與左邊的功能列各有自己的樣式,
+        上層的 QPushButton 規則裡它們沒寫到的屬性(例如邊框)會被一起繼承下去。
+        """
+        widgets: list[QWidget] = [self._settings_page, self._advice]
+        for page in (self._advice_page, self._analysis_page, self._danger_page):
+            widgets.append(page.settings_area)
+        return widgets
+
+    def _apply_theme(self) -> None:
+        """照**現在的** palette 產生樣式並套上。系統換淺／深色時再呼叫一次。"""
+        palette = QApplication.palette()
+        sheet = controls_stylesheet(palette)
+        for widget in self._themed():
+            if widget.styleSheet() != sheet:
+                widget.setStyleSheet(sheet)
+        for combo in self.findChildren(QComboBox):
+            polish_combo(combo)
+        nav = nav_stylesheet(palette)
+        if self._nav.styleSheet() != nav:
+            self._nav.setStyleSheet(nav)
+        tabs = segmented_stylesheet(palette)
+        for segmented in self.findChildren(_Segmented):
+            if segmented.styleSheet() != tabs:
+                segmented.setStyleSheet(tabs)
+        start = start_button_stylesheet(palette)
+        if self._start_button.styleSheet() != start:
+            self._start_button.setStyleSheet(start)
+
+    def changeEvent(self, event: QEvent) -> None:
+        """系統切換淺／深色 → 顏色重算。
+
+        比對字串、一樣就不重套:setStyleSheet 本身會觸發 polish,
+        而 polish 又可能送來 palette 變更,不擋的話會一直重套下去。
+        """
+        if event.type() in (QEvent.Type.ThemeChange, QEvent.Type.ApplicationPaletteChange):
+            self._apply_theme()
+        super().changeEvent(event)
 
     # ------------------------------------------------------------------ 建構
 
@@ -342,14 +489,8 @@ class PanelWindow(QMainWindow):
         :meth:`~mia.live.runtime.LiveRuntime.start_game`。
         """
         button = QPushButton(START_GAME, parent)
-        button.setStyleSheet(
-            f"QPushButton {{ background: {ACCENT}; color: white; border: none;"
-            " border-radius: 8px; padding: 10px 4px; font-weight: 600; margin: 8px 8px 10px; }"
-            f"QPushButton:hover:enabled {{ background: {ACCENT_HOVER}; }}"
-            f"QPushButton:pressed:enabled {{ background: {ACCENT_PRESSED}; }}"
-            "QPushButton:disabled { background: palette(midlight);"
-            f" color: {MUTED_COLOR}; }}"
-        )
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        # 樣式在 _apply_theme 設:停用時的底色要從 palette 算。
         button.clicked.connect(self._on_start_game)
         self._start_button = button
         return button
@@ -411,28 +552,33 @@ class PanelWindow(QMainWindow):
         return f"{features.NAMES[key]} 已在啟動參數中停用"
 
     def _build_advice_settings(self) -> None:
-        """AI 建議頁的設定列:挑風格、挑要跟誰比。
+        """AI 建議的設定子頁:風格、比較對象、資料來源。
 
-        **曾經還有第三個下拉「主要引擎」**,用來指定已經在跑的那幾個裡誰當
-        headline。拿掉了,兩個理由:
-
-        * 它存在的原因在別的地方修掉了。當初是因為規則式 baseline 若排在
-          模型前面,headline 就會顯示 baseline、Q 值長條整段消失 —— 而
-          ``tools/ui.py`` 的 ``build_engines`` 現在一律把 baseline 接在最後,
-          順序從源頭就是對的。留著一個下拉讓人去修一個不會發生的問題,
-          等於把實作細節搬到使用者面前。
-        * 四個控制項擠在一條設定列上,實測每個下拉都被壓到看不見完整的字。
-          擠到看不懂的設定列比少一個選項糟。
+        **曾經還有一個下拉「主要引擎」**,用來指定已經在跑的那幾個裡誰當
+        headline。拿掉了:當初是因為規則式 baseline 若排在模型前面,headline
+        就會顯示 baseline、Q 值長條整段消失 —— 而 ``tools/ui.py`` 的
+        ``build_engines`` 現在一律把 baseline 接在最後,順序從源頭就是對的。
+        留著一個下拉讓人去修一個不會發生的問題,等於把實作細節搬到使用者面前。
 
         順序:風格在前。它們是兩個層級 —— 風格決定**載哪幾份權重**
         (換了要重啟引擎),比較對象只是在那之上多載一份。
         """
-        self._style_picker = QComboBox(self._advice_page)
-        self._style_picker.setMinimumWidth(140)
-        self._advice_page.add_setting("風格", self._style_picker)
-        self._compare_picker = QComboBox(self._advice_page)
-        self._compare_picker.setMinimumWidth(140)
-        self._advice_page.add_setting("比較對象", self._compare_picker)
+        page = self._advice_page
+        self._style_picker = AlignedComboBox(page.settings)
+        self._style_picker.setFixedWidth(COMBO_WIDTH)
+        page.add_group(
+            "打法風格",
+            _row(page.settings, self._style_picker),
+            info="換風格會重啟引擎、重載權重,中間約半秒沒有建議。",
+        )
+        self._compare_picker = AlignedComboBox(page.settings)
+        self._compare_picker.setFixedWidth(COMBO_WIDTH)
+        page.add_group(
+            "比較對象",
+            _row(page.settings, self._compare_picker),
+            info="多載一份風格並排比較,推論成本與記憶體都是兩倍。",
+        )
+        self._build_advice_source_settings(page)
         if self._style is None or not self._style.can_pick_style():
             self._style_picker.addItem("(命令列指定)")
             self._style_picker.setEnabled(False)
@@ -446,19 +592,21 @@ class PanelWindow(QMainWindow):
             self._sync_compare_picker()
             self._compare_picker.currentIndexChanged.connect(self._on_compare_picked)
 
-        # 「候選數」不在這條設定列上,而在它控制的那段清單旁邊
-        # (見 :class:`~mia.ui.widgets.advice.AdviceTab`)。
+        # 「候選數」不在設定子頁,而在它控制的那段清單旁邊
+        # (見 :class:`~mia.ui.widgets.advice.AdviceTab`)—— 它只是少畫幾列,
+        # 邊看邊調才有意義。
         self._advice.candidate_count_changed.connect(self._on_candidate_count)
 
-    def _build_advice_source_settings(self, page: QWidget, layout: QVBoxLayout) -> None:
-        """AI 建議要不要走圖像辨識。
-
-        放這裡不放 AI 建議頁:那條設定列擠不下,最小寬度時控制項會疊在一起。
-        """
-        self._advice_vision_only = QCheckBox("使用圖像辨識", page)
+    def _build_advice_source_settings(self, page: _Page) -> None:
+        """AI 建議要不要走圖像辨識。"""
+        self._advice_vision_only = QCheckBox("使用圖像辨識", page.settings)
         self._sync_advice_source()
         self._advice_vision_only.toggled.connect(self._on_advice_source)
-        layout.addWidget(self._advice_vision_only)
+        page.add_group(
+            "資料來源",
+            self._advice_vision_only,
+            info="不勾是讀封包(最準)。Steam 版沒有封包,一律走圖像辨識。",
+        )
 
     def _sync_advice_source(self) -> None:
         """勾選框要說現在的實情。換到 Steam 版時它變成打勾、不能改。
@@ -488,18 +636,19 @@ class PanelWindow(QMainWindow):
         self.apply(self._viewmodel.state)
 
     def _build_analysis_settings(self) -> None:
-        """向聽分析頁的設定列:手動框選手牌範圍。
+        """向聽分析的設定子頁:手動框選手牌範圍。
 
-        **放在這一頁而不是設定頁。** 它只影響畫面辨識那條路,而且是對著
-        這一頁的內容在調 —— 框完之後這一頁當場就會變。全域設定頁放的是
+        **放在這一頁而不是一般設定。** 它只影響畫面辨識那條路,而且是對著
+        這一頁的內容在調 —— 框完之後切回主頁當場就會變。一般設定放的是
         「整個程式的前提」(玩哪一版、遊戲視窗多大),不是某一條路的校正。
 
         「框選整個遊戲畫面」在**放銃分析**那一頁 —— 同一個理由:
         靠它最深的是牌河與寶牌,見 :meth:`_build_danger_settings`。
         """
-        self._hand_roi_button = QPushButton("框選手牌範圍", self._analysis_page)
+        page = self._analysis_page
+        self._hand_roi_button = QPushButton("框選手牌範圍", page.settings)
         self._hand_roi_button.clicked.connect(self._on_pick_hand_roi)
-        self._hand_roi_clear = QPushButton("改回自動", self._analysis_page)
+        self._hand_roi_clear = QPushButton("改回自動", page.settings)
         self._hand_roi_clear.clicked.connect(self._on_clear_hand_roi)
         if self._hand_roi is None or not self._hand_roi.can_pick_hand_roi():
             for button in (self._hand_roi_button, self._hand_roi_clear):
@@ -511,25 +660,31 @@ class PanelWindow(QMainWindow):
                 "選單裡的尺寸沒有一個對得上,框一次最直接。"
             )
             self._hand_roi_clear.setToolTip("不用框的,回去用牌桌自動校正")
-        self._analysis_page.add_setting("手牌範圍", self._hand_roi_button)
-        self._analysis_page.add_setting("", self._hand_roi_clear)
+        page.add_group(
+            "手牌範圍",
+            _row(page.settings, self._hand_roi_button, self._hand_roi_clear),
+            info="手牌一直認錯、或 Steam 版畫布不是 16:9 時,直接框一次最穩。",
+        )
         self._sync_hand_roi_buttons()
 
-
     def _build_danger_settings(self) -> None:
+        """放銃分析的設定子頁:資料來源(與共用的畫面辨識方式)。"""
+        self._build_danger_source_settings(self._danger_page)
+
+    def _build_table_rect_settings(self, page: QWidget, layout: QVBoxLayout) -> None:
         """「框選整個遊戲畫面」。
 
-        **放在這一頁,不是向聽分析那一頁。** 這個框是所有正規化座標的共同
-        原點,而**靠它最深的是這一頁**:四家牌河的四個角、寶牌面板的位置
-        全部相對它推導(見 mia.vision.tiles.river.DEFAULT_CORNERS)。
-        框歪 3% 的話牌河的格線整排跟著歪,而純畫面那條路就讀不到東西。
+        **放在一般設定,不放某一個功能頁。** 這個框是所有正規化座標的共同
+        原點:四家牌河的四個角、寶牌面板的位置全部相對它推導(見
+        mia.vision.tiles.river.DEFAULT_CORNERS),手牌沒自己框的時候也靠它。
+        三個功能走畫面時都吃它,所以它跟「遊戲視窗尺寸」放在一起 ——
+        兩個都是在回答「遊戲畫面在哪、多大」。
 
-        手牌那條路也用它,但手牌可以**直接框**(向聽分析那一頁的「框選手牌
-        範圍」),框了之後牌桌矩形對手牌就沒有影響了。牌河沒有這個退路。
+        曾經放在放銃分析頁(靠它最深的是牌河),但使用者去那裡找不到它。
         """
-        self._table_rect_button = QPushButton("框選整個遊戲畫面", self._danger_page)
+        self._table_rect_button = QPushButton("框選整個遊戲畫面", page)
         self._table_rect_button.clicked.connect(self._on_pick_table_rect)
-        self._table_rect_clear = QPushButton("改回自動", self._danger_page)
+        self._table_rect_clear = QPushButton("改回自動", page)
         self._table_rect_clear.clicked.connect(self._on_clear_table_rect)
         if self._table_rect is None or not self._table_rect.can_pick_table_rect():
             for button in (self._table_rect_button, self._table_rect_clear):
@@ -544,8 +699,15 @@ class PanelWindow(QMainWindow):
                 "載入畫面上之後,整場的手牌辨識從 97% 掉到 26%,沒有任何錯誤訊息。"
             )
             self._table_rect_clear.setToolTip("不用框的,回去讓程式自己剝邊框")
-        self._danger_page.add_setting("遊戲畫面", self._table_rect_button)
-        self._danger_page.add_setting("", self._table_rect_clear)
+        layout.addWidget(
+            _section(
+                "遊戲畫面範圍",
+                page,
+                info="四家牌河、寶牌與手牌的位置都相對這個框推導。\n"
+                "牌河或手牌一直讀不到時,框一次最直接。",
+            )
+        )
+        layout.addWidget(_row(page, self._table_rect_button, self._table_rect_clear))
         self._sync_table_rect_buttons()
 
     def _sync_hand_roi_buttons(self) -> None:
@@ -659,8 +821,8 @@ class PanelWindow(QMainWindow):
         # 那條路是猜的,實測會安靜地鎖進偏掉 0.7 張牌寬的矩形。它仍然存在
         # (螢幕小到放不下任何尺寸時的退路、--connect 模式),但不該擺在選單上
         # 邀請使用者去選一個已知比較差的做法。
-        picker = QComboBox(row)
-        picker.setMinimumWidth(150)
+        picker = AlignedComboBox(row)
+        picker.setFixedWidth(COMBO_WIDTH)
         picker.setEditable(True)
         picker.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         for preset in CANVAS_PRESETS:
@@ -693,7 +855,10 @@ class PanelWindow(QMainWindow):
         layout.addWidget(row)
 
     def _build_settings(self) -> QWidget:
-        """全域設定頁。
+        """一般設定頁:**不屬於任何一個功能**的東西。
+
+        只屬於某個功能的設定(風格、框選範圍、資料來源)在那一頁自己的
+        「設定」子頁裡,不放這裡 —— 見 :class:`_Page`。
 
         刻意只放**真的有作用**的東西。擺一排還沒接線的控制項會讓人以為調了有效,
         那比沒有設定頁更糟。
@@ -707,6 +872,14 @@ class PanelWindow(QMainWindow):
         self._build_platform_settings(page, layout)
         layout.addWidget(_rule(page))
 
+        layout.addWidget(_section("遊戲視窗尺寸", page))
+        self._build_canvas_settings(page, layout)
+
+        layout.addWidget(_rule(page))
+        self._build_table_rect_settings(page, layout)
+
+        layout.addWidget(_rule(page))
+        layout.addWidget(_section("MIA 視窗", page))
         self._on_top = QCheckBox("視窗置頂", page)
         self._on_top.setChecked(bool(self.windowFlags() & Qt.WindowType.WindowStaysOnTopHint))
         self._on_top.setToolTip(
@@ -717,20 +890,9 @@ class PanelWindow(QMainWindow):
         layout.addWidget(self._on_top)
 
         layout.addWidget(_rule(page))
-        layout.addWidget(_section("遊戲視窗尺寸", page))
-        self._build_canvas_settings(page, layout)
-
-        layout.addWidget(_rule(page))
-        layout.addWidget(_section("AI 建議", page))
-        self._build_advice_source_settings(page, layout)
-
-        layout.addWidget(_rule(page))
-        layout.addWidget(_section("放銃分析", page))
-        self._build_danger_source_settings(page, layout)
-
-        layout.addWidget(_rule(page))
         layout.addWidget(_section("Overlay", page))
         self._build_overlay_settings(page, layout)
+        self._build_opacity_settings(page, layout)
 
         layout.addWidget(_rule(page))
         layout.addWidget(_section("事件流 Log", page))
@@ -738,6 +900,53 @@ class PanelWindow(QMainWindow):
 
         layout.addStretch(1)
         return page
+
+    def _add_recognition_picker(self, page: _Page) -> None:
+        """在一個功能頁的設定子頁放「畫面辨識方式」。
+
+        **三頁各一個選單,背後是同一個值。** 辨識方式是整條畫面辨識那條路的
+        設定,三個功能都吃它 —— 但使用者是在調某一個功能時想到它的,所以
+        每一頁都要找得到。改了任何一頁,另外兩頁當場跟著變
+        (見 :meth:`_on_recognition_picked`),不會有兩頁寫著不一樣的值。
+        """
+        picker = AlignedComboBox(page.settings)
+        picker.setFixedWidth(COMBO_WIDTH)
+        picker.addItem("樣板比對", "template")
+        picker.addItem("YOLO", "yolo")
+        picker.addItem("混合辨識（樣板＋YOLO）", "hybrid")
+        picker.setToolTip(
+            "用於畫面辨識、圖像 AI 建議與圖像放銃分析。\n"
+            "切換會重新建立畫面追蹤，建議在新一局開始前切換。\n"
+            "網頁版 AI 建議要走畫面,另外到「AI 建議 → 設定」勾「使用圖像辨識」。"
+        )
+        if self._recognition is None or not self._recognition.can_pick_recognition():
+            picker.setEnabled(False)
+        else:
+            _select_data(picker, self._recognition.recognition_backend())
+            picker.currentIndexChanged.connect(
+                lambda index, p=picker: self._on_recognition_picked(p, index)
+            )
+        self._recognition_pickers.append(picker)
+        page.add_group(
+            "畫面辨識方式",
+            _row(page.settings, picker),
+            info="三個功能共用這一個設定,改了這裡,另外兩頁跟著變。",
+        )
+
+    def _on_recognition_picked(self, source: QComboBox, index: int) -> None:
+        """換辨識方式,並把另外兩頁的選單同步過去。
+
+        同步時擋訊號:那是把狀態畫出來,不是使用者按的 —— 接著的話
+        會再呼叫一次 ``set_recognition_backend``,白白多重建一次畫面追蹤。
+        """
+        if self._recognition is None:
+            return
+        value = source.itemData(index)
+        self._recognition.set_recognition_backend(value)
+        for picker in self._recognition_pickers:
+            if picker is not source:
+                with QSignalBlocker(picker):
+                    _select_data(picker, value)
 
     def _build_platform_settings(self, page: QWidget, layout: QVBoxLayout) -> None:
         """玩的是網頁版還是 Steam 版。
@@ -755,29 +964,28 @@ class PanelWindow(QMainWindow):
         row_layout.setContentsMargins(0, 0, 0, 0)
         row_layout.setSpacing(8)
 
-        picker = QComboBox(row)
-        picker.setMinimumWidth(150)
-        for key in platforms.PLATFORMS:
-            picker.addItem(platforms.NAMES[key], key)
+        # 只有兩個選項,做成兩顆並排的按鈕而不是下拉選單:兩個都一直看得到,
+        # 按一下就換,不必先點開才知道另一個是什麼。
+        picker = ChoiceButtons([(platforms.NAMES[key], key) for key in platforms.PLATFORMS], row)
         self._platform_picker = picker
 
         if self._platform is None or not self._platform.can_pick_platform():
             picker.setEnabled(False)
             picker.setToolTip("這個模式下版本不是現在決定的(重播、示範、--no-vision)")
         else:
-            _select_data(picker, self._platform.platform())
+            picker.select(self._platform.platform())
             picker.setToolTip(
                 "網頁版:MIA 自己開瀏覽器,資料來自封包。\n"
                 "Steam 版:遊戲自己開,MIA 找到視窗,全部靠畫面辨識;\n"
                 "看不到的牌只能猜,AI 建議的準確度比網頁版低。"
             )
-            picker.currentIndexChanged.connect(self._on_platform_picked)
+            picker.chosen.connect(self._on_platform_picked)
 
         row_layout.addWidget(picker)
         row_layout.addStretch(1)
         layout.addWidget(row)
 
-    def _on_platform_picked(self, index: int) -> None:
+    def _on_platform_picked(self, value: object) -> None:
         """換版本 —— **會關掉新版本撐不起的功能,並重啟畫面辨識**。
 
         不在這裡擋重複選擇::meth:`~mia.platforms.PlatformChoice.set` 自己
@@ -786,9 +994,7 @@ class PanelWindow(QMainWindow):
         """
         if self._platform is None:
             return
-        value = self._platform_picker.itemData(index)
-        if value is not None:
-            self._platform.set_platform(str(value))
+        self._platform.set_platform(str(value))
         self._sync_advice_source()
         self._sync_switches()
         self.apply(self._viewmodel.state)
@@ -817,7 +1023,7 @@ class PanelWindow(QMainWindow):
             else:
                 switch.set_initial(self._switchboard.is_enabled(key))
 
-    def _build_danger_source_settings(self, page: QWidget, layout: QVBoxLayout) -> None:
+    def _build_danger_source_settings(self, page: _Page) -> None:
         """「強制使用圖像辨識」。
 
         放銃分析有兩條路(封包與純畫面),而**平常不該讓使用者選** ——
@@ -828,7 +1034,7 @@ class PanelWindow(QMainWindow):
         留著它是為了**比較**:同一個局面兩條路的答案擺在一起,差別一眼就
         看得到 —— 寫論文與抓問題都用得上。
         """
-        self._danger_vision_only = QCheckBox("強制使用圖像辨識", page)
+        self._danger_vision_only = QCheckBox("強制使用圖像辨識", page.settings)
         self._danger_vision_only.setToolTip(
             "平常不必勾 —— 有封包就自動用封包(準),沒有才用圖像辨識。\n"
             "Steam 版本來就只有圖像辨識那條。\n"
@@ -843,14 +1049,22 @@ class PanelWindow(QMainWindow):
             # 剛剛的操作,而那會白白重啟一次放銃分析。
             self._danger_vision_only.setChecked(picker.danger_vision_only())
             self._danger_vision_only.toggled.connect(picker.set_danger_vision_only)
-        layout.addWidget(self._danger_vision_only)
+        page.add_group(
+            "資料來源",
+            self._danger_vision_only,
+            info="平常不必勾:有封包就用封包,沒有才用畫面。勾了是給比較兩條路用的。",
+        )
 
     def _build_overlay_settings(self, page: QWidget, layout: QVBoxLayout) -> None:
-        """Overlay 的四個勾選。
+        """Overlay 的三個勾選。
 
-        **為什麼展開與鎖定的開關在這裡,而不在 Overlay 上。** Overlay 鎖定之後
-        對滑鼠是透明的 —— 擺在它自己身上的按鈕會變成死的,而使用者看得到卻按不到
-        的按鈕比沒有按鈕糟。所以控制項一律留在側邊視窗這一側。
+        **鎖定不在這裡**,在 Overlay 右上角那顆鎖(:mod:`mia.ui.overlay.lock`)
+        —— 擺好位置跟鎖上是連著做的,眼睛已經在 Overlay 上,不該再回側邊視窗找
+        一個勾選。那顆鎖是獨立的小視窗,Overlay 穿透時照樣點得到。
+
+        **展開的開關仍在這裡,不在 Overlay 上。** Overlay 鎖定之後對滑鼠是透明的
+        —— 擺在它自己身上的按鈕會變成死的,而使用者看得到卻按不到的按鈕比沒有
+        按鈕糟。
 
         Overlay 也**不進 features.py 的開關體系**:那些開關管的是「要不要花
         130MB 載權重 / 要不要持續擷取螢幕 / 要不要跑排除法」,而這裡只是換一種
@@ -858,20 +1072,20 @@ class PanelWindow(QMainWindow):
         """
         overlay = self._overlay
         self._overlay_shown = QCheckBox("在遊戲上顯示 Overlay", page)
-        self._overlay_shown.setToolTip("位置會記住,下次啟動回到同一個地方")
         self._overlay_expanded = QCheckBox("Overlay 顯示候選 Q 值", page)
         # 放銃分析**要不要跟著上 HUD 是分開問的**:那是一手 14 列,會把
         # Overlay 往下拉長一大段。想一直看著的人與只想要一行建議的人是
         # 兩種用法,而後者不該被迫接受前者的高度。
         self._overlay_danger = QCheckBox("Overlay 顯示放銃危險度(會往下變長)", page)
         self._overlay_danger.setToolTip("還要「放銃分析」那一頁的開關也打開才會有資料")
-        self._overlay_locked = QCheckBox("鎖定位置(滑鼠可穿透)", page)
-        self._overlay_locked.setToolTip("沒鎖定時可以直接拖曳,鎖定之後點擊會穿過去給遊戲")
+        self._overlay_shown.setToolTip(
+            "位置會記住,下次啟動回到同一個地方。\n"
+            "要鎖定位置(讓點擊穿到遊戲),按 Overlay 右上角的鎖。"
+        )
         boxes = (
             self._overlay_shown,
             self._overlay_expanded,
             self._overlay_danger,
-            self._overlay_locked,
         )
 
         if overlay is None:
@@ -886,44 +1100,80 @@ class PanelWindow(QMainWindow):
         self._overlay_shown.setChecked(overlay.shown)
         self._overlay_expanded.setChecked(overlay.expanded)
         self._overlay_danger.setChecked(overlay.danger_shown)
-        self._overlay_locked.setChecked(overlay.locked)
         self._overlay_shown.toggled.connect(self._on_overlay_shown)
         self._overlay_expanded.toggled.connect(overlay.set_expanded)
         self._overlay_danger.toggled.connect(overlay.set_danger_shown)
-        self._overlay_locked.toggled.connect(overlay.set_locked)
         for box in boxes:
             layout.addWidget(box)
 
         self._sync_overlay_boxes(overlay.shown)
 
+    def _build_opacity_settings(self, page: QWidget, layout: QVBoxLayout) -> None:
+        """「透明度」滑軌:**同時**作用在 Overlay 與事件流 Log。
+
+        只有一條,不是兩個視窗各一條:它們疊在同一個遊戲畫面上,一個淡一個濃
+        看起來像其中一個壞了。值存在 :attr:`~mia.ui.state.UiState.hud_opacity`。
+
+        滑軌顯示的是**透明度**(往右越透明),不是不透明度 —— 使用者說的是
+        「調透明度」,0% 就是原本的樣子。最多到 80%,理由見
+        :data:`~mia.ui.state.MIN_HUD_OPACITY`。
+        """
+        targets = [w for w in (self._overlay, self._event_log) if w is not None]
+        self._hud_windows = targets
+        slider = QSlider(Qt.Orientation.Horizontal, page)
+        slider.setRange(0, round((1 - MIN_HUD_OPACITY) * 100))
+        slider.setSingleStep(5)
+        slider.setPageStep(10)
+        slider.setMinimumWidth(160)
+        self._opacity_slider = slider
+        self._opacity_value = QLabel("", page)
+        self._opacity_value.setStyleSheet(CAPTION)
+        self._opacity_value.setMinimumWidth(34)
+
+        if not targets:
+            slider.setEnabled(False)
+            slider.setToolTip("這個模式沒有懸浮視窗")
+        else:
+            slider.setValue(round((1 - targets[0].opacity) * 100))
+            slider.valueChanged.connect(self._on_opacity)
+        self._show_opacity(slider.value())
+
+        caption = _caption("透明度", page)
+        info = InfoDot(
+            "同時套用到所有懸浮視窗:Overlay 與事件流 Log。\n0% 是原本的樣子,往右越透明。", page
+        )
+        layout.addWidget(_row(page, caption, info, slider, self._opacity_value))
+
+    def _on_opacity(self, transparency: int) -> None:
+        opacity = 1 - transparency / 100
+        for window in self._hud_windows:
+            window.set_opacity(opacity)
+        self._show_opacity(transparency)
+
+    def _show_opacity(self, transparency: int) -> None:
+        self._opacity_value.setText(f"{transparency}%")
+
     def _build_log_settings(self, page: QWidget, layout: QVBoxLayout) -> None:
-        """Log 視窗的兩個勾選。與 Overlay 無關,也不互相連動。"""
+        """Log 視窗的勾選。與 Overlay 無關,也不互相連動。
+
+        **鎖定不在這裡**,在 Log 視窗右上角那顆鎖 —— 理由與 Overlay 相同,
+        見 :meth:`_build_overlay_settings`。
+        """
         log = self._event_log
         self._log_shown = QCheckBox("開啟 Log 視窗", page)
         self._log_shown.setToolTip(
             "獨立的浮動視窗,顯示 AI 建議吃到的事件流:中文說明加 MJAI 格式。\n"
-            "要開著 AI 建議才有內容。位置與大小會記住。"
+            "要開著 AI 建議才有內容。位置與大小會記住。\n"
+            "要鎖定位置(讓點擊穿到遊戲),按 Log 視窗右上角的鎖。"
         )
-        self._log_locked = QCheckBox("鎖定 Log 位置(滑鼠可穿透)", page)
-        self._log_locked.setToolTip("鎖定之後捲不動,會一直跟著最新的事件")
         if log is None:
-            for box in (self._log_shown, self._log_locked):
-                box.setEnabled(False)
-                box.setToolTip("這個模式沒有 Log 視窗")
+            self._log_shown.setEnabled(False)
+            self._log_shown.setToolTip("這個模式沒有 Log 視窗")
         else:
             # 先設初始值再接訊號,理由見 _build_overlay_settings。
             self._log_shown.setChecked(log.shown)
-            self._log_locked.setChecked(log.locked)
-            self._log_locked.setEnabled(log.shown)
-            self._log_shown.toggled.connect(self._on_log_shown)
-            self._log_locked.toggled.connect(log.set_locked)
+            self._log_shown.toggled.connect(log.set_shown)
         layout.addWidget(self._log_shown)
-        layout.addWidget(self._log_locked)
-
-    def _on_log_shown(self, on: bool) -> None:
-        assert self._event_log is not None
-        self._event_log.set_shown(on)
-        self._log_locked.setEnabled(on)
 
     def _on_overlay_shown(self, on: bool) -> None:
         assert self._overlay is not None
@@ -931,13 +1181,12 @@ class PanelWindow(QMainWindow):
         self._sync_overlay_boxes(on)
 
     def _sync_overlay_boxes(self, shown: bool) -> None:
-        """收起來的時候「展開」與「鎖定」沒有意義,停用但保留勾選狀態。
+        """收起來的時候另外兩個勾選沒有意義,停用但保留勾選狀態。
 
         不清掉勾選:那是使用者的偏好,下次顯示時該照舊。
         """
         self._overlay_expanded.setEnabled(shown)
         self._overlay_danger.setEnabled(shown)
-        self._overlay_locked.setEnabled(shown)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """關掉側邊視窗時把 Overlay 一起收掉。
@@ -1134,9 +1383,15 @@ class PanelWindow(QMainWindow):
         if was_visible:
             self.show()
 
-    def show_page(self, index: int) -> None:
-        """切到第幾個功能頁。給測試與截圖用。"""
+    def show_page(self, index: int, *, settings: bool = False) -> None:
+        """切到第幾個功能頁;``settings`` 時順便切到那一頁的「設定」子頁。
+
+        給測試與截圖用。一般設定頁沒有子頁,``settings`` 對它沒有作用。
+        """
         self._nav.setCurrentRow(index)
+        page = self._stack.widget(index)
+        if isinstance(page, _Page):
+            page.show_subpage(1 if settings else 0)
 
     # ------------------------------------------------------------------ 資料
 
@@ -1241,8 +1496,57 @@ def _caption(text: str, parent: QWidget) -> QLabel:
     return label
 
 
-def _section(text: str, parent: QWidget) -> QLabel:
-    """一段設定的標題。
+class InfoDot(QWidget):
+    """標題旁邊的 ⓘ。滑鼠移上去**立刻**顯示說明,移開就收。
+
+    不用 Qt 內建的 tooltip 延遲(約 0.7 秒):那個延遲是為了「不小心滑過去
+    不要跳東西」,但這個圖示存在的唯一目的就是被滑過去 —— 等它等於讓人以為
+    沒有東西。仍然 ``setToolTip`` 一份,鍵盤與輔助工具拿得到同一段字。
+
+    自己畫而不是用「ⓘ」字元:那個字元在不同字型裡大小、粗細差很多,
+    PingFang 裡它比旁邊的中文標題還大一圈。顏色用 :func:`~mia.ui.style.mix`
+    算,理由與分隔線相同 —— 要在淺／深色模式都落在「看得到但不搶眼」。
+    """
+
+    SIZE = 14
+
+    def __init__(self, text: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.text = text
+        self.setFixedSize(self.SIZE, self.SIZE)
+        self.setToolTip(text)
+        self.setCursor(Qt.CursorShape.WhatsThisCursor)
+        self._hovered = False
+
+    def enterEvent(self, event: QEnterEvent) -> None:
+        self._hovered = True
+        self.update()
+        QToolTip.showText(self.mapToGlobal(QPoint(0, self.height() + 4)), self.text, self)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event: QEvent) -> None:
+        self._hovered = False
+        self.update()
+        QToolTip.hideText()
+        super().leaveEvent(event)
+
+    def paintEvent(self, _event: object) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        color = mix(self.palette(), 0.85 if self._hovered else 0.5)
+        pen = QPen(color)
+        pen.setWidthF(1.2)
+        painter.setPen(pen)
+        painter.drawEllipse(QRectF(0.6, 0.6, self.SIZE - 1.2, self.SIZE - 1.2))
+        font = QFont(self.font())
+        font.setPixelSize(10)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(QRectF(0, 0, self.SIZE, self.SIZE), Qt.AlignmentFlag.AlignCenter, "i")
+
+
+def _section(text: str, parent: QWidget, *, info: str = "") -> QWidget:
+    """一段設定的標題;有 ``info`` 時後面跟一個 :class:`InfoDot`。
 
     與 :func:`_caption` 同樣大小、同樣顏色,只是**粗體**。設定頁上兩種東西
     都在:「遊戲視窗尺寸」是一段的名字,而「風格」是一個欄位的說明。長得
@@ -1250,7 +1554,33 @@ def _section(text: str, parent: QWidget) -> QLabel:
     """
     label = QLabel(text, parent)
     label.setStyleSheet(CAPTION + "font-weight: 700;")
-    return label
+    if not info:
+        return label
+    row = QWidget(parent)
+    layout = QHBoxLayout(row)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(5)
+    label.setParent(row)
+    layout.addWidget(label)
+    layout.addWidget(InfoDot(info, row), 0, Qt.AlignmentFlag.AlignVCenter)
+    layout.addStretch(1)
+    return row
+
+
+def _row(parent: QWidget, *widgets: QWidget) -> QWidget:
+    """一列靠左排的控制項。
+
+    包一層而不是直接放進直排版面:直排裡的下拉選單會被拉到整頁寬,
+    一個只有「標準」兩個字的選單橫跨四百像素,看起來像一個輸入框。
+    """
+    row = QWidget(parent)
+    layout = QHBoxLayout(row)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(8)
+    for widget in widgets:
+        layout.addWidget(widget)
+    layout.addStretch(1)
+    return row
 
 
 def _rule(parent: QWidget, *, vertical: bool = False) -> Hairline:

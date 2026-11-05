@@ -6,7 +6,7 @@ import json
 from dataclasses import replace
 
 import pytest
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QPixmap
 
 from mia.mjai.events import Dahai, MjaiEvent, StartGame, StartKyoku, Tsumo
@@ -229,6 +229,66 @@ class TestWindow:
         assert (widget.width(), widget.height()) == (600, 400)
 
 
+class TestLockButton:
+    """右上角那顆鎖,與 Overlay 同一個元件、同一套行為。"""
+
+    def test_it_has_one(self, window) -> None:
+        widget, _ = window
+        assert widget.lock_button is not None
+        assert widget.lock_button.isWindow()
+
+    def test_clicking_it_locks_and_unlocks(self, window, state, qtbot) -> None:
+        widget, _ = window
+        widget.set_shown(True)
+        lock = widget.lock_button
+        qtbot.mouseClick(lock, Qt.MouseButton.LeftButton)
+        assert widget.locked and lock.locked
+        assert widget.windowFlags() & Qt.WindowType.WindowTransparentForInput
+        assert UiState.load(state.path).log_locked is True
+        qtbot.mouseClick(lock, Qt.MouseButton.LeftButton)
+        assert not widget.locked and not lock.locked
+
+    def test_it_never_becomes_transparent_for_input(self, window) -> None:
+        widget, _ = window
+        widget.set_locked(True)
+        assert not (widget.lock_button.windowFlags() & Qt.WindowType.WindowTransparentForInput)
+
+    def test_it_shows_and_hides_with_the_log(self, window) -> None:
+        widget, _ = window
+        widget.set_shown(True)
+        assert widget.lock_button.isVisible()
+        widget.set_locked(True)
+        assert widget.lock_button.isVisible(), "鎖定會讓視窗重新 show,鎖不能跟著消失"
+        widget.set_shown(False)
+        assert not widget.lock_button.isVisible()
+
+    def test_it_follows_a_resize(self, window) -> None:
+        """Log 拖得動右下角,寬度一變鎖就得跟著移。"""
+        widget, _ = window
+        widget.set_shown(True)
+        widget.move(100, 100)
+        widget.resize(widget.width() + 60, widget.height())
+        frame = widget.frameGeometry()
+        x = widget.lock_button.pos().x()
+        assert x > frame.right() or x < frame.left()
+        assert widget.lock_button.pos().y() == frame.top()
+
+    def test_it_flips_left_at_the_right_edge_of_the_screen(self, window) -> None:
+        """Log 預設擺在螢幕右上角 —— 鎖貼右邊會有一截跑到螢幕外。"""
+        widget, _ = window
+        widget.set_shown(True)
+        area = widget.screen().availableGeometry()
+        widget.move(area.right() - widget.width() - 4, area.top() + 40)
+        assert widget.lock_button.pos().x() < widget.frameGeometry().left()
+
+    def test_it_starts_in_the_remembered_state(self, qtbot, tmp_path) -> None:
+        state = UiState.load(tmp_path / "ui.json")
+        state.log_locked = True
+        widget = EventLogWindow(EventLog(), ui_state=state)
+        qtbot.addWidget(widget)
+        assert widget.lock_button.locked
+
+
 class TestScrolling:
     @staticmethod
     def _fill(log: EventLog, count: int = 120) -> None:
@@ -239,6 +299,54 @@ class TestScrolling:
         widget.set_shown(True)
         self._fill(log)
         self._fill(log, 160)
+        bar = widget._body.verticalScrollBar()  # noqa: SLF001
+        assert bar.value() == bar.maximum() > 0
+
+    def test_a_long_log_follows_after_layout_finishes(self, window, qtbot) -> None:
+        """長文件會分批排版,剛 setHtml 時的捲軸終點還不是最後一列。"""
+        widget, log = window
+        widget.set_shown(True)
+        bar = widget._body.verticalScrollBar()  # noqa: SLF001
+        for count in (300, 800, 1600):
+            self._fill(log, count)
+            qtbot.wait(20)
+            assert bar.value() == bar.maximum() > 0
+
+    def test_a_long_log_still_allows_reading_older_events(self, window, qtbot) -> None:
+        widget, log = window
+        widget.set_shown(True)
+        self._fill(log, 800)
+        qtbot.wait(20)
+        bar = widget._body.verticalScrollBar()  # noqa: SLF001
+        bar.setValue(30)
+        self._fill(log, 1000)
+        qtbot.wait(20)
+        assert bar.value() == 30
+        bar.setValue(bar.maximum())
+        self._fill(log, 1600)
+        qtbot.wait(20)
+        assert bar.value() == bar.maximum()
+
+    def test_reopening_a_long_log_resumes_following(self, window, qtbot) -> None:
+        widget, log = window
+        widget.set_shown(True)
+        self._fill(log, 800)
+        qtbot.wait(20)
+        bar = widget._body.verticalScrollBar()  # noqa: SLF001
+        bar.setValue(30)
+        widget.set_shown(False)
+        self._fill(log, 1600)
+        widget.set_shown(True)
+        qtbot.wait(20)
+        assert bar.value() == bar.maximum() > 0
+
+    def test_resizing_a_long_log_keeps_the_latest_visible(self, window, qtbot) -> None:
+        widget, log = window
+        widget.set_shown(True)
+        log.update(SCREEN, 0, _round(1, *(Tsumo(actor=0, pai="3p") for _ in range(800))))
+        qtbot.wait(20)
+        widget.resize(320, 180)
+        qtbot.wait(20)
         bar = widget._body.verticalScrollBar()  # noqa: SLF001
         assert bar.value() == bar.maximum() > 0
 

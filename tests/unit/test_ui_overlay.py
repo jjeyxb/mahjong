@@ -534,6 +534,101 @@ class TestLocking:
         assert UiState.load(window._ui_state.path).overlay_locked is True  # noqa: SLF001
 
 
+class TestLockButton:
+    """右上角那顆鎖。它是另一個視窗,因為 Overlay 鎖上之後整個對滑鼠透明。"""
+
+    def test_it_is_a_separate_window(self, overlay) -> None:
+        _, window = overlay
+        lock = window.lock_button
+        assert lock.isWindow()
+
+    def test_it_never_becomes_transparent_for_input(self, overlay) -> None:
+        """這是它存在的唯一理由:Overlay 穿透時還點得到,才解得開。"""
+        _, window = overlay
+        window.set_locked(True)
+        assert not (window.lock_button.windowFlags() & Qt.WindowType.WindowTransparentForInput)
+
+    def test_clicking_it_locks_and_unlocks(self, overlay, qtbot) -> None:
+        _, window = overlay
+        lock = window.lock_button
+        qtbot.mouseClick(lock, Qt.MouseButton.LeftButton)
+        assert window.locked and lock.locked
+        assert window.windowFlags() & Qt.WindowType.WindowTransparentForInput
+        qtbot.mouseClick(lock, Qt.MouseButton.LeftButton)
+        assert not window.locked and not lock.locked
+
+    def test_locking_from_code_updates_the_icon(self, overlay) -> None:
+        _, window = overlay
+        window.set_locked(True)
+        assert window.lock_button.locked
+        assert "解鎖" in window.lock_button.toolTip()
+
+    def test_it_follows_the_overlay(self, overlay) -> None:
+        _, window = overlay
+        window.set_shown(True)
+        assert window.lock_button.isVisible()
+        window.move(window.pos() + QPoint(40, 30))
+        corner = window.frameGeometry().topRight()
+        assert window.lock_button.pos().y() == corner.y()
+        assert window.lock_button.pos().x() > corner.x()
+
+    def test_it_hides_with_the_overlay(self, overlay) -> None:
+        _, window = overlay
+        window.set_shown(True)
+        window.set_shown(False)
+        assert not window.lock_button.isVisible()
+
+    def test_it_stays_visible_across_a_lock(self, overlay) -> None:
+        """鎖定會讓 Overlay 被 Qt 隱藏再重新 show —— 鎖不能跟著消失。"""
+        _, window = overlay
+        window.set_shown(True)
+        window.set_locked(True)
+        assert window.lock_button.isVisible()
+
+    def test_it_starts_in_the_remembered_state(self, qtbot, tmp_path) -> None:
+        state = UiState()
+        state.path = tmp_path / "ui_state.json"
+        state.overlay_locked = True
+        window = OverlayWindow(ViewModel(), ui_state=state)
+        qtbot.addWidget(window)
+        assert window.lock_button.locked
+
+
+class TestOpacity:
+    def test_it_starts_opaque(self, overlay) -> None:
+        _, window = overlay
+        assert window.opacity == 1.0
+
+    def test_it_is_applied_and_remembered(self, overlay) -> None:
+        _, window = overlay
+        window.set_opacity(0.5)
+        assert window.windowOpacity() == pytest.approx(0.5, abs=0.01)
+        assert UiState.load(window._ui_state.path).hud_opacity == pytest.approx(0.5)  # noqa: SLF001
+
+    def test_out_of_range_is_clamped(self, overlay) -> None:
+        from mia.ui.state import MIN_HUD_OPACITY
+
+        _, window = overlay
+        window.set_opacity(0.0)
+        assert window.opacity == pytest.approx(MIN_HUD_OPACITY)
+        window.set_opacity(3.0)
+        assert window.opacity == 1.0
+
+    def test_the_lock_never_fades_below_half(self, overlay) -> None:
+        """鎖上之後它是唯一點得到的東西 —— 淡到找不到就解不開了。"""
+        _, window = overlay
+        window.set_opacity(0.2)
+        assert window.lock_button.windowOpacity() == pytest.approx(0.5, abs=0.01)
+
+    def test_it_survives_a_lock(self, overlay) -> None:
+        """鎖定會改 window flag,Qt 可能重建視窗 —— 透明度不能因此回到 100%。"""
+        _, window = overlay
+        window.set_shown(True)
+        window.set_opacity(0.6)
+        window.set_locked(True)
+        assert window.windowOpacity() == pytest.approx(0.6, abs=0.01)
+
+
 class TestPosition:
     def test_a_drag_moves_it(self, overlay) -> None:
         _, window = overlay

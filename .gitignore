@@ -15,6 +15,7 @@ dist/
 venv/
 env/
 engines/*/.venv/
+engines/yolo/.cache/
 
 # ---- 測試與型別檢查快取 ----
 .pytest_cache/

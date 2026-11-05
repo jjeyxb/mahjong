@@ -1,0 +1,8 @@
+# Isolated inference environment; MIA itself stays on Python 3.14 without torch.
+torch==2.5.1; platform_machine != "x86_64" or sys_platform != "darwin"
+torchvision==0.20.1; platform_machine != "x86_64" or sys_platform != "darwin"
+torch==2.2.2; platform_machine == "x86_64" and sys_platform == "darwin"
+torchvision==0.17.2; platform_machine == "x86_64" and sys_platform == "darwin"
+ultralytics==8.4.127
+numpy==1.26.4
+opencv-python==4.11.0.86

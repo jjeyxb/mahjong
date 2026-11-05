@@ -38,7 +38,7 @@ from mia import features
 from mia.calibration.canvas import CanvasChoice
 from mia.engine.base import EngineError
 from mia.engine.styles import StyleChoice
-from mia.features import NAMES, AdviceSourceChoice, DangerSourceChoice
+from mia.features import NAMES, AdviceSourceChoice, DangerSourceChoice, RecognitionChoice
 from mia.live.bus import (
     Advices,
     CvHand,
@@ -174,6 +174,7 @@ class LiveRuntime:
         danger_source: DangerSourceChoice | None = None,
         advice_source: AdviceSourceChoice | None = None,
         event_log: EventLog | None = None,
+        recognition: RecognitionChoice | None = None,
     ) -> None:
         self._viewmodel = viewmodel
         self._bus = bus
@@ -185,6 +186,7 @@ class LiveRuntime:
         self._danger_source = danger_source
         self._advice_source = advice_source
         self._event_log = event_log
+        self._recognition = recognition
         self._running = False
         #: 最近一次「功能起不來」的理由。見 :meth:`_enable`。
         self._failure: str | None = None
@@ -302,6 +304,29 @@ class LiveRuntime:
         self.pump()
 
     # ------------------------------------------------------- AI 建議走哪條路
+
+    def can_pick_recognition(self) -> bool:
+        return self._recognition is not None and features.VISION in self._features
+
+    def recognition_backend(self) -> str:
+        return self._recognition.value if self._recognition is not None else "template"
+
+    def set_recognition_backend(self, value: str) -> None:
+        if self._recognition is None or not self._recognition.set(value):
+            return
+        active = [key for key in (features.ADVICE, features.DANGER, features.VISION)
+                  if self.is_enabled(key) and (key == features.VISION or
+                  getattr(self._features[key].worker, "SOURCE", None) == _SCREEN_SOURCE)]
+        for key in active:
+            self._features[key].disable()
+        self.pump()
+        for key in active:
+            self._clear_output(key)
+        for key in reversed(active):
+            self._enable(self._features[key])
+            self._ensure_vision_for(self._features[key])
+        logger.info("畫面辨識模式改為 {}", RecognitionChoice.NAMES[value])
+        self.pump()
 
     def can_pick_advice_source(self) -> bool:
         """有沒有得選。Steam 版沒有封包,``--no-vision`` 沒有畫面,都只剩一條。"""

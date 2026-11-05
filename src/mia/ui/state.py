@@ -30,10 +30,14 @@ from mia.platforms import WEB
 from mia.utils.logging import logger
 from mia.utils.paths import DATA_DIR
 
-__all__ = ["STATE_PATH", "UiState"]
+__all__ = ["MIN_HUD_OPACITY", "STATE_PATH", "UiState"]
 
 #: 預設的存放位置。``data/`` 已在 gitignore 裡。
 STATE_PATH: Path = DATA_DIR / "ui_state.json"
+
+#: 懸浮視窗最透明到哪。再低就看不見了 —— 看不見的視窗照樣擋著點擊
+#: (沒鎖定時),而使用者只會覺得遊戲某一塊按不動。
+MIN_HUD_OPACITY = 0.2
 
 
 @dataclass
@@ -78,12 +82,16 @@ class UiState:
         log_locked: Log 視窗是否鎖定位置(鎖定 = 滑鼠穿透)。
         log_pos: Log 視窗左上角的螢幕座標。``None`` 表示還沒拖過。
         log_size: Log 視窗的寬高。``None`` 表示用預設大小。
+        hud_opacity: 所有懸浮視窗(Overlay、事件流 Log)的不透明度,
+            :data:`MIN_HUD_OPACITY` ~ 1.0。**只有一個值**:兩個視窗疊在同一個
+            遊戲畫面上,一個淡一個濃看起來像其中一個壞了。
         compare_style: 上次選的並排比較對象,``None`` 代表不比較。
             與 :attr:`style` 撞在一起或名字不存在時一律當成不比較 ——
             開著比較要多載一份 130MB 的權重,**所以對不上的時候寧可不開**。
     """
 
     platform: str = WEB
+    recognition_backend: str = "template"
     hand_roi: tuple[float, float, float, float] | None = None
     table_rect: tuple[float, float, float, float] | None = None
     canvas: str | None = None
@@ -103,6 +111,7 @@ class UiState:
     log_locked: bool = False
     log_pos: tuple[int, int] | None = None
     log_size: tuple[int, int] | None = None
+    hud_opacity: float = 1.0
 
     def __post_init__(self) -> None:
         #: 從哪裡讀來的就存回哪裡 —— 呼叫端只需要在 :meth:`load` 指定一次路徑。
@@ -154,7 +163,8 @@ class UiState:
 #: 依型別分的欄位。其餘都是開關。
 _POINTS = ("overlay_pos", "log_pos", "log_size")
 _RECTS = ("hand_roi", "table_rect")
-_TEXTS = ("platform", "canvas", "style", "compare_style")
+_TEXTS = ("platform", "recognition_backend", "canvas", "style", "compare_style")
+_FRACTIONS = ("hud_opacity",)
 
 
 def _numbers(value: object, count: int) -> bool:
@@ -183,6 +193,10 @@ def _known(raw: dict[str, Any]) -> dict[str, Any]:
         elif field.name in _RECTS:
             if _numbers(value, 4):
                 out[field.name] = tuple(float(v) for v in value)
+        elif field.name in _FRACTIONS:
+            # 範圍外的值夾回來而不是丟掉:手改成 0 的人要的是「最透明」,不是預設的不透明。
+            if isinstance(value, int | float) and not isinstance(value, bool):
+                out[field.name] = min(1.0, max(MIN_HUD_OPACITY, float(value)))
         elif field.name in _TEXTS:
             # 型別對就收下,內容看不懂是各自的事(都會退回預設)
             if isinstance(value, str) or (value is None and field.default is None):

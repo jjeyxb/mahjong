@@ -1,0 +1,477 @@
+{
+  "source": "downloads/majongsoul ai agent_mac/app",
+  "files": [
+    {
+      "path": "river_track.py",
+      "sha256": "2ecbade54eeb24867048a5d0207043cd7a4528792b65c5962238c7f8643d4246"
+    },
+    {
+      "path": "drawn.py",
+      "sha256": "f54081c458532a0d166499732f6ae3afa87108dc820c8e24335d5f43e4b7ed50"
+    },
+    {
+      "path": "event_zones.py",
+      "sha256": "d7512fbaff5d2999365527ec47cd1ce6b459cc7616e56f40f2e442933490bfc8"
+    },
+    {
+      "path": "meld.py",
+      "sha256": "fbb25d4c1aaf124c73937370dfbdae241f996a5cd9571c7d2a5787b504a92fb3"
+    },
+    {
+      "path": "tiles.py",
+      "sha256": "e7402b92a8cfb5a0f8392b391abe36c3ed16a0d33063a7576848efd325807ef6"
+    },
+    {
+      "path": "dora_reader.py",
+      "sha256": "8167613b0571b5119bbf259b121dbe089f7648e4229060d45787f35fc36c9e71"
+    },
+    {
+      "path": "platform_compat.py",
+      "sha256": "ac48dfdb772f0f33dbd4ca5d5062a6dae1e27746b0976d1b2eed9a5a5506f172"
+    },
+    {
+      "path": "region_model.py",
+      "sha256": "49cb9a92dec1001ec0505ff4349302078334499f9bcb969fe7b7f7a913c77ac4"
+    },
+    {
+      "path": "meld_model.py",
+      "sha256": "34912d8714cbea4119296793e143fa94296873da767e76af603dbfe5a19d3657"
+    },
+    {
+      "path": "river_model.py",
+      "sha256": "645ef33ebe6bedd29139b611a0ed881adbcb8defd882da7f769dfe5c95a7977a"
+    },
+    {
+      "path": "river.py",
+      "sha256": "f69ee36457fcae002c8d7abb234e0aa9f287b589912ca040bde8131155a0cf20"
+    },
+    {
+      "path": "hand.py",
+      "sha256": "f9aad208f52d3090f90f1a2eeae9fe4682351cbf0a03de69ca95f41c39ba5534"
+    },
+    {
+      "path": "hand_model.py",
+      "sha256": "942d40569f35f6498bdf80fc1aeb141432c6a840f38c9f28a6b2a190285a34c3"
+    },
+    {
+      "path": "live_v7/drawn_lib.py",
+      "sha256": "2ee747bbfae45345954c58c12b83acb36a71d7f184afb0a345cb8395b14fc3a6"
+    },
+    {
+      "path": "live_v7/mortal_view.py",
+      "sha256": "aa7badfa145fb349a52477e143f2a37ba9f847504e0af91a19aee82108e30959"
+    },
+    {
+      "path": "live_v7/_paths.py",
+      "sha256": "a45b5e81f9631dfe5335dd2715c28dc2ff25fb5ce1117fda45a0b79f56de8fca"
+    },
+    {
+      "path": "live_v7/ledger.py",
+      "sha256": "8f9435c361fe8615c67c888df197819dcd1d9eae19416759c2bbc489aa4fe051"
+    },
+    {
+      "path": "live_v7/meld_reader.py",
+      "sha256": "2ee9272d26791d9fd10d72d0c24985de3a6802ec70260c31d3f805ad4cac142a"
+    },
+    {
+      "path": "live_v7/mjai_preview.py",
+      "sha256": "7e11bf6d1c970a4d20b7c7e0221cd79a21fa6bc4acd320aa62c67c1bff282ce1"
+    },
+    {
+      "path": "live_v7/declare.py",
+      "sha256": "3f66bd8e39d9c3c237b8c942c222673ee7d2fc9c56cb9df981a4344bed826b8b"
+    },
+    {
+      "path": "live_v7/mortal_guard.py",
+      "sha256": "f40a1373a5e5f00f4fc9abd25c195aa07d7517b09e0ecd4c907a2b3a55b54c9d"
+    },
+    {
+      "path": "live_v7/turn_signals.py",
+      "sha256": "ce671ab53a236ccda92cc89677ec23bc65fa827d71bf45c5680bcf8fbf7b1f8b"
+    },
+    {
+      "path": "live_v7/pipeline.py",
+      "sha256": "599d772840d4863393b907fe2cffbcf85740dd773ed8c0d68d27e4848250c8d9"
+    },
+    {
+      "path": "live_v7/record_obs.py",
+      "sha256": "2bb52adf3dba90f2f2c05ae9b46183c150cf70358924a526cc89e07daf762841"
+    },
+    {
+      "path": "live_v7/obs.py",
+      "sha256": "604e114bec4471be722eb22f4d249c3af41459d40f2adbf9ccaca06a31b19afa"
+    },
+    {
+      "path": "live_v7/kyoku_info.py",
+      "sha256": "af068ca9719d053c250dff9ae185126ae119c6f8cc54226f295fcbc1dbd5aa61"
+    },
+    {
+      "path": "live_v7/river_adapter.py",
+      "sha256": "72b0808adbf357541108a4a7cd0e4a9c91e3cdece8cbd5528c1afeda1b66d7e7"
+    },
+    {
+      "path": "live_v7/fsm.py",
+      "sha256": "cd75a74756fd5bb891f5d8edebbbc33fca6f54eee35a317bc236a9b0206c8d39"
+    },
+    {
+      "path": "assets/templates/scoreP2__5.png",
+      "sha256": "e9558d1657d3c0951b4478bc1774536e1919ce8ff275a0dd941e8bdae21e0597"
+    },
+    {
+      "path": "assets/templates/scoreP0__0.png",
+      "sha256": "b2cfdb315fec00fecb678eadeb7b50b3f629bd775c60809c7b81a1b0da845982"
+    },
+    {
+      "path": "assets/templates/scoreP0__1.png",
+      "sha256": "69efbaadb09d293f6e72e42100c308fc474bd5b328256575349a6b2645ce1eea"
+    },
+    {
+      "path": "assets/templates/scoreP2__4.png",
+      "sha256": "107bdd9454732540801e010492f52b4bd4fec9b2069dc9abbcc8d202806d70b9"
+    },
+    {
+      "path": "assets/templates/scoreP2__6.png",
+      "sha256": "b445ab13e31a07ab34222dd7001306ba61366419ac01dd73614001edbfb879a2"
+    },
+    {
+      "path": "assets/templates/scoreP0__3.png",
+      "sha256": "284477b978d131251efd9e7812ea28934f98b274ceff44d4248af50c45021bd3"
+    },
+    {
+      "path": "assets/templates/scoreP0__2.png",
+      "sha256": "1cd955cf43c9de9fd069447663d27a0a386a592515bf70aa6162e8768ca20a04"
+    },
+    {
+      "path": "assets/templates/scoreP0__6.png",
+      "sha256": "a061f28688b3bdddc9d979c72ba5e144e525bf00974e12b46e71598e815cb36f"
+    },
+    {
+      "path": "assets/templates/kyoku__W1.png",
+      "sha256": "c77a19728801a386a85c7bb044c630a031d399403082dd987c45050dc1608c9c"
+    },
+    {
+      "path": "assets/templates/scoreP0__7.png",
+      "sha256": "1241549f9a54307c6870c211f605adb66374888c36d93a2155f0067b88f381ea"
+    },
+    {
+      "path": "assets/templates/scoreP2__2.png",
+      "sha256": "4f25637514ce9f5a52303baedf44d69e1f3b1c90fff5b8dc75c560923722048e"
+    },
+    {
+      "path": "assets/templates/scoreP2__0.png",
+      "sha256": "2dbee3b136c7f0a783f5dc7a80330c79898eaacade655cfd65821d46e4642fab"
+    },
+    {
+      "path": "assets/templates/scoreP0__4.png",
+      "sha256": "1aea15dc10bcac5a297b539fd1365cfb5cad113f82ccd85fa5f385ac1c8894c4"
+    },
+    {
+      "path": "assets/templates/scoreP2__1.png",
+      "sha256": "9e1f69f332f1c9f0ac0e589623b68c8ed9fc532d42a4575bd2f3bb20ac66da77"
+    },
+    {
+      "path": "assets/templates/kyoku__E1.png",
+      "sha256": "42777a902d9125cacfe31918848e3ddb05a7037456d499a946709c2c352930bf"
+    },
+    {
+      "path": "assets/templates/kyoku__E2.png",
+      "sha256": "ac353a52b446f83ff8a79d0cba7e5d2e41a693b4d519996efb618a62ebc003bc"
+    },
+    {
+      "path": "assets/templates/kyoku__E3.png",
+      "sha256": "4af170a99b2b4fac3778d91393d6d605cc5843a8649f989dfcf2bae8d83ac3ff"
+    },
+    {
+      "path": "assets/templates/scoreP3__8.png",
+      "sha256": "09a6f2375f6ebb5206cd8288fb9c3168fc37a1c14711397eb8986628123aa7a6"
+    },
+    {
+      "path": "assets/templates/scoreP3__9.png",
+      "sha256": "b5b01d264d32edd87f9cce31d2401b457f53b748170dd9be5f046281b442fac0"
+    },
+    {
+      "path": "assets/templates/kyoku__E4.png",
+      "sha256": "d0559a2bb11c18bdd1e11d071a6dedf5d56d458953d4fc7926da665be0cbed23"
+    },
+    {
+      "path": "assets/templates/scoreP1__2.png",
+      "sha256": "f332536b43874ea3de6a6ce4394aff3a0894194a13d6a91fb68247d77bb776af"
+    },
+    {
+      "path": "assets/templates/scoreP3__7.png",
+      "sha256": "16ad430877ab0939eb0944f28b9506ca2301f7d30809ee7d4f6f627382acf286"
+    },
+    {
+      "path": "assets/templates/kyoku__S4.png",
+      "sha256": "802ce07bc8b190ef0ea6f437188bdda137224d27aea591fca8944ea4a5243891"
+    },
+    {
+      "path": "assets/templates/scoreP1__3.png",
+      "sha256": "b5fc2358042ed4f33c2110d592b700b63262cbbcf6eadd9b6c03d690c98dc9cb"
+    },
+    {
+      "path": "assets/templates/scoreP1__1.png",
+      "sha256": "e11f2f4561abd429bbd5598aeac9a8fd82beeeb57afbbb16ae2ab2b73a2ee765"
+    },
+    {
+      "path": "assets/templates/honba__4.png",
+      "sha256": "7f11805378e9f2817800098876c411d98032999e482897c3b03ec108b12be337"
+    },
+    {
+      "path": "assets/templates/scoreP3__5.png",
+      "sha256": "1b060d4d1fde4fc25d6a4c619c3e1af0c11897b7450aae5bbbd9ff0dd1c3516c"
+    },
+    {
+      "path": "assets/templates/scoreP1__0.png",
+      "sha256": "5798a284f2e3ece40cb53124d004c1dc6013d43bf451a2baa73ee16f92d6f631"
+    },
+    {
+      "path": "assets/templates/scoreP1__4.png",
+      "sha256": "2bac5ada4e582b2ab1a0c99c4d16b59f8d4600e843090c97db9344ad79164142"
+    },
+    {
+      "path": "assets/templates/kyoku__S3.png",
+      "sha256": "7fbde3412b2a511c6b66a0ac44370173ac3dbd6555d08dd592d6ec022ac3cffd"
+    },
+    {
+      "path": "assets/templates/honba__1.png",
+      "sha256": "a260209c6ac1f97ae6cb0712ad658cc5a0dc7ea2d462102601b5ba0e9b2d7055"
+    },
+    {
+      "path": "assets/templates/honba__0.png",
+      "sha256": "4a45037de6aecb3de1cd262d5a7c7df83f75743e49cfa268ec85d193b432ae76"
+    },
+    {
+      "path": "assets/templates/scoreP3__0.png",
+      "sha256": "95aa561ea607a7a0386593aeb102444a7d8dc90604e9630741b7329f07e31df0"
+    },
+    {
+      "path": "assets/templates/kyoku__S2.png",
+      "sha256": "9214c2f8562f0285b2f91cfc237cab07bcb2147a56269a05b228a27e62285906"
+    },
+    {
+      "path": "assets/templates/scoreP1__5.png",
+      "sha256": "b0587518a257d983258f02da1652ebc15f6a59b15e0b0b5a5ba9447d1fa99fc6"
+    },
+    {
+      "path": "assets/templates/scoreP3__2.png",
+      "sha256": "b4b7d594df889b55d6470d41107c130e15a9cdcdd5e8b8b7ce97153f58eb4811"
+    },
+    {
+      "path": "assets/templates/honba__2.png",
+      "sha256": "b51e7be8b0d9b51e6bb31cae4a9b1bd8ab8d97caa85ef548bdb9373a492a870d"
+    },
+    {
+      "path": "assets/templates/honba__3.png",
+      "sha256": "105b7ae9539a30a2fab269fd486e2328124b86949e2afb205a28f425265b70c9"
+    },
+    {
+      "path": "assets/templates/scoreP3__3.png",
+      "sha256": "7a908d609aa95994b1f12c7f84cb4432ea250da6e8be258f7d8ac0a8415ca3aa"
+    },
+    {
+      "path": "assets/templates/kyoku__S1.png",
+      "sha256": "c1a52459353c56fdd015e81f357d7db849ceb7d1f014fa811180b0c120edae77"
+    },
+    {
+      "path": "assets/templates/scoreP1__6.png",
+      "sha256": "dbfc958e0a5d67309c6f4599e4003acc58cb946b0922de6eb86b71ddf98bf073"
+    },
+    {
+      "path": "assets/templates/scoreP0__9.png",
+      "sha256": "b5272cc0ec1a633d4c3b234f54d62888a60f833badc29626de162686429fc3f3"
+    },
+    {
+      "path": "assets/templates/scoreP0__8.png",
+      "sha256": "f96c61d1e7f814bbca714e9568f144418126f43b0758c34008a4f355cc035dda"
+    },
+    {
+      "path": "assets/templates/kyotaku__4.png",
+      "sha256": "7f11805378e9f2817800098876c411d98032999e482897c3b03ec108b12be337"
+    },
+    {
+      "path": "assets/templates/kyotaku__0.png",
+      "sha256": "7a59838951b7b59455ccf1267b24b83f715676e32b8e99f045b712d4407f47c6"
+    },
+    {
+      "path": "assets/templates/kyotaku__1.png",
+      "sha256": "80088e835544eec7967872acec556843acc30ee7c2478f7b312e70c9fe705549"
+    },
+    {
+      "path": "assets/templates/kyotaku__2.png",
+      "sha256": "c29f92a9eb5c1ce61f362e88681237750bc600d0f6498386c86333e4310e0a91"
+    },
+    {
+      "path": "assets/templates_web/corner.png",
+      "sha256": "34b82dbd0988ece5798bd695caddd9e6ee78ca38894c49722d7f4a7c411ff55b"
+    },
+    {
+      "path": "assets/templates_wind/P2__W.png",
+      "sha256": "62758908c7499785940329ef3abb4f3bc21a1e9286dd39a81d356216aa5d007e"
+    },
+    {
+      "path": "assets/templates_wind/P0__E.png",
+      "sha256": "f15b26cd0d968cc92e70a9c85223b197c0097b11a3ded583343867bdfc76bf4b"
+    },
+    {
+      "path": "assets/templates_wind/P0__S.png",
+      "sha256": "84bf75d165b9426a5ec695b225b04ec6152a8a85b84a0cc1f36896c0d93a2a76"
+    },
+    {
+      "path": "assets/templates_wind/P2__E.png",
+      "sha256": "136d6416c4c1f0ee4fe0496c3afa89e4c3772b0a309e1a955dc88d94acb2d47f"
+    },
+    {
+      "path": "assets/templates_wind/P0__W.png",
+      "sha256": "50b15a086d41b69b87e61a7562cd919abb32d61bc3bc8b17b09e805a89605502"
+    },
+    {
+      "path": "assets/templates_wind/P2__S.png",
+      "sha256": "553a96d851a5fd5e7553ed0c12aa600f02d88430144e56c27c1ec955d303c7d0"
+    },
+    {
+      "path": "assets/templates_wind/P1__N.png",
+      "sha256": "4d3422129db487171dc38c23f054c54a568972dbb0669711d9dc4e727ae14752"
+    },
+    {
+      "path": "assets/templates_wind/P3__N.png",
+      "sha256": "22be02d403054ffdf9b8be704cbb555c3f2632813d56cd5d5caba46b73474925"
+    },
+    {
+      "path": "assets/templates_wind/P1__S.png",
+      "sha256": "3e1ca689a0eab92863730edf69315c7d8b98663ef229e59ee4fe20fd672ecaf7"
+    },
+    {
+      "path": "assets/templates_wind/P3__W.png",
+      "sha256": "3818e9fb9d9dbd23cb44bc5742f0356a0a03b809da24efc50054e7ee6483952e"
+    },
+    {
+      "path": "assets/templates_wind/P1__E.png",
+      "sha256": "8e98b784c3d471bfac3a7ba17bbd615979bf1306546cd4847c6c175ac68d7ae5"
+    },
+    {
+      "path": "assets/templates_wind/P3__S.png",
+      "sha256": "e4a0486fac1f1468bc05b3314dbabb33732f887b3d0325634b95fde05e9e88c7"
+    },
+    {
+      "path": "assets/templates_wind/P3__E.png",
+      "sha256": "d6da6d08ba252dc8295e87938860fdfc6f697a41c942ce25d20eba61e8c49abf"
+    },
+    {
+      "path": "assets/templates_wind/P1__W.png",
+      "sha256": "faa46c0a29be8f852d313341a7494c1a41c11c05b265c3dd0fa8cf6d90012aa5"
+    },
+    {
+      "path": "assets/templates_wind/P0__N.png",
+      "sha256": "d0e01fd0e6375f3dda5300bb841fe68e07616c78c7f816f497bc1c882b5f6276"
+    },
+    {
+      "path": "assets/templates_wind/P2__N.png",
+      "sha256": "a78964820c166a02bfe51621206e73f7cb97719677f99457a544552f4f58cdbb"
+    },
+    {
+      "path": "live_v7/ui/winds.py",
+      "sha256": "03572b2429010bc359c0d28a8fe4bdddc95dff37b97d57077675f83ae7f11b55"
+    },
+    {
+      "path": "live_v7/ui/p0_tile_lib.npz",
+      "sha256": "b2c515a59cf47924b520c9e7af8994b53b2ecfedf9839c148711b93bf7c5db95"
+    },
+    {
+      "path": "live_v7/ui/scores.py",
+      "sha256": "1ac07baec048045f6aa02ee9e573e19f51287f53373a7981bcf1fc000ff530af"
+    },
+    {
+      "path": "live_v7/ui/panel.py",
+      "sha256": "1ab9cb9689d55b7cd4efb45030ff77db70e93ad7ede6b0b8248b9941bdc5dc07"
+    },
+    {
+      "path": "live_v7/ui/templates_v7/scoreP2__5.png",
+      "sha256": "8835cf77c6008853bc2a064af823129d44aaebba4b63245ea93b946977509094"
+    },
+    {
+      "path": "live_v7/ui/templates_v7/scoreP0__0.png",
+      "sha256": "1e074a56f423a43f57aaca298e65df035b15109364af15e3addbf77dacf4b8e0"
+    },
+    {
+      "path": "live_v7/ui/templates_v7/scoreP0__1.png",
+      "sha256": "4f3d21653a7ffc7e445986e223b8e27ce0c97dd0e1adfd32072bde631c73c468"
+    },
+    {
+      "path": "live_v7/ui/templates_v7/scoreP2__4.png",
+      "sha256": "f05b1e9c2c9cf9ca05688a7034799bbbfaba24d3948decd95c68f6de1ea6bc61"
+    },
+    {
+      "path": "live_v7/ui/templates_v7/scoreP0__2.png",
+      "sha256": "46ec70d6234a65083d4d397cb39b1105d02dbc86935f7410d4632be491c20471"
+    },
+    {
+      "path": "live_v7/ui/templates_v7/scoreP2__7.png",
+      "sha256": "5b159adcf5e79eed82dfec83f2d5b616e1de317d37f608cf9a117206e5b305c5"
+    },
+    {
+      "path": "live_v7/ui/templates_v7/scoreP2__3.png",
+      "sha256": "f5002a20c7015b9a3c5cc2ab0ae6d0896c4d3fe6b064ba942e3d2baadac64c67"
+    },
+    {
+      "path": "live_v7/ui/templates_v7/scoreP2__2.png",
+      "sha256": "bd897009e2e20b7be24704b3f621786f92835e34e007582f96ff78c68ce20b9a"
+    },
+    {
+      "path": "live_v7/ui/templates_v7/scoreP2__0.png",
+      "sha256": "5832153ed423a6efaf63af07b7af8f6bf259707ec91ae9a98baec3f5b7046a64"
+    },
+    {
+      "path": "live_v7/ui/templates_v7/scoreP0__5.png",
+      "sha256": "2eb8e7a0a8f0ede552abb3a3e41737dd2b54ca87cc877dfbd64f0645e684f611"
+    },
+    {
+      "path": "live_v7/ui/templates_v7/scoreP1__9.png",
+      "sha256": "e8c47c3386fc48ed9b63eb269f72577a0795baaa75f5fbfcc754c5a61e8eb15c"
+    },
+    {
+      "path": "live_v7/ui/templates_v7/scoreP1__2.png",
+      "sha256": "f0f650f247468ed7e0fa3407488dee991f9b2890780f809f2b019129c4fbf8dd"
+    },
+    {
+      "path": "live_v7/ui/templates_v7/scoreP3__7.png",
+      "sha256": "c39fd40da576fcf3d631493afe7bd25ffff1fc203d8d8d48a51609a4bdf8a721"
+    },
+    {
+      "path": "live_v7/ui/templates_v7/scoreP1__1.png",
+      "sha256": "ad45ee571ca0ec2d8280723c44158eaed1ff84b5d65a4de77905b78ca611455a"
+    },
+    {
+      "path": "live_v7/ui/templates_v7/scoreP3__5.png",
+      "sha256": "ed0ad4911743f8f4612620d21578b9797d105fae727bdaa6630792fa0fff31a7"
+    },
+    {
+      "path": "live_v7/ui/templates_v7/scoreP1__0.png",
+      "sha256": "dbbff41df57ecbdca40111b0add8f8ccc5fbf092e0f3dea36e41d83b98e0bd75"
+    },
+    {
+      "path": "live_v7/ui/templates_v7/scoreP3__1.png",
+      "sha256": "46e32cf992e825af4a44f159cf09bf6b129150911d1e0e121efc75027d21ddc7"
+    },
+    {
+      "path": "live_v7/ui/templates_v7/scoreP3__0.png",
+      "sha256": "4e515adfdde96bdd8e5f39337e0699d90efeb7b02da21a3bc4dd03294a605df2"
+    },
+    {
+      "path": "live_v7/ui/templates_v7/scoreP1__5.png",
+      "sha256": "7d957766bbde365108181579d1e9d6afdb89e902c101ed78c65d5282abb1ca35"
+    },
+    {
+      "path": "live_v7/ui/templates_v7/scoreP1__7.png",
+      "sha256": "58b2a4969d360d16cf0186b5aa4a4f78bcb33bc99fe9beeb61e01101bc801663"
+    },
+    {
+      "path": "live_v7/ui/templates_v7/scoreP3__2.png",
+      "sha256": "dcd3d522024628707c41c581bcc58c555fda2732912d1fec2768149b0ed72d0c"
+    },
+    {
+      "path": "live_v7/ui/templates_v7/scoreP3__3.png",
+      "sha256": "1cfd370a138d7d60d0536d30448598ae54ec045bea72e6c7390552478792d900"
+    }
+  ]
+}

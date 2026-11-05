@@ -23,7 +23,8 @@ Mortal 重播一局只要幾十毫秒到一秒,而且只在有新知識時才發
 from __future__ import annotations
 
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from typing import Protocol
 
 from mia.config.models import RoiConfig
 from mia.engine.base import Advice, AIEngine, EngineError
@@ -42,6 +43,11 @@ _IDLE = 0.5
 
 #: 畫面這條路的自己永遠是 0:座位是依視角算的,見 :class:`~mia.live.table.TableWorker`。
 _OWN_SEAT = 0
+
+
+class StreamSource(Protocol):
+    def start(self) -> None: ...
+    def stop(self) -> None: ...
 
 
 class StreamFeeder:
@@ -124,6 +130,7 @@ class VisionAdviceWorker(threading.Thread):
         engines: Sequence[AIEngine],
         link: TableLink,
         skin: str = DEFAULT_SKIN,
+        source_factory: Callable[[Callable[[int, Stream], None]], StreamSource] | None = None,
     ) -> None:
         super().__init__(name="vision-advice", daemon=True)
         self._bus = bus
@@ -133,11 +140,14 @@ class VisionAdviceWorker(threading.Thread):
         self._lock = threading.Lock()
         self._latest: tuple[int, Stream] | None = None
         self._fresh = threading.Event()
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
         # 危險度投到自己的郵箱:這一條只要事件流,放銃分析有自己的開關。
-        self._table = TableWorker(
-            UpdateBus(), config=config, skin=skin, link=link, on_stream=self._offer
+        self._table = (
+            TableWorker(UpdateBus(), config=config, skin=skin, link=link, on_stream=self._offer)
+            if source_factory is None
+            else None
         )
+        self._external = source_factory(self._offer) if source_factory is not None else None
         self.status = WorkerStatus("AI 建議")
         self.decisions = 0
 
@@ -147,7 +157,7 @@ class VisionAdviceWorker(threading.Thread):
         self._fresh.set()
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_event.set()
         self._fresh.set()
 
     def run(self) -> None:
@@ -159,7 +169,10 @@ class VisionAdviceWorker(threading.Thread):
             self.status.say(f"AI 建議已停止:{exc}")
         finally:
             self.status.alive = False
-            self._table.stop()
+            if self._table is not None:
+                self._table.stop()
+            if self._external is not None:
+                self._external.stop()
             self._group.close()
 
     def _run(self) -> None:
@@ -170,10 +183,14 @@ class VisionAdviceWorker(threading.Thread):
             self.status.say(f"引擎啟動失敗:{exc}")
             return
         self._bus.post(Advices(tuple(Advice(engine.name) for engine in self._group)))
-        self._link.attach(self._table)
-        self._table.start()
+        if self._external is not None:
+            self._external.start()
+        else:
+            assert self._table is not None
+            self._link.attach(self._table)
+            self._table.start()
         self.status.say("等待對局開始")
-        while not self._stop.is_set():
+        while not self._stop_event.is_set():
             self._fresh.wait(_IDLE)
             self._fresh.clear()
             with self._lock:
@@ -203,7 +220,12 @@ class VisionAdviceWorker(threading.Thread):
         """給 Log 視窗。對不上而不給建議時更要看得到,所以排在判斷之前。"""
         if stream.events:
             note = stream.doubt or ("等手牌" if stream.stalled else "")
-            self._bus.post(EventStream(self.SOURCE, _OWN_SEAT, stream.events, note))
+            source = (
+                f"{self.SOURCE} · {getattr(self._external, 'name', 'YOLO')}"
+                if self._external is not None
+                else self.SOURCE
+            )
+            self._bus.post(EventStream(source, _OWN_SEAT, stream.events, note))
 
     def __repr__(self) -> str:
         return (

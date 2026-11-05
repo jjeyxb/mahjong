@@ -605,7 +605,7 @@ def test_repr_is_informative(window: WindowInfo, count: int) -> None:
 def test_threading_module_is_used_for_the_stop_event() -> None:
     """釘住「用 Event 而不是 sleep」這個決定 —— 它是停止延遲的來源。"""
     worker = VisionWorker(UpdateBus(), config=_config(RoiConfig()))
-    assert isinstance(worker._stop, threading.Event)  # noqa: SLF001
+    assert isinstance(worker._stop_event, threading.Event)  # noqa: SLF001
 
 
 class TestTheManuallyFramedHand:

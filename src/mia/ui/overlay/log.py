@@ -5,6 +5,7 @@
 
 顏色寫死的理由與 Overlay 相同,它一樣貼在遊戲畫面上。
 
+鎖定用右上角那顆鎖(與 Overlay 同一個元件,見 :mod:`mia.ui.overlay.lock`)。
 鎖定之後滑鼠穿透,捲不動,所以永遠跟著最新的事件。沒鎖定時往上捲就停在原地,捲回最
 底下才繼續跟。
 
@@ -98,7 +99,11 @@ class EventLogWindow(HudWindow):
         super().__init__()
         self._log = log
         self._ui_state = ui_state if ui_state is not None else UiState.load()
+        self._attach_lock()
+        self._apply_opacity(self.opacity)
         self._mono = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont).family()
+        self._following = True
+        self._updating_scroll = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 10, 14, 10)
@@ -120,11 +125,14 @@ class EventLogWindow(HudWindow):
         self._body.setStyleSheet(_BODY_STYLE)
         self._body.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._body.setOpenLinks(False)
+        bar = self._body.verticalScrollBar()
+        bar.valueChanged.connect(self._track_scroll)
+        bar.rangeChanged.connect(self._follow_range)
         layout.addWidget(self._body, 1)
 
         foot = QHBoxLayout()
         foot.setContentsMargins(0, 0, 0, 0)
-        self._hint = QLabel("拖曳上緣移動,右下角改大小 —— 擺好之後到設定頁鎖定", self)
+        self._hint = QLabel("拖曳上緣移動,右下角改大小 —— 擺好之後按右上角的鎖", self)
         self._hint.setStyleSheet(f"color: {ACCENT}; font-size: 11px;")
         self._grip = QSizeGrip(self)
         foot.addWidget(self._hint, 1)
@@ -183,7 +191,7 @@ class EventLogWindow(HudWindow):
             self.hide()
 
     def set_locked(self, on: bool) -> None:
-        """鎖定 = 對滑鼠透明。解鎖 = 可以拖、可以捲。"""
+        """鎖定 = 對滑鼠透明。解鎖 = 可以拖、可以捲。右上角那顆鎖按下去就是呼叫這裡。"""
         self._ui_state.log_locked = on
         self._ui_state.save()
         self._apply_lock(on)
@@ -229,25 +237,46 @@ class EventLogWindow(HudWindow):
 
     def _render(self) -> None:
         bar = self._body.verticalScrollBar()
-        following = self.locked or bar.value() >= bar.maximum() - _FOLLOW_SLACK
+        following = self.locked or self._following
         position = bar.value()
         lines = self._log.lines
         self._source.setText(f"{self._log.source} · {len(lines)} 則" if lines else "")
         self._note.setText(self._log.note)
         self._note.setVisible(bool(self._log.note))
         pictures = self._icons is not None
-        self._body.setHtml(
-            "".join(_html(line, self._mono, pictures=pictures) for line in lines)
-            or f'<p style="color:{_MUTED}">{_EMPTY}</p>'
-        )
-        if following:
+        self._updating_scroll = True
+        try:
+            self._body.setHtml(
+                "".join(_html(line, self._mono, pictures=pictures) for line in lines)
+                or f'<p style="color:{_MUTED}">{_EMPTY}</p>'
+            )
+            if following:
+                self._scroll_to_end()
+            else:
+                bar.setValue(position)
+        finally:
+            self._updating_scroll = False
+
+    def _track_scroll(self) -> None:
+        if not self._updating_scroll:
+            bar = self._body.verticalScrollBar()
+            self._following = bar.value() >= bar.maximum() - _FOLLOW_SLACK
+
+    def _follow_range(self) -> None:
+        # 長文件會延後排版,顯示、換行或改視窗大小後終點還會變。
+        # 此時保留原本的跟隨狀態,不要把新增的高度誤認成使用者往上捲。
+        if self.locked or self._following:
             self._scroll_to_end()
-        else:
-            bar.setValue(position)
 
     def _scroll_to_end(self) -> None:
-        bar = self._body.verticalScrollBar()
-        bar.setValue(bar.maximum())
+        self._following = True
+        was_updating = self._updating_scroll
+        self._updating_scroll = True
+        try:
+            bar = self._body.verticalScrollBar()
+            bar.setValue(bar.maximum())
+        finally:
+            self._updating_scroll = was_updating
 
 
 def _html(line: LogLine, mono: str, *, pictures: bool = True) -> str:

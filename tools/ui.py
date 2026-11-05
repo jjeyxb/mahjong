@@ -53,7 +53,7 @@ from mia.capture.base import Frame
 from mia.config.models import AppConfig
 from mia.engine import AIEngine, DummyEngine, EngineGroup
 from mia.engine.styles import StyleChoice, StyleProfile
-from mia.features import AdviceSourceChoice, DangerSourceChoice
+from mia.features import AdviceSourceChoice, DangerSourceChoice, RecognitionChoice
 from mia.live.runtime import LiveRuntime
 from mia.mjai import MjaiEvent
 from mia.mjai.handstate import HandTracker
@@ -427,6 +427,22 @@ class _RememberedStyle:
         self._state.save()
 
 
+class _RememberedRecognition:
+    def __init__(self, runtime: LiveRuntime, state: UiState) -> None:
+        self._runtime, self._state = runtime, state
+
+    def can_pick_recognition(self) -> bool:
+        return self._runtime.can_pick_recognition()
+
+    def recognition_backend(self) -> str:
+        return self._runtime.recognition_backend()
+
+    def set_recognition_backend(self, value: str) -> None:
+        self._runtime.set_recognition_backend(value)
+        self._state.recognition_backend = self._runtime.recognition_backend()
+        self._state.save()
+
+
 class _RememberedAdviceSource:
     """把「AI 建議走圖像辨識」轉給 runtime,順手記到磁碟。"""
 
@@ -461,6 +477,7 @@ def build_live_runtime(
     danger_source: DangerSourceChoice | None = None,
     advice_source: AdviceSourceChoice | None = None,
     event_log: EventLog | None = None,
+    recognition: RecognitionChoice | None = None,
 ) -> LiveRuntime:
     """組出 runtime。**什麼都還沒開始** —— 瀏覽器等使用者按「開始遊戲」,
     三個功能等使用者撥開關。
@@ -479,10 +496,13 @@ def build_live_runtime(
     from mia.live.runtime import Feature, Worker
     from mia.live.source import CaptureLauncher
     from mia.live.table import TableLink, TableWorker
+    from mia.live.yolo import YoloDangerWorker, YoloHub, YoloStreamSource, YoloVisionWorker
     from mia.vision.tiles.classify import DEFAULT_SKIN
 
     danger_source = danger_source if danger_source is not None else DangerSourceChoice()
     advice_source = advice_source if advice_source is not None else AdviceSourceChoice()
+    recognition = recognition if recognition is not None else RecognitionChoice()
+    yolo_hub = YoloHub()
     bus = UpdateBus()
     feature_list: list[Feature] = []
     capture: CaptureLauncher | None = None
@@ -535,6 +555,11 @@ def build_live_runtime(
                     engines=build_engines(args, style.named_weights if style else ()),
                     link=screen_for_danger,
                     skin=args.skin or DEFAULT_SKIN,
+                    source_factory=(
+                        lambda callback: YoloStreamSource(
+                            yolo_hub, callback, name=RecognitionChoice.NAMES[recognition.value]
+                        )
+                    ) if recognition.value in ("yolo", "hybrid") else None,
                 )
             return PacketWorker(
                 bus,
@@ -560,6 +585,11 @@ def build_live_runtime(
             # platform 在**這裡**才從格子讀,不是在外面先取出來 —— 換版本靠的
             # 正是「關掉再開」(LiveRuntime.set_platform 會重啟畫面辨識),
             # 先取出來的話第二次開起來還是對著上一版的視窗找。
+            yolo_hub.clear()
+            if recognition.value in ("yolo", "hybrid"):
+                return YoloVisionWorker(bus, config=config, hub=yolo_hub, canvas=canvas,
+                    platform=platform.value if platform else WEB, hand_roi=hand_roi,
+                    table_rect=table_rect, hybrid=recognition.value == "hybrid", skin=skin)
             return VisionWorker(
                 bus,
                 config=config,
@@ -594,6 +624,9 @@ def build_live_runtime(
             )
             if use_screen:
                 assert screen_for_danger is not None
+                if recognition.value in ("yolo", "hybrid"):
+                    return YoloDangerWorker(bus, yolo_hub,
+                                            name=RecognitionChoice.NAMES[recognition.value])
                 worker = TableWorker(bus, config=load_config().roi, skin=args.skin or DEFAULT_SKIN)
                 screen_for_danger.attach(worker)
                 return worker
@@ -617,6 +650,7 @@ def build_live_runtime(
         danger_source=danger_source,
         advice_source=advice_source,
         event_log=event_log,
+        recognition=recognition,
     )
 
 
@@ -840,6 +874,7 @@ def main(argv: list[str] | None = None) -> int:
     table_rect = TableRectChoice(ui_state.table_rect)
     danger_source = DangerSourceChoice(ui_state.danger_vision_only)
     advice_source = AdviceSourceChoice(ui_state.advice_vision_only)
+    recognition = RecognitionChoice(ui_state.recognition_backend)
     event_log = EventLog()
     # 視窗比對條件要與擷取執行緒讀的是同一份 —— 兩邊找的必須是同一個視窗,
     # 否則使用者框的是 A、辨識跑的是 B。
@@ -861,6 +896,7 @@ def main(argv: list[str] | None = None) -> int:
             danger_source=danger_source,
             advice_source=advice_source,
             event_log=event_log,
+            recognition=recognition,
         )
         if args.live
         else None
@@ -905,6 +941,7 @@ def main(argv: list[str] | None = None) -> int:
         advice_source=(
             _RememberedAdviceSource(runtime, ui_state) if runtime is not None else None
         ),
+        recognition=_RememberedRecognition(runtime, ui_state) if runtime is not None else None,
         **options,  # type: ignore[arg-type]
     )
     model.subscribe(window.apply)
