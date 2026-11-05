@@ -56,19 +56,24 @@ class TsumogiriWatcher:
     _seen: dict[int, deque[tuple[float, BackShape]]] = field(
         default_factory=lambda: {position: deque() for position in (1, 2, 3)}
     )
+    _drawn_seen: set[int] = field(default_factory=set)
 
     def reset(self) -> None:
         """新的一局。"""
         for history in self._seen.values():
             history.clear()
+        self._drawn_seen.clear()
 
     def forget(self, position: int) -> None:
         """這家鳴牌了。手牌短了一截,之前看到的長度會讓之後每一手都像少了一張。"""
         self._seen[position].clear()
+        self._drawn_seen.discard(position)
 
     def observe(self, position: int, now: float, shape: BackShape) -> None:
         history = self._seen[position]
         history.append((now, shape))
+        if shape.drawn and shape.clean:
+            self._drawn_seen.add(position)
         while history and history[0][0] < now - _KEEP:
             history.popleft()
 
@@ -81,7 +86,13 @@ class TsumogiriWatcher:
         history = self._seen[position]
         if not history or self._full(position) < _TOO_SMALL[position]:
             return None
-        return not self.tegiri_seen(position, now)
+        if self.tegiri_seen(position, now):
+            return False
+        # 開局十四張可能連在一起,尚不知道哪一段才是十三張本體。
+        # 從未看過分開的摸牌時,沒看到缺口不能當成摸切的證據。
+        if position != 1 and position not in self._drawn_seen:
+            return None
+        return True
 
     def _full(self, position: int) -> float:
         """手牌原本有多長:最近看到最完整的那一次。沿線量的只算沒被手切開的。"""

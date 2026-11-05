@@ -44,6 +44,7 @@ from __future__ import annotations
 import hashlib
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -57,7 +58,7 @@ from mia.config.models import RoiConfig
 from mia.live.bus import Dangers, UpdateBus, WorkerStatus
 from mia.mjai.events import Dahai, Dora, Reach, Tsumo
 from mia.mjai.table import TableTracker
-from mia.mjai.tiles import ms_to_mjai, normalize_red
+from mia.mjai.tiles import mjai_to_ms, ms_to_mjai, normalize_red
 from mia.tracker import (
     UNKNOWN,
     Action,
@@ -80,6 +81,7 @@ from mia.tracker import (
     resynced,
 )
 from mia.tracker.melds import KAN_WIDTH
+from mia.tracker.stream import MeldPick, MeldShape
 from mia.tracker.tedashi import HOLD, TsumogiriWatcher
 from mia.utils.geometry import Rect
 from mia.utils.logging import logger
@@ -94,9 +96,9 @@ from mia.vision.tiles.classify import (
     TemplateSet,
     classify,
     red_ink,
-    settle_five,
 )
 from mia.vision.tiles.dora import read_dora
+from mia.vision.tiles.meld_fit import MeldPicture, Pick, pick
 from mia.vision.tiles.melds import DEFAULT_VIEWS as MELD_VIEWS
 from mia.vision.tiles.melds import (
     GROUP_LENGTH,
@@ -117,6 +119,7 @@ from mia.vision.tiles.river import (
     read_river,
     row_end,
     search_window,
+    settle_river_five,
     slot,
 )
 
@@ -140,6 +143,15 @@ _STILL = 3.0
 #: 採信,而牌桌現在有牌落下就走一輪:隔太近的話兩次都讀到鳴牌動畫的過渡值,實測多出一組假的碰。
 _MELD_GAP = 0.4
 
+#: 副露雖過採信門檻,平均分數不到這裡仍允許換清楚的畫面核對。
+_MELD_CLEAR = 0.7
+
+#: 已採信的副露最多額外重拍兩次,避免持續動畫佔住比對執行緒。
+_MELD_RECHECKS = 2
+
+#: 新畫面的平均分數至少提高這麼多才替換答案,不讓微小分數變動反覆改寫事件流。
+_MELD_GAIN = 0.03
+
 #: 上家的座位,依視角。
 _KAMICHA = 3
 
@@ -158,6 +170,12 @@ _MELD_QUORUM = 2
 
 #: 白(雀魂記法 ``5z`` 經 :func:`ms_to_mjai` 之後)。見 ``_read_seat``。
 _HAKU = "P"
+
+#: 新牌暫時認不出來時,容許動畫結束後重新核對的秒數。
+_UNCERTAIN_RETRY = 3.0
+
+#: 新捨牌排隊時仍可累積這一手的手切證據;已送出的判斷不再改寫。
+_TSUMOGIRI_CAPTURE = 1.5
 
 #: 一張捨牌:誰打的、什麼牌(讀不出來是 ``None``)、猜是什麼牌、是他的第幾張。
 _Seen = tuple[int, str | None, str | None, int]
@@ -182,6 +200,9 @@ _HAND_LOST = 3
 #: 事件流停住這麼多秒就用畫面重寫自己的動作。手牌慢一步是常有的事,實測最久 3 秒多一點,等一下
 #: 就接上了;重寫太早只是白白失去摸切的標記。見 :func:`~mia.tracker.stream.resynced`。
 _STALL_PATIENCE = 3.0
+
+#: 重寫出來的配牌與原本的最多差幾張。中途漏記一兩手只會差一兩張;差得更多是拿局尾的手牌在倒推。
+_RESYNC_CHANGE = 3
 
 #: 組長量的時候,第一組開頭有多少空白,單位是格。比這個多的部分不算牌寬。
 _MELD_LEAD = 0.3
@@ -237,6 +258,106 @@ class _PendingFaces:
     position: int
     index: int
     future: Future[MeldFaces]
+
+
+class _MeldLook:
+    """:class:`~mia.tracker.stream.MeldLook`:比對丟到專用執行緒,首次比完之前回 ``None``。
+
+    同一張畫面的同一組候選只比一次。候選會變(河裡那張事後重讀、張數變了),變了就再比一次。
+    棄權或信心較低時可以換新畫面,較清楚的答案會保留,見 :meth:`refresh`。
+    """
+
+    def __init__(
+        self,
+        pool: ThreadPoolExecutor,
+        picture: MeldPicture,
+        templates: TemplateSet,
+        on_ready: Callable[[], None] | None = None,
+        *,
+        wait_faces: bool = False,
+    ) -> None:
+        self._pool = pool
+        self._picture = picture
+        self._templates = templates
+        self._jobs: dict[tuple[MeldShape, ...], Future[Pick | None]] = {}
+        self._failed: set[tuple[MeldShape, ...]] = set()
+        self._best: dict[tuple[MeldShape, ...], Pick] = {}
+        self._active: tuple[MeldShape, ...] | None = None
+        self._rechecks = 0
+        self._on_ready = on_ready
+        self._faces_pending = wait_faces
+
+    @property
+    def needs_picture(self) -> bool:
+        """目前候選已比完,但仍看不清楚或只以偏低分數採信。"""
+        if self._active is None or not self._jobs or any(
+            not job.done() for job in self._jobs.values()
+        ):
+            return False
+        found = self._answer(self._active)
+        return found is None or (found.quality < _MELD_CLEAR and self._rechecks < _MELD_RECHECKS)
+
+    def refresh(self, picture: MeldPicture) -> None:
+        """畫面有變才再試,舊答案留到有更清楚的結果才換掉。"""
+        if not self.needs_picture:
+            return
+        old = cv2.resize(self._picture.image, (64, 24))
+        new = cv2.resize(picture.image, (64, 24))
+        if float(cv2.absdiff(old, new).mean()) < _STILL:
+            return
+        # 收好各組候選的答案再換快照。新的比對尚未完成或被遮住時,仍可用舊答案。
+        for shapes in self._jobs:
+            self._answer(shapes)
+        if self._best:
+            self._rechecks += 1
+        self._picture = picture
+        self._jobs.clear()
+        self._failed.clear()
+
+    def cancel(self) -> None:
+        """換局之後,排隊中的比對不能再佔住下一局的認牌面執行緒。"""
+        for job in self._jobs.values():
+            job.cancel()
+
+    @property
+    def pending(self) -> bool:
+        """目前候選仍在比對,尚不能把無答案當成棄權。"""
+        job = self._jobs.get(self._active) if self._active is not None else None
+        return job is not None and (not job.done() or self._faces_pending)
+
+    def finish_faces(self) -> None:
+        """牌面掃描已採入桌面狀態,棄權時可以使用它的牌面與赤五資訊。"""
+        self._faces_pending = False
+
+    def pick(self, shapes: tuple[MeldShape, ...]) -> MeldPick | None:
+        self._active = shapes
+        job = self._jobs.get(shapes)
+        if job is None:
+            labels = [([mjai_to_ms(tile) for tile in s.tiles], s.sideways) for s in shapes]
+            job = self._pool.submit(pick, self._picture, labels, self._templates)
+            self._jobs[shapes] = job
+            ready = self._on_ready
+            if ready is not None:
+                job.add_done_callback(lambda _: ready())
+        found = self._answer(shapes)
+        return None if found is None else MeldPick(found.index, found.reds)
+
+    def _answer(self, shapes: tuple[MeldShape, ...]) -> Pick | None:
+        best = self._best.get(shapes)
+        job = self._jobs.get(shapes)
+        if job is None or not job.done() or job.cancelled():
+            return best
+        try:
+            found = job.result()
+        except Exception as exc:  # noqa: BLE001 - 比不出來就照舊的推法
+            if shapes not in self._failed:
+                self._failed.add(shapes)
+                logger.warning("副露候選比不成:%s", exc)
+            return best
+        if found is not None and (best is None or found.quality >= best.quality + _MELD_GAIN):
+            self._best[shapes] = found
+            return found
+        return best
 
 
 class TableWorker(threading.Thread):
@@ -324,13 +445,19 @@ class TableWorker(threading.Thread):
         self._melds = MeldWatcher(units=tuple(GROUP_LENGTH[seat] for seat in SEATS))
         # 認牌面慢(一組約 1 秒),放到另一條執行緒。見 _read_melds。
         self._faces = ThreadPoolExecutor(max_workers=1, thread_name_prefix="meld-faces")
+        # 候選比對決定鳴牌後的建議,不該排在完整牌面掃描(幾百毫秒)後面。
+        self._fits = ThreadPoolExecutor(max_workers=1, thread_name_prefix="meld-fit")
+        self._faces_ready = threading.Event()
         self._pending_faces: list[_PendingFaces] = []
         self._meld_reds: dict[tuple[int, int], frozenset[str]] = {}
         #: 只在橫的框認到一張牌的副露 ``(誰, 第幾組)``。見 :attr:`KyokuLog.meld_sideways`。
         self._meld_sideways: set[tuple[int, int]] = set()
+        #: 別家每一組吃碰的畫面。見 :attr:`KyokuLog.meld_looks`。
+        self._meld_looks: dict[tuple[int, int], _MeldLook] = {}
         # 別家的手牌形狀,與排進事件流時決定的摸切。見 :mod:`mia.tracker.tedashi`。
         self._tedashi = TsumogiriWatcher()
         self._tsumogiri: dict[tuple[int, int | None], bool] = {}
+        self._seen_tsumogiri: dict[tuple[int, int | None], tuple[float, bool | None]] = {}
         self._known: list[list[str]] = [[] for _ in SEATS]
         # 每家每一格的最佳猜測,沒信心的也留著:Mortal 不收 ?。
         self._guess: list[dict[int, str]] = [{} for _ in SEATS]
@@ -345,6 +472,7 @@ class TableWorker(threading.Thread):
         self._leaning: list[set[int]] = [set() for _ in SEATS]
         # 動畫中途先讀的格子,停穩之後要重讀。
         self._unsteady: list[set[int]] = [set() for _ in SEATS]
+        self._uncertain_until: list[dict[int, float]] = [{} for _ in SEATS]
         self._cells: dict[tuple[int, int, int], tuple[bytes, str, str]] = {}
         self._dora_seen = b""
         self._seen_hand: tuple[list[str], str | None] | None = None
@@ -416,7 +544,10 @@ class TableWorker(threading.Thread):
                 self._wake.clear()
         finally:
             self.status.alive = False
+            for look in self._meld_looks.values():
+                look.cancel()
             self._faces.shutdown(wait=False, cancel_futures=True)
+            self._fits.shutdown(wait=False, cancel_futures=True)
             if self._link is not None:
                 self._link.detach(self)
 
@@ -448,11 +579,21 @@ class TableWorker(threading.Thread):
         flats = [DEFAULT_CORNERS[seat].rectify(image, table) for seat in SEATS]
         rivers = [read_river(flat) for flat in flats]
         self._watch_backs(image, table)
+        completed = self._faces_ready.is_set()
+        if completed:
+            self._faces_ready.clear()
+            self._collect_meld_faces()
         if not self._round_due(flats, rivers, bool(hands)):
             if self._turns is not None and self._digits is not None:
                 clock = self._turn_clock()
                 self._turns.see_wall(clock, read_wall(image, table, self._digits))
                 self._turns.see_light(clock, read_turn(image, table))
+            if completed:
+                # 背景完成只更新已讀到的局面,不重讀同一幀,也不重設整輪的時鐘。
+                # 否則會多確認一次動畫中的河,並把原本的一秒更新往後推。
+                self._publish(hand)
+                if self._on_stream is not None:
+                    self._on_stream(self.kyoku, self.stream())
             return
         self.reads += 1
         if not self._load_digits():
@@ -523,6 +664,15 @@ class TableWorker(threading.Thread):
         for position, seat in enumerate(SEATS[1:], 1):
             shape = read_backs(image, table, seat, self._melds.groups[position])
             self._tedashi.observe(position, now, shape)
+            for key, (seen_at, before) in self._seen_tsumogiri.items():
+                if (
+                    key[0] != position or key in self._tsumogiri
+                    or now > seen_at + _TSUMOGIRI_CAPTURE
+                ):
+                    continue
+                verdict = self._tedashi.tsumogiri(position, now)
+                if before is not False and verdict is not None:
+                    self._seen_tsumogiri[key] = (seen_at, verdict)
 
     def _decide_tsumogiri(self, steps: Sequence[Step]) -> None:
         """別家的捨牌排進事件流的這一刻,決定是不是摸切,之後不改:改了引擎就要整局重送。"""
@@ -532,7 +682,8 @@ class TableWorker(threading.Thread):
                 continue
             key = (step.actor, step.serial)
             if key not in self._tsumogiri:
-                verdict = self._tedashi.tsumogiri(step.actor, now)
+                seen = self._seen_tsumogiri.get(key)
+                verdict = seen[1] if seen is not None else self._tedashi.tsumogiri(step.actor, now)
                 if verdict is not None:
                     self._tsumogiri[key] = verdict
 
@@ -615,12 +766,22 @@ class TableWorker(threading.Thread):
             # 被鳴走的一定是最後打的那張,前面的牌沒有動。被蓋住的話,讀回來時像素一樣,不必重認。
             del known[len(filled) :]
             self._unsteady[position] = {k for k in self._unsteady[position] if k < len(filled)}
+            self._uncertain_until[position] = {
+                k: until for k, until in self._uncertain_until[position].items() if k < len(filled)
+            }
 
         sideways = self._sideways[position]
         if sideways is None:
             sideways = self._look_for_sideways(position, flat, river, known)
         river = self._shifted(position, flat, river)
         filled = river.filled
+        if known and len(filled) == len(known):
+            # 挪過格線就沒有新牌:橫放的牌在直放的格線上佔兩格,上面那個比較永遠說多一張,
+            # 停穩之後的重讀(包括橫放那一格)就一次都沒走到。
+            self._recheck_reds(position, flat, river, known)
+            self._revisit(position, flat, river, known)
+            self._emit(position, known)
+            return
 
         fresh = [k for k in filled if k >= len(known)] if len(known) else list(filled)
         # 整條重認(剛接上、立直之後)不必防白光:那不是白光掃過的時機。
@@ -632,13 +793,9 @@ class TableWorker(threading.Thread):
             if cell == sideways:
                 # 橫放的讀數不夠當成有把握,所以只當猜測。但事件流的這一張要有答案,
                 # 而直放模板對這一格的答案是雜訊:實測 54 張,旋轉 40 對,直放 0 對。
-                assert self._river_templates is not None
-                view = DEFAULT_CORNERS[SEATS[position]]
-                match = classify_sideways(
-                    flat, cell, self._river_templates,
-                    scale=view.sideways_scale, size=view.sideways_size,
-                )
-                self._guess[position][cell] = ms_to_mjai(match.label)
+                self._guess[position][cell] = self._read_sideways(position, flat, cell)
+                if not self._steady(position, cell):
+                    self._unsteady[position].add(cell)
                 known.append(UNKNOWN)
                 continue
             steady = self._steady(position, cell)
@@ -662,8 +819,10 @@ class TableWorker(threading.Thread):
                 break
             self._haku[position] = None
             known.append(pai)
-            if not steady:
+            if not steady or pai == UNKNOWN:
                 self._unsteady[position].add(cell)
+            if pai == UNKNOWN:
+                self._uncertain_until[position][cell] = time.monotonic() + _UNCERTAIN_RETRY
 
         self._emit(position, known)
 
@@ -686,25 +845,36 @@ class TableWorker(threading.Thread):
         assert self._templates is not None and self._river_templates is not None
         view = DEFAULT_CORNERS[SEATS[position]]
         rect = river.cells[cell]
-        window = search_window(flat, rect, left=view.left_slack)
+        window = search_window(flat, rect, left=view.left_slack, right=view.right_slack)
         key = (position, rect.x, rect.y)
         pixels = hashlib.blake2b(window.tobytes(), digest_size=16).digest()
         memo = self._cells.get(key)
         if memo is not None and memo[0] == pixels:
             return memo[1], memo[2]
         size = face_size(seat=SEATS[position], row=slot(cell)[1])
-        match = classify_river_tile(window, self._templates, size=size)
+        templates = self._templates
+        match = classify_river_tile(window, templates, size=size)
         # 只有沒把握的才比第二份,86% 的格子用不到:一格 56 → 38 毫秒,讀對的張數一樣,有信心的
         # 還多一點。牌桌每多花一毫秒,輪到自己時的建議就晚一毫秒。
         if not _sure(match) and self._river_templates is not self._templates:
-            match = classify_river_tile(window, self._river_templates, size=size)
-        label = settle_five(match.label, face_patch(flat, rect))
+            templates = self._river_templates
+            match = classify_river_tile(window, templates, size=size)
+        label = settle_river_five(window, match, templates, size=size)
         guess = ms_to_mjai(label)
         pai = guess if _sure(match) else UNKNOWN
         if pai == UNKNOWN and self._sideways[position] is None:
             guess = self._turned(position, flat, cell, match) or guess
         self._cells[key] = (pixels, pai, guess)
         return pai, guess
+
+    def _read_sideways(self, position: int, flat: np.ndarray, cell: int) -> str:
+        """橫放那一格用旋轉模板認,回傳猜測。"""
+        assert self._river_templates is not None
+        view = DEFAULT_CORNERS[SEATS[position]]
+        match = classify_sideways(
+            flat, cell, self._river_templates, scale=view.sideways_scale, size=view.sideways_size
+        )
+        return ms_to_mjai(match.label)
 
     def _turned(self, position: int, flat: np.ndarray, cell: int, upright: Match) -> str | None:
         """沒把握的牌如果轉過來比較像,那就是宣言牌,回傳它是什麼。
@@ -728,12 +898,37 @@ class TableWorker(threading.Thread):
         """動畫中途先讀的格子,停穩之後再讀一次,答案不同就改掉。"""
         river = self._shifted(position, flat, river)
         for cell in sorted(self._unsteady[position]):
+            until = self._uncertain_until[position].get(cell)
+            if until is not None and time.monotonic() > until:
+                self._unsteady[position].discard(cell)
+                del self._uncertain_until[position][cell]
+                continue
             if not self._steady(position, cell):
                 continue
-            self._unsteady[position].discard(cell)
+            if cell == self._sideways[position] and cell < len(known):
+                # 橫放的牌滑進來的途中讀到的是雜訊,而停穩的判斷是照直放的格子量的,滑完之前就說
+                # 停了:真人東一局上家橫放的 6 索被讀成 8 筒。所以與讀不出來的牌一樣,幾秒內每輪
+                # 再讀,留最後一次。
+                self._uncertain_until[position].setdefault(
+                    cell, time.monotonic() + _UNCERTAIN_RETRY
+                )
+                if known[cell] == UNKNOWN:
+                    self._guess[position][cell] = self._read_sideways(position, flat, cell)
+                continue
             if cell >= len(known) or cell == self._sideways[position] or cell in river.clipped:
+                self._unsteady[position].discard(cell)
+                self._uncertain_until[position].pop(cell, None)
                 continue
             pai, guess = self._read_cell(position, flat, river, cell)
+            if pai == UNKNOWN:
+                if known[cell] == UNKNOWN:
+                    self._guess[position][cell] = guess
+                self._uncertain_until[position].setdefault(
+                    cell, time.monotonic() + _UNCERTAIN_RETRY
+                )
+                continue
+            self._unsteady[position].discard(cell)
+            self._uncertain_until[position].pop(cell, None)
             self._guess[position][cell] = guess
             if pai == known[cell]:
                 continue
@@ -800,7 +995,15 @@ class TableWorker(threading.Thread):
 
     def _emit(self, position: int, known: list[str]) -> None:
         """把這一家看得見的河交給 :class:`RiverWatcher`,新的捨牌送進 tracker。"""
-        for discard in self._rivers.observe(position, known):
+        fresh = self._rivers.observe(position, known)
+        if position and len(fresh) == 1:
+            # 排序器可能被前面的動作卡住數秒。保留看到新牌時的手牌形狀判斷,
+            # 不能等排進事件流時才拿已恢復完整的手牌推成摸切。
+            key = (position, fresh[0].serial)
+            self._seen_tsumogiri[key] = (
+                time.monotonic(), self._tedashi.tsumogiri(position, time.monotonic())
+            )
+        for discard in fresh:
             self._turn_discards.append(
                 (
                     position,
@@ -914,12 +1117,23 @@ class TableWorker(threading.Thread):
             self._own_behind = 0
 
     def _own_thrown(self) -> int:
-        """自己打過幾張。河裡消失的牌,別家鳴牌沒有這麼多的話,多的那幾張本來就不是牌。"""
-        thrown = self._rivers.thrown(0)
+        """自己打過幾張。河裡消失的牌,別家鳴牌沒有這麼多的話,多的那幾張本來就不是牌。
+
+        沒讀出來就不見的格子也不算:打牌時角色的手伸過自己的河,手底下多出來的假牌。算進去的話局尾
+        多一張,補出一次不存在的摸切,那張牌的張數一超過,別家讀對的同一張牌就被當成讀錯(真人一場
+        東三局 1 本場:對家打的 4 筒變成東,上家吃的那組也跟著錯)。別家鳴走一張沒讀出來的自己的牌時
+        會少算一張,那只會讓補摸切晚一點,不會多補。
+        """
+        thrown = self._rivers.thrown(0) - self._rivers.unread_gone(0)
         gone = thrown - len(self._rivers.rivers[0])
         return thrown - max(gone - sum(self._melds.groups[1:]), 0)
 
     # ------------------------------------------------------------------ 副露
+
+    def _on_meld_ready(self, _: Future[MeldFaces] | None = None) -> None:
+        """牌面或候選比完就送出新結果,不等下一秒的整輪讀取。"""
+        self._faces_ready.set()
+        self._wake.set()
 
     def _read_melds(self, image: np.ndarray, table: Rect, rivers: Sequence[River]) -> None:
         """量四家的副露長度,長了一組就記一組。
@@ -965,6 +1179,10 @@ class TableWorker(threading.Thread):
             if fresh and step - blank / fresh >= KAN_WIDTH * GROUP_LENGTH[seat]:
                 self._turn_kans.append(position)
             melds = self._table.players[position].melds
+            look = self._meld_looks.get((position, len(melds) - 1))
+            if not fresh and look is not None and look.needs_picture:
+                # 只重拍最新的一組。多了一組之後再重拍舊的,會把新的一組當成舊的答案。
+                look.refresh(MeldPicture(image, table, seat, end=length))
             for index in range(fresh):
                 # 組數**現在**就算數(副露威脅不等牌面),牌面認好了再填進來。
                 melds.append(guess_meld(()))
@@ -985,6 +1203,14 @@ class TableWorker(threading.Thread):
                 )
                 self._pending_faces.append(
                     _PendingFaces(self._table, position, len(melds) - 1, future)
+                )
+                future.add_done_callback(self._on_meld_ready)
+                # 拍下這一組就好(一次透視變換),要比什麼由事件流決定:它才知道被鳴的是哪張、
+                # 從誰那裡鳴的。
+                picture = MeldPicture(image, table, seat, end=start + (index + 1) * step)
+                self._meld_looks[(position, len(melds) - 1)] = _MeldLook(
+                    self._fits, picture, self._river_templates, self._on_meld_ready,
+                    wait_faces=True,
                 )
 
     def _collect_meld_faces(self) -> None:
@@ -1013,10 +1239,13 @@ class TableWorker(threading.Thread):
             if not job.future.done():
                 pending.append(job)
                 continue
+            look = self._meld_looks.get((job.position, job.index))
             try:
                 faces = job.future.result()
             except Exception as exc:  # noqa: BLE001 - 認不出來就是未知,不要讓整輪失敗
                 logger.warning("副露牌面認不成:%s", exc)
+                if look is not None:
+                    look.finish_faces()
                 continue
             meld = guess_meld(
                 (normalize_red(ms_to_mjai(face)) for face in faces.tiles),
@@ -1029,6 +1258,8 @@ class TableWorker(threading.Thread):
                 self._meld_sideways.add((job.position, job.index))
             if faces.red_suits:
                 self._meld_reds[(job.position, job.index)] = faces.red_suits
+            if look is not None:
+                look.finish_faces()
         self._pending_faces = pending
 
     # ------------------------------------------------------------------ 寶牌
@@ -1100,7 +1331,16 @@ class TableWorker(threading.Thread):
                 continue
             serials = self._rivers.serials[position]
             known = self._known[position]
-            if serial not in serials or len(serials) != len(known):
+            if len(serials) != len(known):
+                continue
+            if serial not in serials:
+                # 宣言牌還沒認出是橫放就被鳴走了(它是當列最後一張時橫放偵測驗不了,點數又讀得晚)。
+                # 照規則他的下一張捨牌改成橫放,直放讀的話一張被當成兩格,後半格變成一張不存在的
+                # 捨牌:真人東一局上家的 6 索多出一張 2 索,另外三場同樣多出 白 / 2 索。
+                later = next((k for k, s in enumerate(serials) if s > serial), None)
+                if later is not None and known[later] == UNKNOWN:
+                    self._sideways[position] = later
+                    known.clear()
                 continue
             cell = serials.index(serial)
             # 橫放的牌比一格寬,後面那格也讀得到牌,點數一變標記就落在那一格上。實測宣言牌因此被當成
@@ -1109,6 +1349,9 @@ class TableWorker(threading.Thread):
                 cell -= 1
             if known[cell] == UNKNOWN:
                 self._sideways[position] = cell
+                # 寬的宣言牌讓點數標記落到下一格時,事件序號也要跟著退回去。
+                # 只改畫面上的格子,事件流仍會在後面那張假牌上宣告立直。
+                self._reach_marks[position] = serials[cell]
                 # 下一輪用挪過的格線整家重認,宣言牌也在那時候用旋轉模板讀。
                 known.clear()
 
@@ -1291,6 +1534,13 @@ class TableWorker(threading.Thread):
         return replace(stream, doubt=self._doubt(stream))
 
     def _kyoku_log(self, settled: Hud) -> KyokuLog:
+        self._own.reconcile_discards(
+            {
+                serial: pai
+                for (position, serial), (pai, _) in self._readings.items()
+                if position == 0 and pai is not None
+            }
+        )
         next_up = self._turns.next_up if self._turns is not None else None
         if next_up is not None:
             self._decide_tsumogiri([next_up])
@@ -1302,6 +1552,8 @@ class TableWorker(threading.Thread):
             melds=[list(player.melds) for player in self._table.players],
             meld_reds=dict(self._meld_reds),
             meld_sideways=set(self._meld_sideways),
+            meld_looks=dict(self._meld_looks),
+            meld_growing={position for position in (1, 2, 3) if self._melds.growing(position)},
             reaches=self._reaches(),
             own_reach=self._own_reach,
             moves=list(self._own.moves),
@@ -1331,6 +1583,12 @@ class TableWorker(threading.Thread):
         tiles, drawn = self._seen_hand
         fresh = resynced(log, tiles, drawn)
         if fresh is None:
+            return False
+        before, after = Counter(self._own.tehai), Counter(fresh[0])
+        if sum((before - after).values()) > _RESYNC_CHANGE:
+            # 配牌整副換掉:不是中途漏了一兩手,是拿局尾、結算畫面的手牌去倒推。事件流在局尾本來
+            # 就不會再動,實測停住 3 秒後還讀得到手牌,配牌被換成局尾的手牌,之後每一張摸牌都錯。
+            logger.info("重寫出來的配牌差了太多張,不採用")
             return False
         logger.info("事件流停住了,以現在的手牌重寫自己的動作")
         self._own.adopt(*fresh, tiles, drawn)
@@ -1381,8 +1639,12 @@ class TableWorker(threading.Thread):
         self._dora_marks = []
         self._meld_reds = {}
         self._meld_sideways = set()
+        for look in self._meld_looks.values():
+            look.cancel()
+        self._meld_looks = {}
         self._tedashi.reset()
         self._tsumogiri = {}
+        self._seen_tsumogiri = {}
         self._reach_marks = {}
         self._own_reach = None
         self._readings = {}
@@ -1401,6 +1663,7 @@ class TableWorker(threading.Thread):
         self._clear = [False for _ in SEATS]
         self._leaning = [set() for _ in SEATS]
         self._unsteady = [set() for _ in SEATS]
+        self._uncertain_until = [{} for _ in SEATS]
         self._cells = {}
         self._dora_seen = b""
         self._seen_hand = None

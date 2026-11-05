@@ -1,6 +1,11 @@
 # 交接文件 — MIA
 
-給接手這個專案的下一個對話 / 下一個人。**最後更新 2026-10-21(Steam 版的
+> **2026-11-03 接手補註:** 本文主體是 10 月 21 日的快照。Steam 版現在已有純畫面的
+> 放銃分析與 AI 建議,下文「開關 2、3 停用」的描述已過期。近期工作集中在畫面轉 MJAI 的
+> 辨識與事件順序,最新實測、未解問題見 [cv_mjai.md](cv_mjai.md) 的「第一場真人對局」與
+> 「副露:先列候選,再到畫面上比」。功能支援以 `src/mia/platforms.py` 的 `SUPPORTED` 為準。
+
+給接手這個專案的下一個對話 / 下一個人。**主體整理於 2026-10-21(Steam 版的
 向聽分析可用了,見 [兩個版本](#兩個版本網頁版與-steam-版))。**
 在那之前:權重上架 HuggingFace
 ([jjeyxb/mia-mortal-style](https://huggingface.co/jjeyxb/mia-mortal-style))、

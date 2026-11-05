@@ -7,8 +7,9 @@
 
 from __future__ import annotations
 
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import Mock
 
 import cv2
 import numpy as np
@@ -17,12 +18,14 @@ import pytest
 from mia.calibration.table import Calibration
 from mia.config.loader import load_config
 from mia.live.bus import Dangers, UpdateBus
-from mia.live.table import TableLink, TableWorker, _PendingFaces
-from mia.mjai.events import Dahai
+from mia.live.table import TableLink, TableWorker, _MeldLook, _PendingFaces
+from mia.mjai.events import Chi, Dahai
 from mia.tracker import Action, Move, OwnMove, Step, TurnTracker
+from mia.tracker.stream import MeldPick, MeldShape
 from mia.utils.geometry import Rect, Size
 from mia.vision.hud import Hud
 from mia.vision.tiles.classify import Match, TemplateSet
+from mia.vision.tiles.meld_fit import MeldPicture, Pick
 from mia.vision.tiles.melds import MeldFaces
 from mia.vision.tiles.river import River
 
@@ -64,6 +67,206 @@ def _settle(worker: TableWorker, image: np.ndarray, calibration: Calibration) ->
         job.future.result(timeout=60)
     worker.offer_frame(image, calibration)
     worker.tick()
+
+
+class TestMeldPictureRetry:
+    def _picture(self, value: int) -> MeldPicture:
+        image = np.full((1440, 2560, 3), value, dtype=np.uint8)
+        return MeldPicture(image, Rect(0, 0, 2560, 1440), "toimen", end=6.0)
+
+    def test_an_obscured_picture_can_be_replaced_after_abstaining(
+        self, templates: TemplateSet
+    ) -> None:
+        pool = Mock(spec=ThreadPoolExecutor)
+        first: Future[Pick | None] = Future()
+        second: Future[Pick | None] = Future()
+        pool.submit.side_effect = [first, second]
+        picture, clear = self._picture(140), self._picture(200)
+        look = _MeldLook(pool, picture, templates)
+        shapes = (MeldShape(("8p", "7p", "9p"), 0),)
+        assert look.pick(shapes) is None
+        assert look.pending
+        assert not look.needs_picture
+        # 還沒比完時不換掉它,否則每一輪都會重新排工作、永遠等不到結果。
+        look.refresh(clear)
+        first.set_result(None)
+        assert not look.pending
+        assert look.needs_picture
+        look.refresh(picture)
+        assert look.pick(shapes) is None
+        assert pool.submit.call_count == 1
+        look.refresh(clear)
+        assert look.pick(shapes) is None
+        assert pool.submit.call_args.args[1] is clear
+        second.set_result(Pick(0, (False, False, False), 0.3))
+        assert look.pick(shapes) == MeldPick(0, (False, False, False))
+        assert not look.needs_picture
+        # 已看清楚的結果不被下一次遮擋蓋掉。
+        look.refresh(picture)
+        assert look.pick(shapes) == MeldPick(0, (False, False, False))
+        assert pool.submit.call_count == 2
+
+    def test_a_failed_picture_is_not_still_pending(self, templates: TemplateSet) -> None:
+        pool = Mock(spec=ThreadPoolExecutor)
+        future: Future[Pick | None] = Future()
+        pool.submit.return_value = future
+        look = _MeldLook(pool, self._picture(140), templates)
+        shapes = (MeldShape(("7p", "5p", "6p"), 0),)
+        assert not look.pending
+        assert look.pick(shapes) is None
+        assert look.pending
+        future.set_exception(ValueError("unreadable"))
+        assert not look.pending
+        assert look.pick(shapes) is None
+
+    def test_abstaining_waits_until_the_face_scan_is_adopted(
+        self, templates: TemplateSet
+    ) -> None:
+        pool = Mock(spec=ThreadPoolExecutor)
+        future: Future[Pick | None] = Future()
+        pool.submit.return_value = future
+        look = _MeldLook(pool, self._picture(140), templates, wait_faces=True)
+        # 字牌碰等不需要問畫面的組,不能因為牌面仍在掃描而增加等候。
+        assert not look.pending
+        shapes = (MeldShape(("7p", "5p", "6p"), 0),)
+        assert look.pick(shapes) is None
+        future.set_result(None)
+        assert look.pick(shapes) is None
+        assert look.pending
+        look.finish_faces()
+        assert not look.pending
+
+    @pytest.mark.parametrize("failed", [False, True])
+    def test_face_completion_releases_the_fallback_after_adopting_reds(
+        self, templates: TemplateSet, failed: bool
+    ) -> None:
+        worker, _ = _worker(templates)
+        pool = Mock(spec=ThreadPoolExecutor)
+        picked: Future[Pick | None] = Future()
+        picked.set_result(None)
+        pool.submit.return_value = picked
+        look = _MeldLook(pool, self._picture(140), templates, wait_faces=True)
+        look.pick((MeldShape(("7p", "5p", "6p"), 0),))
+        worker._meld_looks[(2, 0)] = look  # noqa: SLF001
+        worker._table.players[2].melds.append(("?", "?", "?"))  # noqa: SLF001
+        faces: Future[MeldFaces] = Future()
+        if failed:
+            faces.set_exception(ValueError("unreadable"))
+        else:
+            faces.set_result(MeldFaces(frozenset(("0p", "6p", "7p")),
+                                       red_suits=frozenset(("p",))))
+        worker._pending_faces = [_PendingFaces(worker._table, 2, 0, faces)]  # noqa: SLF001
+        assert look.pending
+        worker._collect_meld_faces()  # noqa: SLF001
+        assert not look.pending
+        assert not worker._pending_faces  # noqa: SLF001
+        if not failed:
+            assert worker._meld_reds[(2, 0)] == frozenset(("p",))  # noqa: SLF001
+
+    def test_new_kyoku_cancels_queued_candidate_jobs(self, templates: TemplateSet) -> None:
+        pool = Mock(spec=ThreadPoolExecutor)
+        job: Future[Pick | None] = Future()
+        pool.submit.return_value = job
+        look = _MeldLook(pool, self._picture(140), templates)
+        look.pick((MeldShape(("8p", "7p", "9p"), 0),))
+        worker, _ = _worker(templates)
+        worker._meld_looks[(1, 0)] = look  # noqa: SLF001
+        worker._new_kyoku()  # noqa: SLF001
+        assert job.cancelled()
+        assert worker._meld_looks == {}  # noqa: SLF001
+
+    def test_a_weak_wrong_chi_can_be_corrected_by_a_clearer_picture(
+        self, templates: TemplateSet
+    ) -> None:
+        pool = Mock(spec=ThreadPoolExecutor)
+        first: Future[Pick | None] = Future()
+        second: Future[Pick | None] = Future()
+        pool.submit.side_effect = [first, second]
+        look = _MeldLook(pool, self._picture(140), templates)
+        shapes = (
+            MeldShape(("6s", "5s", "7s"), 0),
+            MeldShape(("6s", "7s", "8s"), 0),
+        )
+        look.pick(shapes)
+        first.set_result(Pick(1, (False,) * 3, 0.1, quality=0.52))
+        assert look.pick(shapes) == MeldPick(1, (False,) * 3)
+        assert look.needs_picture
+        look.refresh(self._picture(200))
+        # 新圖還沒比完,保留先前答案,不退回張數猜測。
+        assert look.pick(shapes) == MeldPick(1, (False,) * 3)
+        second.set_result(Pick(0, (False,) * 3, 0.3, quality=0.74))
+        assert look.pick(shapes) == MeldPick(0, (False,) * 3)
+        assert not look.needs_picture
+
+    def test_rechecks_keep_the_best_picture_and_stop_after_two_tries(
+        self, templates: TemplateSet
+    ) -> None:
+        pool = Mock(spec=ThreadPoolExecutor)
+        jobs: list[Future[Pick | None]] = [Future() for _ in range(3)]
+        pool.submit.side_effect = jobs
+        look = _MeldLook(pool, self._picture(140), templates)
+        shapes = (MeldShape(("6s", "5s", "7s"), 0),)
+        look.pick(shapes)
+        jobs[0].set_result(Pick(0, (False,) * 3, 0.2, quality=0.6))
+        look.refresh(self._picture(180))
+        assert look.pick(shapes) == MeldPick(0, (False,) * 3)
+        jobs[1].set_result(None)
+        assert look.pick(shapes) == MeldPick(0, (False,) * 3)
+        assert look.needs_picture
+        look.refresh(self._picture(220))
+        assert look.pick(shapes) == MeldPick(0, (False,) * 3)
+        jobs[2].set_result(Pick(0, (False, True, False), 0.25, quality=0.61))
+        # 分數只差一點、赤五判斷卻變了,不改寫原本答案。
+        assert look.pick(shapes) == MeldPick(0, (False,) * 3)
+        assert not look.needs_picture
+        look.refresh(self._picture(100))
+        assert pool.submit.call_count == 3
+
+    def test_an_old_candidate_answer_does_not_stop_retrying_new_candidates(
+        self, templates: TemplateSet
+    ) -> None:
+        pool = Mock(spec=ThreadPoolExecutor)
+        first: Future[Pick | None] = Future()
+        second: Future[Pick | None] = Future()
+        pool.submit.side_effect = [first, second]
+        look = _MeldLook(pool, self._picture(140), templates)
+        look.pick((MeldShape(("7s", "5s", "6s"), 0),))
+        first.set_result(Pick(0, (False,) * 3, 0.2, quality=0.8))
+        assert not look.needs_picture
+        look.pick((MeldShape(("6s", "5s", "7s"), 0),))
+        second.set_result(None)
+        assert look.needs_picture
+
+    def test_a_completed_fit_wakes_the_table_without_waiting_for_the_interval(
+        self, templates: TemplateSet
+    ) -> None:
+        pool = Mock(spec=ThreadPoolExecutor)
+        job: Future[Pick | None] = Future()
+        pool.submit.return_value = job
+        worker, _ = _worker(templates)
+        look = _MeldLook(pool, self._picture(140), templates, worker._on_meld_ready)  # noqa: SLF001
+        look.pick((MeldShape(("8p", "7p", "9p"), 0),))
+        assert not worker._faces_ready.is_set()  # noqa: SLF001
+        job.set_result(Pick(0, (False, False, False), 0.3))
+        assert worker._faces_ready.is_set()  # noqa: SLF001
+        assert worker._wake.is_set()  # noqa: SLF001
+
+    def test_background_completion_publishes_without_rereading_the_rivers(
+        self, image: np.ndarray, calibration: Calibration, templates: TemplateSet,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        worker, _ = _worker(templates)
+        publish, stream = Mock(), Mock()
+        monkeypatch.setattr(worker, "_publish", publish)
+        monkeypatch.setattr(worker, "_on_stream", stream)
+        monkeypatch.setattr(worker, "_round_due", lambda *_args: False)
+        worker._faces_ready.set()  # noqa: SLF001
+        worker.offer_frame(image, calibration)
+        worker.tick()
+        assert worker.reads == 0
+        assert not worker._faces_ready.is_set()  # noqa: SLF001
+        publish.assert_called_once()
+        stream.assert_called_once()
 
 
 class TestTheWholeChain:
@@ -324,6 +527,7 @@ class TestTheDeclaredTile:
         worker._leaning[1] = {1}  # noqa: SLF001
         worker._mark_declared()  # noqa: SLF001
         assert worker._sideways[1] == 1  # noqa: SLF001
+        assert worker._reach_marks[1] == 1  # noqa: SLF001
 
     def test_a_called_tile_shifts_the_cell(self, templates: TemplateSet) -> None:
         """第 1 張被鳴走了,第 3 張宣言牌在第 2 格。"""
@@ -334,6 +538,28 @@ class TestTheDeclaredTile:
 
     def test_it_waits_when_the_river_and_the_count_disagree(self, templates: TemplateSet) -> None:
         worker = self._worker(templates, ["1m"], [0, 1, 2])
+        worker._reach_marks[3] = 2  # noqa: SLF001
+        worker._mark_declared()  # noqa: SLF001
+        assert worker._sideways[3] is None  # noqa: SLF001
+
+    def test_after_the_declared_tile_is_called_the_next_one_lies_down(
+        self, templates: TemplateSet
+    ) -> None:
+        """宣言牌(第 3 張)被鳴走了,規則上他的下一張改成橫放(真人東一局上家)。"""
+        worker = self._worker(templates, ["1m", "2m", "?"], [0, 1, 3])
+        worker._reach_marks[3] = 2  # noqa: SLF001
+        worker._mark_declared()  # noqa: SLF001
+        assert worker._sideways[3] == 2  # noqa: SLF001
+        assert worker._known[3] == []  # noqa: SLF001
+
+    def test_a_called_declaration_waits_for_the_next_tile(self, templates: TemplateSet) -> None:
+        worker = self._worker(templates, ["1m", "2m"], [0, 1])
+        worker._reach_marks[3] = 2  # noqa: SLF001
+        worker._mark_declared()  # noqa: SLF001
+        assert worker._sideways[3] is None  # noqa: SLF001
+
+    def test_a_next_tile_read_upright_is_not_lying_down(self, templates: TemplateSet) -> None:
+        worker = self._worker(templates, ["1m", "2m", "3m"], [0, 1, 3])
         worker._reach_marks[3] = 2  # noqa: SLF001
         worker._mark_declared()  # noqa: SLF001
         assert worker._sideways[3] is None  # noqa: SLF001
@@ -588,6 +814,141 @@ class TestRevisit:
         assert worker._known[1] == ["P"]  # noqa: SLF001
         assert worker._unsteady[1] == {0}  # noqa: SLF001
 
+    def test_an_unknown_tile_is_retried_even_when_the_first_picture_was_still(
+        self, templates: TemplateSet, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        worker, _ = _worker(templates)
+        worker._began = 1.0  # noqa: SLF001
+        worker._still[1] = {0}  # noqa: SLF001
+        read = Mock(side_effect=[("?", "P"), ("?", "P"), ("6s", "6s")])
+        monkeypatch.setattr(worker, "_read_cell", read)
+        river = TestLanding._river(0)  # noqa: SLF001
+        flat = np.zeros((200, 200, 3), np.uint8)
+        worker._read_seat(1, flat, river)  # noqa: SLF001
+        assert worker._readings[(1, 0)] == (None, "P")  # noqa: SLF001
+        worker._read_seat(1, flat, river)  # noqa: SLF001
+        assert worker._unsteady[1] == {0}  # noqa: SLF001
+        worker._read_seat(1, flat, river)  # noqa: SLF001
+        assert worker._readings[(1, 0)] == ("6s", "6s")  # noqa: SLF001
+        assert worker._rivers.rivers[1] == ["6s"]  # noqa: SLF001
+        assert not worker._unsteady[1]  # noqa: SLF001
+
+    def test_a_weak_revisit_does_not_erase_a_confirmed_tile(
+        self, templates: TemplateSet, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        worker, _ = _worker(templates)
+        worker._known[1] = ["6s"]  # noqa: SLF001
+        worker._readings[(1, 0)] = ("6s", "6s")  # noqa: SLF001
+        worker._unsteady[1] = {0}  # noqa: SLF001
+        monkeypatch.setattr(worker, "_read_cell", lambda *_: ("?", "P"))
+        worker._revisit(1, np.zeros((200, 200, 3), np.uint8), TestLanding._river(0),  # noqa: SLF001
+                        worker._known[1])  # noqa: SLF001
+        assert worker._known[1] == ["6s"]  # noqa: SLF001
+        assert worker._readings[(1, 0)] == ("6s", "6s")  # noqa: SLF001
+
+    def test_an_unreadable_cell_does_not_retry_forever(
+        self, templates: TemplateSet, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        worker, _ = _worker(templates)
+        worker._known[1] = ["?"]  # noqa: SLF001
+        worker._unsteady[1] = {0}  # noqa: SLF001
+        worker._uncertain_until[1][0] = 10.0  # noqa: SLF001
+        monkeypatch.setattr("mia.live.table.time.monotonic", lambda: 11.0)
+        read = Mock()
+        monkeypatch.setattr(worker, "_read_cell", read)
+        worker._revisit(1, np.zeros((200, 200, 3), np.uint8), TestLanding._river(0),  # noqa: SLF001
+                        worker._known[1])  # noqa: SLF001
+        read.assert_not_called()
+        assert not worker._unsteady[1]  # noqa: SLF001
+
+    def test_recorded_flying_six_sou_is_corrected_when_the_ink_appears(
+        self, templates: TemplateSet
+    ) -> None:
+        from mia.vision.tiles.river import read_river
+
+        worker, _ = _worker(templates)
+        worker._river_templates = TemplateSet.load_river()  # noqa: SLF001
+        worker._began = 1.0  # noqa: SLF001
+        known = ["S", "S", "9p", "N", "7s", "1m", "C", "8m", "8s", "W", "2p", "F", "9p"]
+        worker._known[3] = list(known)  # noqa: SLF001
+        worker._rivers.observe(3, known)  # noqa: SLF001
+        worker._table.players[3].river = list(known)  # noqa: SLF001
+        worker._still[3] = {13}  # noqa: SLF001
+        flying = cv2.imread(str(FIXTURES / "river_flying_6s_kamicha.png"))
+        clear = cv2.imread(str(FIXTURES / "river_landed_6s_kamicha.png"))
+        assert flying is not None and clear is not None
+        worker._read_seat(3, flying, read_river(flying))  # noqa: SLF001
+        assert worker._readings[(3, 13)] == (None, "P")  # noqa: SLF001
+        worker._read_seat(3, clear, read_river(clear))  # noqa: SLF001
+        assert worker._readings[(3, 13)] == ("6s", "6s")  # noqa: SLF001
+
+
+class TestTsumogiriAtTheDiscard:
+    @pytest.mark.parametrize(("age", "expected"), [(0.1, False), (0.8, False), (2.0, True)])
+    def test_hand_evidence_is_limited_to_the_discard_window(
+        self, templates: TemplateSet, monkeypatch: pytest.MonkeyPatch, age: float, expected: bool
+    ) -> None:
+        worker, _ = _worker(templates)
+        worker._kyoku.empty = False  # noqa: SLF001
+        watcher = Mock()
+        watcher.tsumogiri.return_value = True
+        worker._tedashi = watcher  # noqa: SLF001
+        monkeypatch.setattr("mia.live.table.time.monotonic", lambda: 1.0)
+        worker._emit(2, ["4p"])  # noqa: SLF001
+        watcher.tsumogiri.return_value = False
+        monkeypatch.setattr("mia.live.table.time.monotonic", lambda: 1.0 + age)
+        monkeypatch.setattr("mia.live.table.read_backs", Mock())
+        worker._watch_backs(np.zeros((20, 20, 3), np.uint8), Rect(0, 0, 20, 20))  # noqa: SLF001
+        assert worker._seen_tsumogiri[(2, 0)] == (1.0, expected)  # noqa: SLF001
+
+    def test_published_verdict_does_not_change_with_a_later_hand(
+        self, templates: TemplateSet, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        worker, _ = _worker(templates)
+        worker._kyoku.empty = False  # noqa: SLF001
+        worker._seen_tsumogiri[(2, 0)] = (1.0, True)  # noqa: SLF001
+        worker._tsumogiri[(2, 0)] = True  # noqa: SLF001
+        watcher = Mock()
+        watcher.tsumogiri.return_value = False
+        worker._tedashi = watcher  # noqa: SLF001
+        monkeypatch.setattr("mia.live.table.time.monotonic", lambda: 1.1)
+        monkeypatch.setattr("mia.live.table.read_backs", Mock())
+        worker._watch_backs(np.zeros((20, 20, 3), np.uint8), Rect(0, 0, 20, 20))  # noqa: SLF001
+        assert worker._seen_tsumogiri[(2, 0)] == (1.0, True)  # noqa: SLF001
+
+    def test_ordering_later_uses_the_shape_seen_with_the_discard(
+        self, templates: TemplateSet, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        worker, _ = _worker(templates)
+        watcher = Mock()
+        watcher.tsumogiri.return_value = False
+        worker._tedashi = watcher  # noqa: SLF001
+        monkeypatch.setattr("mia.live.table.time.monotonic", lambda: 1.0)
+        worker._emit(2, ["4p"])  # noqa: SLF001
+        watcher.tsumogiri.return_value = True
+        monkeypatch.setattr("mia.live.table.time.monotonic", lambda: 7.0)
+        worker._decide_tsumogiri([Step(Action.DAHAI, 2, "4p", serial=0)])  # noqa: SLF001
+        assert worker._tsumogiri[(2, 0)] is False  # noqa: SLF001
+
+    def test_a_new_discard_cannot_reuse_the_previous_discard_verdict(
+        self, templates: TemplateSet
+    ) -> None:
+        worker, _ = _worker(templates)
+        watcher = Mock()
+        watcher.tsumogiri.side_effect = [False, True]
+        worker._tedashi = watcher  # noqa: SLF001
+        worker._emit(2, ["4p"])  # noqa: SLF001
+        worker._emit(2, ["4p", "5p"])  # noqa: SLF001
+        worker._decide_tsumogiri([Step(Action.DAHAI, 2, "4p", serial=0),  # noqa: SLF001
+                                Step(Action.DAHAI, 2, "5p", serial=1)])
+        assert worker._tsumogiri == {(2, 0): False, (2, 1): True}  # noqa: SLF001
+
+    def test_new_kyoku_drops_the_saved_shapes(self, templates: TemplateSet) -> None:
+        worker, _ = _worker(templates)
+        worker._seen_tsumogiri[(2, 0)] = (1.0, False)  # noqa: SLF001
+        worker._new_kyoku()  # noqa: SLF001
+        assert not worker._seen_tsumogiri  # noqa: SLF001
+
 
 class TestTheDeclaredTileBeforeThePoints:
     """要等點數才知道誰立直,但牌面現在就看得出來。"""
@@ -681,6 +1042,41 @@ class TestReadCell:
         river = TestLanding._river(0)  # noqa: SLF001
         worker._read_seat(1, np.zeros((400, 600, 3), np.uint8), river)  # noqa: SLF001
         assert worker._known[1] == ["1m"]  # noqa: SLF001
+
+
+class TestOwnCombinedCall:
+    @pytest.mark.parametrize(
+        "position,pai,guess", [(0, "8s", None), (0, None, "8s"), (1, "8s", None)]
+    )
+    def test_only_a_confident_own_discard_corrects_the_chi(
+        self, templates: TemplateSet, position: int, pai: str | None, guess: str | None
+    ) -> None:
+        worker, _ = _worker(templates)
+        worker._round.settled = Hud(  # noqa: SLF001
+            bakaze="E", kyoku=1, honba=0, kyotaku=0, scores=(25000,) * 4, dealer=3
+        )
+        worker._dora_marks = [(0, "9m")]  # noqa: SLF001
+        hand = ["5s", "7s", "8s", "1m", "2m", "3m", "4p", "5p", "6p", "E", "E", "S", "S"]
+        worker._own.observe(hand)  # noqa: SLF001
+        worker._own.observe(hand[3:])  # noqa: SLF001
+        worker.steps = [
+            Step(Action.TSUMO, 3),
+            Step(Action.DAHAI, 3, "6s"),
+            Step(Action.CALL, 0, target=3),
+            Step(Action.DAHAI, 0, "5s", serial=0),
+        ]
+        worker._readings[(position, 0)] = (pai, guess)  # noqa: SLF001
+        stream = worker.stream()
+        corrected = position == 0 and pai is not None
+        consumed = ["5s", "7s"] if corrected else ["7s", "8s"]
+        discarded = "8s" if corrected else "5s"
+        assert not stream.stalled
+        assert stream.events[-2:] == (
+            Chi(actor=0, target=3, pai="6s", consumed=consumed),
+            Dahai(actor=0, pai=discarded, tsumogiri=False),
+        )
+        assert worker.own_moves[0].tiles == tuple(consumed)
+        worker.stop()
 
 
 class TestAStreamThatStopped:

@@ -147,11 +147,44 @@ def _drop_one(known: Sequence[str], seen: Sequence[str]) -> int | None:
     """
     if len(seen) + 1 != len(known):
         return None
+    best: tuple[int, int] | None = None
     for cut in range(len(known)):
         rest = [*known[:cut], *known[cut + 1 :]]
         if all(_fits(a, b) for a, b in zip(rest, seen, strict=True)):
-            return cut
-    return None
+            # 未知可以配任何牌,不能挑第一個說得通的位置。實測
+            # [3索, ?, 赤5索] → [3索, ?],拿掉 3 索也「說得通」,卻會把宣言牌
+            # 的序號配到 3 索上,讀對的二萬被覆蓋。先保留最多完全相同的已知牌,
+            # 仍然分不開時偏向最新那張:正常鳴牌拿走的是剛打出的牌。
+            score = (sum(a == b and a != UNKNOWN for a, b in zip(rest, seen, strict=True)), cut)
+            if best is None or score > best:
+                best = score
+    return None if best is None else best[1]
+
+
+def _unread_dropped(known: Sequence[str], seen: Sequence[str]) -> bool:
+    """``seen`` 可以是 ``known`` 拿掉一格讀不出來的之後的樣子嗎。
+
+    :func:`_drop_one` 優先保留已知牌,但未知仍是萬用字元,可能有不只一個說得通的位置。
+    分不出來的時候算成讀不出來的那格不見了。
+    """
+    return any(
+        pai == UNKNOWN
+        and all(_fits(a, b) for a, b in zip([*known[:cut], *known[cut + 1 :]], seen, strict=True))
+        for cut, pai in enumerate(known)
+    )
+
+
+def _unknown_tail(known: Sequence[str], seen: Sequence[str]) -> bool:
+    """``seen`` 是 ``known`` 剪掉尾端兩格以上的樣子,而剪掉的全是讀不出來的格子。
+
+    橫放的宣言牌比一格寬,常被讀成兩格讀不出來的牌。它被鳴走時河一次少兩格,:func:`_drop_one`
+    只認少一張,於是這家之後打的牌都對不上。
+    """
+    if len(known) - len(seen) < 2:
+        return False
+    return all(_fits(a, b) for a, b in zip(known, seen, strict=False)) and all(
+        pai == UNKNOWN for pai in known[len(seen) :]
+    )
 
 
 def _conflicts(known: Sequence[str], seen: Sequence[str]) -> bool:
@@ -204,18 +237,35 @@ class RiverWatcher:
         default_factory=lambda: [None for _ in range(4)], repr=False
     )
     _thrown: list[int] = field(default_factory=lambda: [0 for _ in range(4)], repr=False)
+    #: 河裡消失時還讀不出來的格子,每家幾格。見 :meth:`unread_gone`。
+    _unread_gone: list[int] = field(default_factory=lambda: [0 for _ in range(4)], repr=False)
+    #: 上一次「尾端好幾格讀不出來的牌不見了」留下的假設,每家一個:``(剪掉之後, 當時看到的河)``。
+    #: 見 :func:`_unknown_tail`。
+    _trimming: list[tuple[tuple[str, ...], tuple[str, ...]] | None] = field(
+        default_factory=lambda: [None for _ in range(4)], repr=False
+    )
 
     def thrown(self, position: int) -> int:
         """河裡看到這一家打過幾張,含後來被鳴走的。"""
         return self._thrown[position]
+
+    def unread_gone(self, position: int) -> int:
+        """這一家的河裡,有幾格還沒讀出來就不見了。
+
+        被鳴走的牌也可能這樣,但更常是假的:打牌時角色的手伸過自己的河,膚色跟牌面一樣亮又不橘,
+        手底下就多出一兩格,手一收回去就沒了。:meth:`thrown` 照樣算了它們。
+        """
+        return self._unread_gone[position]
 
     def reset(self) -> None:
         """新的一局。四家的河都清空。"""
         self.rivers = [[] for _ in range(4)]
         self.serials = [[] for _ in range(4)]
         self._thrown = [0 for _ in range(4)]
+        self._unread_gone = [0 for _ in range(4)]
         self._shrinking = [None for _ in range(4)]
         self._growing = [None for _ in range(4)]
+        self._trimming = [None for _ in range(4)]
 
     def revise(self, position: int, index: int, pai: str) -> None:
         """這一格是讀在動畫中途的,重讀的答案蓋過去。
@@ -240,6 +290,10 @@ class RiverWatcher:
         self.stats.observations += 1
         known = self.rivers[position]
         seen = list(tiles)
+
+        trimmed = self._trim(position, seen)
+        if trimmed is not None:
+            return trimmed
 
         if _is_prefix(known, seen):
             self._shrinking[position] = None
@@ -282,6 +336,7 @@ class RiverWatcher:
                 # 被鳴走一張。**不發事件** —— 那張牌的 dahai 早就發過了,
                 # 它現在只是從畫面上移到別人的副露去。
                 self.stats.calls += 1
+                self._unread_gone[position] += _unread_dropped(known, seen)
                 self.rivers[position] = list(shorter)
                 del self.serials[position][cut]
                 self._fill(position, seen)
@@ -304,6 +359,7 @@ class RiverWatcher:
         if pending is not None and _is_prefix(list(pending[0]), seen):
             self._shrinking[position] = None
             self.stats.calls += 1
+            self._unread_gone[position] += _unread_dropped(known, pending[1])
             self.rivers[position] = list(pending[0])
             del self.serials[position][pending[2]]
             return self._advance(position, seen)
@@ -315,6 +371,43 @@ class RiverWatcher:
         if len(seen) <= _COLLAPSED and len(known) > _COLLAPSED:
             self.stats.collapsed += 1
         return []
+
+    def _trim(self, position: int, seen: Sequence[str]) -> list[Discard] | None:
+        """尾端好幾格讀不出來的牌不見了:剪掉。``None`` 表示不是這種情況,照常往下判斷。
+
+        與少一張一樣要有證據,不然那幾格只是這一次被蓋住,回來時又被當成新的捨牌:同樣的河看到
+        第二次,或者之後的河接在剪掉的那條後面長出來(那家已經又打了一張)。
+        """
+        known = self.rivers[position]
+        pending = self._trimming[position]
+        if _is_prefix(known, seen):
+            # 那幾格又回來了:只是被蓋住,照常往下。
+            self._trimming[position] = None
+            return None
+        grown = pending is not None and len(seen) > len(pending[0])
+        if pending is not None and grown and _is_prefix(list(pending[0]), seen):
+            self._cut(position, len(pending[0]))
+            return self._advance(position, seen)
+        if not _unknown_tail(known, seen):
+            self._trimming[position] = None
+            return None
+        shorter = tuple(known[: len(seen)])
+        if pending is not None and pending == (shorter, tuple(seen)):
+            self._cut(position, len(seen))
+            self._fill(position, seen)
+            return []
+        self._trimming[position] = (shorter, tuple(seen))
+        self.stats.deferred += 1
+        return []
+
+    def _cut(self, position: int, length: int) -> None:
+        self._trimming[position] = None
+        self._shrinking[position] = None
+        self.stats.calls += 1
+        gone = self.rivers[position][length:]
+        self._unread_gone[position] += sum(pai == UNKNOWN for pai in gone)
+        del self.rivers[position][length:]
+        del self.serials[position][length:]
 
     def _advance(self, position: int, seen: Sequence[str]) -> list[Discard]:
         """河只在尾端長長 —— 補上已知的那幾格,尾巴發成新的捨牌。"""

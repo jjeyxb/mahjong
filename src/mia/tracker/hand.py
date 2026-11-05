@@ -43,7 +43,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -135,6 +135,7 @@ class HandWatcher:
     _doubts: int = 0
     _unexplained: tuple[str, ...] = ()
     _called: int = 0
+    _combined_calls: set[int] = field(default_factory=set)
 
     def reset(self) -> None:
         self.tehai = ()
@@ -147,6 +148,7 @@ class HandWatcher:
         self._doubts = 0
         self._unexplained = ()
         self._called = 0
+        self._combined_calls.clear()
 
     def observe(
         self,
@@ -220,6 +222,31 @@ class HandWatcher:
             self._apply(move)
         return fresh
 
+    def reconcile_discards(self, readings: Mapping[int, str]) -> None:
+        """用有把握的牌河讀數,核對一次少三張時猜的吃碰與捨牌。
+
+        五七吃六、打八時,只比手牌會先選較近的七八。河裡確認打的是八之後,
+        就把這三張重新分配;總共少的牌不變,不需要改目前手牌。
+        分開看到的鳴牌與打牌不改,牌河也不能湊出不合法的搭子。
+        """
+        serial = 0
+        for index, move in enumerate(self.moves):
+            if move.move is not Move.DISCARD:
+                continue
+            pai = readings.get(serial)
+            serial += 1
+            if index - 1 not in self._combined_calls or pai is None or pai == move.tiles[0]:
+                continue
+            call = self.moves[index - 1]
+            tiles = [*call.tiles, *move.tiles]
+            if pai not in tiles:
+                continue
+            tiles.remove(pai)
+            if _gap(*tiles) > 2:
+                continue
+            self.moves[index - 1] = OwnMove(Move.CALL, tuple(sorted(tiles)))
+            self.moves[index] = OwnMove(Move.DISCARD, (pai,))
+
     def adopt(
         self,
         tehai: Sequence[str],
@@ -236,6 +263,7 @@ class HandWatcher:
         self._doubted = ()
         self._doubts = 0
         self._unexplained = ()
+        self._combined_calls.clear()
 
     def _deal(self, tiles: Sequence[str], drawn: str | None) -> list[OwnMove]:
         """第一副手牌。莊家一開始就是 14 張。"""
@@ -368,6 +396,7 @@ class HandWatcher:
         )
         tiles = tuple(lost[index] for index in meld)
         rest = next(tile for index, tile in enumerate(lost) if index not in meld)
+        self._combined_calls.add(len(self.moves))
         return [OwnMove(Move.CALL, tiles), OwnMove(Move.DISCARD, (rest,))]
 
     def _correct(self, wrong: str, right: str) -> None:

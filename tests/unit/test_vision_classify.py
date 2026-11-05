@@ -30,7 +30,7 @@ from mia.vision.tiles.classify import (
     red_ink,
     settle_five,
 )
-from mia.vision.tiles.hand import read_hand
+from mia.vision.tiles.hand import Hand, read_hand
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
@@ -103,6 +103,41 @@ class TestTemplateSet:
         """牌框大小在一場對局裡不變,重複縮放 37 張模板是純浪費。"""
         first = templates.scaled((40, 60))
         assert templates.scaled((40, 60)) is first
+
+
+class TestHandCache:
+    def test_recent_tiles_survive_another_slots_animation(
+        self, templates: TemplateSet, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        roi, boxes = _tiles("hand_14_with_draw")
+        module = sys.modules[TemplateSet.__module__]
+        original = module.classify
+        calls = []
+
+        def counted(*args, **kwargs):
+            calls.append(1)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(module, "classify", counted)
+        monkeypatch.setattr(module, "_MEMO_LIMIT", 2)
+        memo: dict[bytes, Match] = {}
+        for index in (0, 1, 0, 4, 0):
+            classify_hand(roi, Hand((boxes[index],)), templates, memo=memo)
+        assert len(calls) == 3
+        assert len(memo) == 2
+        classify_hand(roi, Hand((boxes[1],)), templates, memo=memo)
+        assert len(calls) == 4
+
+    def test_the_same_pixels_do_not_reuse_a_different_template_set(
+        self, templates: TemplateSet
+    ) -> None:
+        roi, boxes = _tiles("hand_14_with_draw")
+        hand = Hand((boxes[0],))
+        memo: dict[bytes, Match] = {}
+        first = templates.only("1m")
+        second = templates.only("2m")
+        assert classify_hand(roi, hand, first, memo=memo)[0][0].label == "1m"
+        assert classify_hand(roi, hand, second, memo=memo)[0][0].label == "2m"
 
 
 class TestShortlist:

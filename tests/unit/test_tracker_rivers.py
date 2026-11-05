@@ -121,6 +121,27 @@ class TestCallsShortenTheRiver:
         assert watcher.stats.calls == 1
         assert watcher.rivers[0] == ["1m"]
 
+    def test_a_call_after_reach_keeps_the_known_tile_and_the_declaration_serial(self) -> None:
+        """3 索、讀不出來的二萬宣言牌、赤五索;赤五索被吃,不能拿未知去頂掉 3 索。"""
+        watcher = RiverWatcher()
+        watcher.observe(2, ["3s", UNKNOWN, "5sr"])
+        watcher.observe(2, ["3s", UNKNOWN])
+        watcher.observe(2, ["3s", UNKNOWN])
+        assert watcher.rivers[2] == ["3s", UNKNOWN]
+        assert watcher.serials[2] == [0, 1]
+        assert watcher.observe(2, ["3s", UNKNOWN, "8m"]) == [
+            Discard(position=2, index=2, pai="8m", serial=3)
+        ]
+        assert watcher.serials[2] == [0, 1, 3]
+
+    def test_the_unknown_is_removed_when_known_tiles_prove_that_it_was_called(self) -> None:
+        watcher = RiverWatcher()
+        watcher.observe(2, ["3s", UNKNOWN, "5sr"])
+        watcher.observe(2, ["3s", "5sr"])
+        watcher.observe(2, ["3s", "5sr"])
+        assert watcher.rivers[2] == ["3s", "5sr"]
+        assert watcher.serials[2] == [0, 2]
+
 
 class TestAShortReadIsNotACall:
     """少讀到一格**不是**鳴牌。
@@ -306,3 +327,72 @@ class TestItRefusesToGuess:
         watcher.observe(2, ["9p"])
         watcher.reset()
         assert watcher.rivers == [[], [], [], []]
+
+
+class TestAWideReachTileThatIsCalled:
+    """橫放的宣言牌被讀成兩格讀不出來的牌,接著被鳴走:河一次少兩格。
+
+    真人一場東一局:下家想了 5 秒才碰上家的宣言牌,河從 8 格變 6 格看不懂,之後上家打的 6 索被當成
+    「2 萬被鳴走」吞掉,事件流裡消失。
+    """
+
+    def _wide(self) -> RiverWatcher:
+        watcher = RiverWatcher()
+        watcher.observe(3, ["1m", "2m"])
+        watcher.observe(3, ["1m", "2m", UNKNOWN, UNKNOWN])
+        watcher.observe(3, ["1m", "2m", UNKNOWN, UNKNOWN])
+        return watcher
+
+    def test_the_tail_is_cut_once_seen_twice(self) -> None:
+        watcher = self._wide()
+        assert watcher.observe(3, ["1m", "2m"]) == []
+        assert watcher.observe(3, ["1m", "2m"]) == []
+        assert watcher.rivers[3] == ["1m", "2m"]
+
+    def test_the_next_tile_is_a_new_discard(self) -> None:
+        watcher = self._wide()
+        watcher.observe(3, ["1m", "2m"])
+        watcher.observe(3, ["1m", "2m"])
+        assert [d.pai for d in watcher.observe(3, ["1m", "2m", "6s"])] == ["6s"]
+
+    def test_the_next_tile_also_settles_it(self) -> None:
+        """剪掉之後那條河又長了一張:那家又打了,剪掉是對的。"""
+        watcher = self._wide()
+        watcher.observe(3, ["1m", "2m"])
+        assert [d.pai for d in watcher.observe(3, ["1m", "2m", "6s"])] == ["6s"]
+
+    def test_tiles_that_come_back_were_only_covered(self) -> None:
+        watcher = self._wide()
+        watcher.observe(3, ["1m", "2m"])
+        assert watcher.observe(3, ["1m", "2m", UNKNOWN, UNKNOWN]) == []
+        assert watcher.rivers[3] == ["1m", "2m", UNKNOWN, UNKNOWN]
+
+    def test_known_tiles_are_not_cut(self) -> None:
+        """剪的只有讀不出來的。讀得出來的兩張不見,是別的事(蓋住、換局),不在這裡猜。"""
+        watcher = RiverWatcher()
+        watcher.observe(3, ["1m", "2m", "3m", "4m"])
+        watcher.observe(3, ["1m", "2m"])
+        watcher.observe(3, ["1m", "2m"])
+        assert watcher.rivers[3] == ["1m", "2m", "3m", "4m"]
+
+
+class TestUnreadCellsThatVanish:
+    """打牌時角色的手伸過自己的河,手底下多出讀不出來的格子,手收回去就沒了。"""
+
+    def test_they_are_counted(self) -> None:
+        watcher = RiverWatcher()
+        watcher.observe(0, ["1m", "2m"])
+        # 一次長兩格要看到兩次才發,見 TestAFlashIsNotADiscard。
+        watcher.observe(0, ["1m", "2m", "3m", UNKNOWN])
+        watcher.observe(0, ["1m", "2m", "3m", UNKNOWN])
+        watcher.observe(0, ["1m", "2m", "3m"])
+        watcher.observe(0, ["1m", "2m", "3m"])
+        assert watcher.thrown(0) == 4
+        assert watcher.unread_gone(0) == 1
+
+    def test_a_read_tile_that_is_called_is_not(self) -> None:
+        watcher = RiverWatcher()
+        watcher.observe(0, ["1m", "2m", "3m"])
+        watcher.observe(0, ["1m", "2m"])
+        watcher.observe(0, ["1m", "2m"])
+        assert watcher.unread_gone(0) == 0

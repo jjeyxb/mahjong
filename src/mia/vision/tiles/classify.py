@@ -42,6 +42,7 @@
 from __future__ import annotations
 
 import hashlib
+import struct
 from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,6 +52,7 @@ import numpy as np
 
 from mia.utils.geometry import Rect
 from mia.utils.paths import ASSETS_DIR
+from mia.vision.stats import median_u8
 from mia.vision.tiles.hand import Hand
 
 __all__ = [
@@ -450,9 +452,12 @@ RED_INK = {"m": 0.73, "p": 0.50, "s": 0.46}
 WHOLE_RED = 0.8
 
 
-def ink_masks(patch: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def ink_masks(
+    patch: np.ndarray, *, hsv: np.ndarray | None = None
+) -> tuple[np.ndarray, np.ndarray]:
     """逐像素的「是墨水」與「是紅色」,兩張布林圖。"""
-    hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+    if hsv is None:
+        hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
     hue, saturation, value = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
     ink = ~((saturation < _PAPER_SATURATION) & (value > _PAPER_VALUE))
     red = (
@@ -463,13 +468,13 @@ def ink_masks(patch: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return ink, red
 
 
-def red_ink(patch: np.ndarray) -> float:
+def red_ink(patch: np.ndarray, *, hsv: np.ndarray | None = None) -> float:
     """牌面的墨水裡紅色佔多少,0~1。
 
     赤五與普通五形狀一樣,差別只在顏色,而模板比對要看整張牌的圖案,差距很薄。
     這裡直接問顏色:牌框要裁到牌面上,外面的桌布會被算成墨水。
     """
-    ink, red = ink_masks(patch)
+    ink, red = ink_masks(patch, hsv=hsv)
     total = int(ink.sum())
     return float(red.sum()) / total if total else 0.0
 
@@ -503,7 +508,7 @@ _MEMO_LIMIT = 256
 
 
 def _median_grey(image: np.ndarray) -> float:
-    return float(np.median(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)))
+    return median_u8(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY))
 
 
 def classify_hand(
@@ -549,9 +554,12 @@ def classify_hand(
     return concealed, drawn
 
 
-def _slot_key(roi: np.ndarray, box: Rect, headroom: int) -> bytes:
-    crop = roi[: headroom + box.y + box.height, box.x : box.x + box.width]
-    return hashlib.blake2b(crop.tobytes(), digest_size=16).digest()
+def _slot_key(crop: np.ndarray, height: int, templates: TemplateSet) -> bytes:
+    """記住原始牌框,連尺寸與模板一起記,避免跨設定誤用。"""
+    key = hashlib.blake2b(digest_size=16)
+    key.update(struct.pack("!IIIQ", crop.shape[0], crop.shape[1], height, id(templates)))
+    key.update(crop.tobytes())
+    return key.digest()
 
 
 def _classify_slot(
@@ -565,11 +573,12 @@ def _classify_slot(
     crop = roi[: headroom + box.y + box.height, box.x : box.x + box.width]
     key = None
     if memo is not None:
-        key = _slot_key(roi, box, headroom)
-        known = memo.get(key)
+        key = _slot_key(crop, box.height, templates)
+        known = memo.pop(key, None)
         if known is not None:
+            # 常駐的十三張不該被其他格子的動畫擠掉。命中就移到最後,只淘汰最久沒用的。
+            memo[key] = known
             return known
-
     height = box.height
     if box.width > _HAND_WIDTH:
         ratio = _HAND_WIDTH / box.width
@@ -581,6 +590,6 @@ def _classify_slot(
 
     if memo is not None and key is not None:
         if len(memo) >= _MEMO_LIMIT:
-            memo.clear()
+            del memo[next(iter(memo))]
         memo[key] = match
     return match

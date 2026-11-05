@@ -66,6 +66,78 @@ class TestMoves:
             OwnMove(Move.DISCARD, ("S",)),
         ]
 
+    def test_the_river_corrects_an_ambiguous_chi_and_discard(self) -> None:
+        """五七吃六、打八:不能永久採用距離更近的七八。"""
+        watcher = HandWatcher()
+        hand = ["5s", "7s", "8s", *TEHAI[:6], "E", "E", "S", "S"]
+        watcher.observe(hand)
+        watcher.observe(hand[3:])
+        assert watcher.moves[0].tiles == ("7s", "8s")
+        watcher.reconcile_discards({0: "8s"})
+        assert watcher.moves == [
+            OwnMove(Move.CALL, ("5s", "7s")),
+            OwnMove(Move.DISCARD, ("8s",)),
+        ]
+        assert watcher.hand == hand[3:]
+        watcher.reconcile_discards({0: "8s"})
+        assert len(watcher.moves) == 2
+
+    def test_separately_observed_calls_keep_the_hand_evidence(self) -> None:
+        """已經分開看到鳴牌與捨牌,不能被讀錯的牌河交換。"""
+        watcher = HandWatcher()
+        hand = ["5s", "7s", "8s", *TEHAI[:6], "E", "E", "S", "S"]
+        watcher.observe(hand)
+        watcher.observe(hand[2:])
+        watcher.observe(hand[3:])
+        before = list(watcher.moves)
+        watcher.reconcile_discards({0: "5s"})
+        assert watcher.moves == before
+
+    def test_a_river_correction_must_still_form_a_meld(self) -> None:
+        watcher = dealt()
+        rest = [tile for tile in TEHAI if tile not in ("7s", "8s", "S")]
+        rest.append("S")
+        watcher.observe(rest)
+        before = list(watcher.moves)
+        watcher.reconcile_discards({0: "7s"})
+        assert watcher.moves == before
+
+    def test_a_combined_call_preserves_the_red_five(self) -> None:
+        watcher = HandWatcher()
+        hand = ["5sr", "7s", "8s", *TEHAI[:6], "E", "E", "S", "S"]
+        watcher.observe(hand)
+        watcher.observe(hand[3:])
+        watcher.reconcile_discards({0: "8s"})
+        assert watcher.moves[0] == OwnMove(Move.CALL, ("5sr", "7s"))
+
+    def test_the_river_serial_counts_discards_instead_of_moves(self) -> None:
+        watcher = HandWatcher()
+        hand = ["5s", "7s", "8s", *TEHAI[:6], "E", "E", "S", "S"]
+        watcher.observe(hand)
+        watcher.observe([*hand, "9p"], "9p")
+        watcher.observe(hand)
+        watcher.observe(hand[3:])
+        watcher.reconcile_discards({0: "8s"})
+        assert watcher.moves[2].tiles == ("7s", "8s")
+        watcher.reconcile_discards({1: "8s"})
+        assert watcher.moves[2:] == [
+            OwnMove(Move.CALL, ("5s", "7s")),
+            OwnMove(Move.DISCARD, ("8s",)),
+        ]
+
+    def test_a_new_round_drops_the_combined_call_evidence(self) -> None:
+        watcher = HandWatcher()
+        hand = ["5s", "7s", "8s", *TEHAI[:6], "E", "E", "S", "S"]
+        watcher.observe(hand)
+        watcher.observe(hand[3:])
+        watcher.reset()
+        watcher.observe(hand)
+        watcher.observe(hand[2:])
+        watcher.observe(hand[3:])
+        before = list(watcher.moves)
+        watcher.reconcile_discards({0: "5s"})
+        assert watcher.moves == before
+
     def test_a_pon_a_discard_and_the_next_draw_between_two_reads(self) -> None:
         watcher = dealt()
         rest = [tile for tile in TEHAI if tile not in ("S", "1m")]

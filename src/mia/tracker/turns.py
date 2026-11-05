@@ -40,8 +40,9 @@
 中央面板的燈跟著「現在輪到誰」(:func:`~mia.vision.hud.read_turn`):打完牌燈留在打牌的人那邊,
 下一家摸牌或有人鳴牌才移走。它換到誰,就是誰的回合,不必拿余牌去推:
 
-* 從 ``last`` 直接換到下家,下家的副露區沒在長:摸打。余牌說什麼都一樣;之後讀到的余牌說這次摸牌
-  已經算過了,就是之前多算了一張,在這裡吸收。
+* 從 ``last`` 直接換到下家,而換到下家之後讀到的余牌比換到 ``last`` 之後的少:摸打。下家吃也是燈直接
+  換過來,只有余牌分得開;兩個讀數都在換手之後,所以算出來的張數多算少算都不影響。之後讀到的余牌說
+  這次摸牌已經算過了,就是之前多算了一張,在這裡吸收。
 * 從 ``last`` 直接換到別家:鳴了 ``last`` 的牌。不必等副露確認。
 
 燈換手比封包晚(摸牌中位 0.3 ~ 0.5 秒、p90 到 1.2 秒;鳴牌 0.15 秒),電腦打得快時牌常常比燈先到。
@@ -179,6 +180,8 @@ class TurnTracker:
     _light: list[tuple[float, int]] = field(default_factory=list, repr=False)
     _light_walls: list[int | None] = field(default_factory=list, repr=False)
     _light_at: int = field(default=-1, repr=False)
+    #: 下家摸打時余牌多減的座位 → 那張牌的輪。多減的可能是暗槓的嶺上,見 :meth:`_absorb`。
+    _rinshan: dict[int, float] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
         self.last = (self.oya - 1) % _SEATS
@@ -235,6 +238,9 @@ class TurnTracker:
             if steps is None:
                 break
             item = self._queue.pop(0)
+            if self._rinshan.get(item.actor, item.tick) < item.tick:
+                # 只留到這一家的下一手:那時副露還沒出現,就不是暗槓。
+                del self._rinshan[item.actor]
             if steps:
                 out += steps
                 lit = self._lit_for(item)
@@ -286,6 +292,7 @@ class TurnTracker:
         self._melds.clear()
         self._owed = [0] * _SEATS
         self._light_at = len(self._light) - 1
+        self._rinshan.clear()
         seats = {seat: [d for d in pending if d[0] == seat] for seat in range(_SEATS)}
         out: list[Step] = []
         seat = (self.last + 1) % _SEATS
@@ -340,7 +347,10 @@ class TurnTracker:
         for index, item in enumerate(self._queue):
             if item.actor == turn:
                 # 它一定摸過牌:下家都打了。它讀到的余牌已經是之後的,不能拿來算。
-                item.wall = _FULL_WALL - self.drawn - 1
+                # 它在鳴牌就不是:吃了上一家的牌沒有摸,改成摸過的話吃就被排成摸打,整組不見
+                # (電腦一打出就吃,吃的人的牌比再下一家的牌晚讀到)。
+                if not (turn in self._growing or self._has_meld(turn, item.tick)):
+                    item.wall = _FULL_WALL - self.drawn - 1
                 self._queue.insert(0, self._queue.pop(index))
                 return
 
@@ -408,6 +418,12 @@ class TurnTracker:
             return None
         meld = self._take_meld(seat, item.tick)
         if meld is not None:
+            if meld[2] and following and self._rinshan.pop(seat, None) is not None:
+                # 上一手余牌多減的那張是嶺上:暗槓在上一手,副露現在才確認。排在這一手,
+                # 牌張與寶牌都對,只是晚一手。
+                self.drawn += 1
+                draw = Step(Action.TSUMO, seat)
+                return [draw, Step(Action.CALL, seat, kan=True), draw, drop]
             if meld[2] and (not following or unseen <= 1):
                 return self._open_kan(seat, unseen, drop)
             if not following:
@@ -447,10 +463,24 @@ class TurnTracker:
             steps = self._hidden(seat, min(lost, max(behind - 1, 0)))
             self.drawn += 1
             return [*steps, Step(Action.TSUMO, seat), drop]
-        # 佇列裡後面那幾張的摸牌也算在差額裡,要留給它們。全部吸收的話會多算,之後每一張
-        # 看起來都沒人摸,真的捨牌就被當成假的丟掉。
-        self.drawn += max(1, unseen - (len(self._queue) - 1))
+        self._absorb(item, unseen, following=following)
         return [Step(Action.TSUMO, seat), drop]
+
+    def _absorb(self, item: _Pending, unseen: int, *, following: bool) -> None:
+        """正常摸打,順便吸收沒交代的摸牌。
+
+        佇列裡後面那幾張的摸牌也算在差額裡,要留給它們。全部吸收的話會多算,之後每一張
+        看起來都沒人摸,真的捨牌就被當成假的丟掉。
+
+        下家多減的那張可能是加槓或暗槓的嶺上。暗槓的副露比牌晚一輪以上才確認,那時再看是
+        摸打,只剩大明槓一種排法,鳴的卻是上家剛打、還在河裡的牌,整局停住或錯一組(011937 東一局、
+        164613 南一局)。所以記下來,他下一手看到槓寬的副露就排成暗槓,晚一手但牌張與寶牌都對。
+        """
+        extra = unseen - (len(self._queue) - 1)
+        self.drawn += max(1, extra)
+        if following and extra > 1 and item.actor != 0:
+            # 自己的槓看手牌就知道,不靠這個。
+            self._rinshan[item.actor] = item.tick
 
     def _lit_for(self, item: _Pending) -> int | None:
         """燈最後一次換到 ``item`` 那一家的那一筆:這張牌看到之前、還沒排過的。
@@ -475,13 +505,19 @@ class TurnTracker:
         if following:
             if seat in self._growing or self._has_meld(seat, item.tick):
                 return None
+            # 下家吃也是燈直接換過來。分得開的是余牌:兩次換手之後各讀到的第一個余牌,摸了就少一張。
+            # 只比這兩個讀數,不比算出來的張數,所以之前多算少算都不影響。
+            before, after = self._light_walls[lit - 1], self._light_walls[lit]
+            if before is None or after is None or after >= before:
+                return None
             if self._holding(item, self._now):
                 return None
             # 燈換過來之後讀到的余牌一定含這次摸牌。它說摸過的張數沒超過已經算的,就是之前多算了
-            # 一張,這次不再加。只往下修:讀得晚、含了之後別家的摸牌,只會照常加一。
+            # 一張,這次不再加。
+            # 少算的(加槓的嶺上讓余牌多減一張)照余牌那條路吸收,見最後的正常摸打。
             wall = self._light_walls[lit]
             if wall is None or _FULL_WALL - wall > self.drawn:
-                self.drawn += 1
+                self._absorb(item, unseen, following=True)
             return [Step(Action.TSUMO, seat), drop]
         if unseen > 0:
             # 余牌有減:可能是大明槓的嶺上,或中間有人摸打,讓余牌那條路分。

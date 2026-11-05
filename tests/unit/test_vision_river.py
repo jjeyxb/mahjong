@@ -43,6 +43,7 @@ from mia.vision.tiles.river import (
     read_river,
     row_end,
     search_window,
+    settle_river_five,
     sideways_face_size,
     sideways_shift,
     slot,
@@ -317,6 +318,37 @@ class TestTileBacksAreNotDiscards:
         而它們當然是牌。
         """
         assert read_river(self._flat(_hsv(30, 6, 200))).count == 1
+
+
+class TestTheCallPromptGlow:
+    """自己能鳴的牌被框上一圈淡綠色的光,光溢到下一格。那一格不是牌。"""
+
+    def _flat(self, *, glow: bool) -> np.ndarray:
+        flat = np.full((ROWS * CELL[1], COLUMNS * CELL[0], 3), 70, dtype=np.uint8)
+        face_w, face_h = face_size()
+        x = (CELL[0] - face_w) // 2
+        y = (CELL[1] - face_h) // 2
+        flat[y : y + face_h, x : x + face_w] = 210
+        if glow:
+            # 第二格:被照亮的桌布(藍、剛好過亮度門檻),左緣與上緣一條淡綠色的光。
+            left = CELL[0]
+            flat[:, left : left + CELL[0]] = _hsv(108, 121, 160)
+            flat[:, left : left + 25] = _hsv(70, 66, 230)
+            flat[:30, left : left + CELL[0]] = _hsv(70, 66, 230)
+        return flat
+
+    def test_the_glow_is_not_a_tile(self) -> None:
+        assert read_river(self._flat(glow=True)).count == 1
+
+    def test_a_tile_lit_all_over_is_still_a_tile(self) -> None:
+        """和了、立直的白光把整張牌照亮:淡綠能到五成,但亮的佔滿整格。"""
+        flat = self._flat(glow=False)
+        face_w, face_h = face_size()
+        x = CELL[0] + (CELL[0] - face_w) // 2
+        y = (CELL[1] - face_h) // 2
+        flat[y : y + face_h, x : x + face_w] = _hsv(70, 40, 230)
+        flat[y : y + face_h // 2, x : x + face_w] = 220
+        assert read_river(flat).count == 2
 
 
 class TestTheThirdRowGrows:
@@ -612,9 +644,12 @@ def test_a_red_five_is_not_a_tile_back() -> None:
 class TestTheUpperSeatLeansLeft:
     """上家最後一欄的牌比格線偏左。實測那一欄 26/33,其他位置 94~100%。"""
 
-    def test_only_the_upper_seat_needs_it(self) -> None:
+    def test_the_seats_that_need_it(self) -> None:
+        """上家與對家往左、下家往右,自己不必。各家量過的,見 ``DEFAULT_CORNERS``。"""
         assert DEFAULT_CORNERS["kamicha"].left_slack > 0
-        assert all(DEFAULT_CORNERS[s].left_slack == 0 for s in SEATS if s != "kamicha")
+        assert DEFAULT_CORNERS["toimen"].left_slack > 0
+        assert DEFAULT_CORNERS["shimocha"].right_slack > 0
+        assert DEFAULT_CORNERS["own"].left_slack == DEFAULT_CORNERS["own"].right_slack == 0
 
     def test_the_window_grows_to_the_left(self) -> None:
         flat = np.zeros((390, 580, 3), np.uint8)
@@ -627,6 +662,23 @@ class TestTheUpperSeatLeansLeft:
     def test_it_stops_at_the_edge(self) -> None:
         flat = np.zeros((390, 580, 3), np.uint8)
         assert search_window(flat, Rect(0, 0, 90, 120), left=8).shape[1] == 90
+
+    def test_the_window_grows_to_the_right(self) -> None:
+        flat = np.zeros((390, 580, 3), np.uint8)
+        rect = Rect(90, 0, 90, 120)
+        assert search_window(flat, rect, right=6).shape[1] == search_window(flat, rect).shape[1] + 6
+        assert search_window(flat, Rect(490, 0, 90, 120), right=6).shape[1] == 90
+
+
+def test_a_five_of_bamboo_leaning_right_on_the_lower_seat(templates: TemplateSet) -> None:
+    """下家第一排第二格的 5 索比格線偏右,窗不放寬的話右邊那排被切掉,讀成 2 索。
+    實際畫面裁下來的一格,已經含往右放寬的 6 像素。"""
+    fixtures = Path(__file__).resolve().parents[1] / "fixtures"
+    window = cv2.imread(str(fixtures / "river_5s_shimocha_right_edge.png"))
+    size = face_size(seat="shimocha", row=0)
+    slack = DEFAULT_CORNERS["shimocha"].right_slack
+    assert classify_river_tile(window, templates, size=size).label == "5s"
+    assert classify_river_tile(window[:, :-slack], templates, size=size).label != "5s"
 
 
 class TestSidewaysSizes:
@@ -649,10 +701,79 @@ class TestSidewaysSizes:
         assert seen == [(88, 63)]
 
 
+class TestSidewaysTwoMan:
+    """真實立直牌的搜尋窗,只含牌面與桌布,答案由同場封包核對。
+
+    二萬分別取自 CPU 錄影 011937 第 10 局、151745 第 9 局、155238 第 13 局;
+    原本全部猜成一萬。保留一張真正的一萬作反例。
+    """
+
+    @pytest.fixture
+    def river_templates(self) -> TemplateSet:
+        """即時路徑辨識橫放牌時用的是牌河模板,包含真實牌面的版本。"""
+        return TemplateSet.load_river()
+
+    @pytest.mark.parametrize(
+        ("filename", "seat"),
+        [
+            ("riichi_2m_toimen.png", "toimen"),
+            ("riichi_2m_kamicha.png", "kamicha"),
+            ("riichi_2m_toimen_later.png", "toimen"),
+        ],
+    )
+    def test_two_strokes_are_not_one(
+        self, filename: str, seat: str, river_templates: TemplateSet
+    ) -> None:
+        patch = cv2.imread(str(FIXTURES / filename))
+        assert patch is not None
+        flat = np.zeros((300, 250, 3), dtype=np.uint8)
+        # 第二列第一格的搜尋窗從 y=112 開始,包含格子上方的 8 像素。
+        flat[112 : 112 + patch.shape[0], : patch.shape[1]] = patch
+        match = classify_sideways(
+            flat, 6, river_templates, size=DEFAULT_CORNERS[seat].sideways_size
+        )
+        assert match.label == "2m"
+        assert match.margin == 0.0
+        assert not match.is_confident
+
+    def test_a_real_one_man_keeps_its_label(self, river_templates: TemplateSet) -> None:
+        patch = cv2.imread(str(FIXTURES / "riichi_1m_own.png"))
+        assert patch is not None
+        match = classify_sideways(
+            patch, 0, river_templates, size=DEFAULT_CORNERS["own"].sideways_size
+        )
+        assert match.label == "1m"
+        assert not match.is_confident
+
+
+@pytest.mark.parametrize(
+    ("filename", "seat", "row", "label", "use_river"),
+    [
+        ("river_red_5m_kamicha_window.png", "kamicha", 0, "0m", True),
+        ("river_plain_5m_own_window.png", "own", 2, "5m", False),
+        ("river_red_5p_shimocha_window.png", "shimocha", 0, "0p", True),
+    ],
+)
+def test_red_five_uses_the_matched_face(
+    filename: str, seat: str, row: int, label: str, use_river: bool
+) -> None:
+    """真實牌河的固定框曾經把赤五變普通五,也把普通五變成赤五。"""
+    window = cv2.imread(str(FIXTURES / filename))
+    assert window is not None
+    templates = TemplateSet.load_river() if use_river else TemplateSet.load()
+    size = face_size(seat=seat, row=row)
+    match = classify_river_tile(window, templates, size=size)
+    assert settle_river_five(window, match, templates, size=size) == label
+
+
 class _Rotated:
     @staticmethod
     def rotated() -> None:
         return None
+
+    @staticmethod
+    def scaled(_: tuple[int, int]) -> list[tuple[str, np.ndarray]]:
+        return []
 
 
 class TestFaceSize:

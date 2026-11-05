@@ -703,13 +703,18 @@ def summary(
 
 def _advice_lags(run: Run, truth: Sequence[TruthKyoku]) -> list[float]:
     """每次自己摸牌之後,多久收到建議。下一次自己動作之前沒收到的不算。"""
-    walls = sorted(row["wall"] for row in run.advices)
+    walls = sorted(row["wall"] for row in run.advices if row.get("action") is not None)
     lags = []
     for kyoku in truth:
-        turns = [wall for wall, e in kyoku.events if isinstance(e, Tsumo) and e.actor == _OWN]
-        ends = [*turns[1:], kyoku.events[-1][0]]
-        for start, end in zip(turns, ends, strict=True):
-            answer = next((w for w in walls if start <= w <= end), None)
+        for index, (start, event) in enumerate(kyoku.events):
+            if not isinstance(event, Tsumo) or event.actor != _OWN:
+                continue
+            end = next(
+                (wall for wall, later in kyoku.events[index + 1 :]
+                 if getattr(later, "actor", None) == _OWN),
+                kyoku.events[-1][0],
+            )
+            answer = next((w for w in walls if start <= w < end), None)
             if answer is not None:
                 lags.append(answer - start)
     return lags

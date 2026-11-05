@@ -39,7 +39,8 @@ import cv2
 import numpy as np
 
 from mia.utils.geometry import Rect
-from mia.vision.tiles.classify import WHOLE_RED, Match, TemplateSet, classify, red_ink
+from mia.vision.stats import median_u8
+from mia.vision.tiles.classify import WHOLE_RED, Match, TemplateSet, classify, red_ink, settle_five
 
 __all__ = [
     "CELL",
@@ -67,6 +68,7 @@ __all__ = [
     "read_river",
     "row_end",
     "search_window",
+    "settle_river_five",
     "slot",
     "tile_masks",
 ]
@@ -264,9 +266,17 @@ _SIDEWAYS_WINDOW = 1.4
 #: 中間值 110x59,四家都堪用。要分家給的話得先有更多樣本:現在只有 4 張牌,
 #: 分家調就是對單一樣本過擬合。
 #:
-#: ⚠ 對家那張 2m 在**任何**尺寸下都認成 1m。那是已知的 2m→1m 混淆
-#: (靜默錯誤裡最大的一項),與旋轉無關。
+#: ⚠ 當時對家那張 2m 在任何尺寸下都認成 1m。2026-11-03 在
+#: :func:`classify_sideways` 補上數字筆畫覆核,見 :func:`_has_two_man_strokes`;
+#: 不是靠換尺寸解決,而且仍只當猜測。
 SIDEWAYS_FACE = (1.22, 0.49)
+
+#: 一萬可能對上二萬的一橫,但數字區裡的兩筆不會因此消失。用下半部的「萬」
+#: 定位同一張牌,再檢查上半部,不讓共享的紅字決定數字。只覆核一萬,不改整套辨識門檻。
+_MAN_NUMBER = 0.48
+_MAN_ANCHOR_SCORE = 0.75
+_MAN_INK_VALUE = 130
+_MAN_INK_SATURATION = 100
 
 #: 判定一格有牌的中位亮度門檻。牌面是象牙色、桌布是深藍,實測真牌 177~223、
 #: 桌布 50~62。用中位數而不是平均:取樣區若有一半是牌、一半是桌布,平均會
@@ -352,6 +362,8 @@ class RiverView:
     sideways_scale: float = 1.0
     #: 認牌的搜尋窗往左多看幾像素。見 :data:`DEFAULT_CORNERS` 的上家。
     left_slack: int = 0
+    #: 認牌的搜尋窗往右多看幾像素。見 :data:`DEFAULT_CORNERS` 的下家。
+    right_slack: int = 0
     #: 橫放的牌面要認成哪張牌時用的模板尺寸,攤平後的像素。離鏡頭越遠越小,所以每家一組。
     #: 六場 46 張宣言牌:共用 :data:`SIDEWAYS_FACE` 只對 33 張,對家 4/11;分開量 41 張,對家 9/11。
     #: 找哪一格是宣言牌還是用 :data:`SIDEWAYS_FACE`,那邊問的是形狀,而且分數門檻是照它量的。
@@ -432,14 +444,24 @@ class RiverView:
 #: 但雀魂在不同長寬比下排版不同(``20260801-112437`` 是 1.83,整份讀不出來)。
 DEFAULT_CORNERS: dict[str, RiverView] = {
     "own": RiverView(((0.3978, 0.4839), (0.5907, 0.4859), (0.5998, 0.7021), (0.3887, 0.6975))),
-    "shimocha": RiverView(((0.5883, 0.4964), (0.5777, 0.2678), (0.7125, 0.2657), (0.7346, 0.4922))),
+    # 下家第一排前兩張比格線偏右幾像素,5 索右邊那排被切掉就像 2 索,赤 5 索也一樣(五場各一次)。
+    # 十五份錄影 1795 張下家捨牌,落地 2.5 秒後認最新那一格:往右放寬 6 像素,有信心且對
+    # 1774 → 1783,有信心卻錯 5 → 1,錯的總數 12 → 5;放寬 12 結果相同。
+    "shimocha": RiverView(
+        ((0.5883, 0.4964), (0.5777, 0.2678), (0.7125, 0.2657), (0.7346, 0.4922)),
+        right_slack=6,
+    ),
+    # 對家同樣量 1856 張:往左放寬 8 像素,有信心且對 1824 → 1837,讀錯 12 → 9,有信心卻錯維持 0。
+    # 往右放寬沒有作用。
     "toimen": RiverView(
         ((0.5866, 0.2720), (0.4088, 0.2699), (0.4174, 0.1350), (0.5747, 0.1422)),
         sideways_scale=0.9,
+        left_slack=8,
         sideways_size=(88, 63),
     ),
     # 上家最後一欄的牌比格線偏左,模板滑不到正確的位置。實打兩場逐欄量:這一欄只有 26/33,其他
     # 位置 94~100%。往左放寬 8 像素變成 31/33,有信心的 24 → 31,有信心的錯 0,其他欄不變。
+    # 十五份錄影再量一次(1787 張)仍是最好的;再往右放寬 6 像素沒有幫助。
     "kamicha": RiverView(
         ((0.4160, 0.2667), (0.4077, 0.4920), (0.2488, 0.5002), (0.2847, 0.2667)),
         left_slack=8,
@@ -470,7 +492,7 @@ def _below(cell: tuple[int, int]) -> int:
 
 
 def search_window(
-    flat: np.ndarray, rect: Rect, cell: tuple[int, int] = CELL, *, left: int = 0
+    flat: np.ndarray, rect: Rect, cell: tuple[int, int] = CELL, *, left: int = 0, right: int = 0
 ) -> np.ndarray:
     """認一格牌要看的那一塊:格子本身,往下延伸 :data:`SEARCH_BELOW`、
     往上延伸 :data:`SEARCH_ABOVE`(到影像頂端為止)。
@@ -480,7 +502,7 @@ def search_window(
     """
     top = max(rect.y - round(SEARCH_ABOVE * cell[1] / CELL[1]), 0)
     start = max(rect.x - left, 0)
-    return flat[top : rect.y + rect.height + _below(cell), start : rect.x + rect.width]
+    return flat[top : rect.y + rect.height + _below(cell), start : rect.x + rect.width + right]
 
 
 #: 覆核用的第二個模板高度,以一格的高度為單位。即 96 像素。
@@ -570,6 +592,33 @@ def classify_river_tile(
         runner_up_score=best.score,
         brightness=best.brightness,
     )
+
+
+def settle_river_five(
+    window: np.ndarray, match: Match, templates: TemplateSet, *, size: tuple[int, int]
+) -> str:
+    """只在模板真正對到的牌面上分赤五,避免固定格子混入桌布與黑色牌邊。
+
+    上家第一張赤五萬實測固定框紅墨只有 0.58,對齊後 0.86。重比贏家這一種
+    牌就能取到位置,不必再認全部牌種,也不必放寬紅色門檻。
+    """
+    if match.label[0] not in "05" or match.label[-1] not in "mps":
+        return match.label
+    best = -2.0
+    face = None
+    width, height = size
+    for label, template in templates.scaled(size):
+        if label != match.label:
+            continue
+        _, score, _, at = cv2.minMaxLoc(
+            cv2.matchTemplate(window, template, cv2.TM_CCOEFF_NORMED)
+        )
+        if score > best:
+            best = score
+            face = window[at[1] : at[1] + height, at[0] : at[0] + width]
+    if face is None:
+        return match.label
+    return settle_five(match.label, face[_FACE_TRIM:-_FACE_TRIM, _FACE_TRIM:-_FACE_TRIM])
 
 
 @dataclass(frozen=True, slots=True)
@@ -818,6 +867,9 @@ def classify_sideways(
     窗 —— 躺著的牌比一格寬,只取一格會把牌面切掉一截,而被切掉的正好是
     要對上的部分。
 
+    整牌讀成一萬時,另外看「萬」字上方是否清楚有兩橫,避免一萬對上二萬的
+    其中一橫。這只修正猜測,不提升信心,見 :func:`_has_two_man_strokes`。
+
     為什麼要單獨一支:直放的 :func:`classify_river_tile` 對這一格的正確率是
     **0.0%**、有信心的張數是 **0**(兩份錄影、28 格)。那不是門檻的問題 ——
     它真的沒有直放,用直放模板問錯了問題。
@@ -852,13 +904,68 @@ def classify_sideways(
         「它以為是什麼」,而上層拿不到「可以採信」。
     """
     patch = _sideways_patch(flat, index, cell)
-    best = classify(patch, templates.rotated(), size=size or sideways_face_size(cell, scale))
+    face = size or sideways_face_size(cell, scale)
+    best = classify(patch, templates.rotated(), size=face)
+    if best.label == "1m" and _has_two_man_strokes(patch, templates, face):
+        # 重新取二萬本身的分數。筆畫覆核只改猜測,下方仍然把信心差距歸零。
+        two = classify(patch, templates.rotated(), size=face, labels=("2m",))
+        best = Match("2m", two.score, "1m", best.score, two.brightness)
     return Match(
         label=best.label,
         score=best.score,
         runner_up=best.runner_up,
         runner_up_score=best.score,
         brightness=best.brightness,
+    )
+
+
+def _has_two_man_strokes(
+    patch: np.ndarray, templates: TemplateSet, size: tuple[int, int]
+) -> bool:
+    """讀成一萬時,同一張牌的數字區是否清楚有二萬的兩橫。
+
+    整張牌比對會讓一萬對上二萬的下橫,紅色的「萬」又一樣,於是錯的分數反而
+    更高。先靠「萬」定位,只數上方黑色、分離且橫長的筆畫。看不到完整數字、
+    定位不清楚、筆畫黏在一起時都不改答案,不憑模板分數強行換牌。
+    """
+    upright = cv2.rotate(patch, cv2.ROTATE_90_CLOCKWISE)
+    width, height = size[::-1]
+    split = round(height * _MAN_NUMBER)
+    anchor: tuple[float, tuple[int, int]] | None = None
+    for label, face in templates.scaled((width, height)):
+        if label != "1m":
+            continue
+        _, score, _, at = cv2.minMaxLoc(
+            cv2.matchTemplate(upright, face[split:], cv2.TM_CCOEFF_NORMED)
+        )
+        if anchor is None or score > anchor[0]:
+            anchor = (score, (int(at[0]), int(at[1])))
+    if anchor is None or anchor[0] < _MAN_ANCHOR_SCORE:
+        return False
+    x, y = anchor[1]
+    y -= split
+    if y < 0:
+        return False
+    numeral = upright[y : y + split, x : x + width]
+    hsv = cv2.cvtColor(numeral, cv2.COLOR_BGR2HSV)
+    ink = ((hsv[:, :, 2] < _MAN_INK_VALUE) & (hsv[:, :, 1] < _MAN_INK_SATURATION))
+    count, _, stats, centres = cv2.connectedComponentsWithStats(ink.astype(np.uint8))
+    strokes = []
+    for index in range(1, count):
+        left, top, wide, tall, area = stats[index]
+        if wide < width * 0.2 or wide < tall * 1.25 or area < width * split * 0.008:
+            continue
+        # 數字被截斷時,三萬也可能只剩兩橫。碰到窗邊就沒有覆核的資格。
+        if top == 0 or top + tall >= split or left == 0 or left + wide >= width:
+            return False
+        strokes.append((float(centres[index][1]), int(wide)))
+    if len(strokes) != 2:
+        return False
+    (upper_y, upper_width), (lower_y, lower_width) = sorted(strokes)
+    return (
+        lower_y - upper_y >= split * 0.15
+        and lower_width >= width * 0.5
+        and 0.35 <= upper_width / lower_width <= 0.85
     )
 
 
@@ -963,8 +1070,52 @@ def _occupied(image: np.ndarray, cell: Rect) -> bool:
 
     只看亮度的話牌背會過關,因為橘色跟象牙色一樣亮;而只看飽和度的話**白板**
     會被擋掉,因為它平躺著會染上桌子的藍。三樣東西要三個維度才分得開。
+
+    另外擋掉叫牌提示的光框,見 :func:`_call_glow`。
     """
-    return is_face_up(image[cell.as_slice()])
+    patch = image[cell.as_slice()]
+    if patch.size == 0:
+        return False
+    grey = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+    return _face_up(patch, grey, hsv) and not _call_glow(patch, grey=grey, hsv=hsv)
+
+
+#: 叫牌提示的光框:淡綠色(OpenCV 色相 45 ~ 90、飽和度 25 以上)、夠亮(灰階 140 以上)。
+_GLOW_HUE = (45, 90)
+_GLOW_SATURATION = 25
+_GLOW_BRIGHT = 140
+#: 亮的像素裡至少這麼多是光框的顏色,而且亮的部分不到一格的這麼多,才是光框。
+_GLOW_SHARE = 0.6
+_GLOW_AREA = 0.5
+
+
+def _call_glow(
+    patch: np.ndarray, *, grey: np.ndarray | None = None, hsv: np.ndarray | None = None
+) -> bool:
+    """這一格亮,是因為隔壁那張牌的叫牌提示光框,不是有牌。
+
+    自己能鳴的那張牌會被框上一圈淡綠色的光,光溢到下一格,下一格就被判成有牌(亮度中位 112,
+    門檻 110)。牌河多出一張讀不出來的牌,接著那張被鳴走,河又短回去。真人一場東三局:這張假牌
+    佔掉了對家下一張真的捨牌的位置,9 索因此從事件流裡消失。真人鳴牌前會猶豫,光框亮得久,
+    比電腦場常見。
+
+    光框那一格的亮像素八成是淡綠色,但亮的只佔兩成多;牌面的亮像素是象牙色,真人一場九萬多格
+    99.9% 在 0.32 以下。牌面整張發亮(和了、立直的白光)時淡綠能到 0.54,但那時亮的佔滿整格。
+    """
+    if patch.size == 0:
+        return False
+    if grey is None:
+        grey = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+    bright = grey > _GLOW_BRIGHT
+    area = float(bright.mean())
+    if area == 0 or area >= _GLOW_AREA:
+        return False
+    if hsv is None:
+        hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+    hue, saturation = hsv[:, :, 0], hsv[:, :, 1]
+    glow = bright & (hue >= _GLOW_HUE[0]) & (hue <= _GLOW_HUE[1]) & (saturation >= _GLOW_SATURATION)
+    return float(glow.sum()) / float(bright.sum()) >= _GLOW_SHARE
 
 
 def is_face_up(patch: np.ndarray) -> bool:
@@ -984,15 +1135,21 @@ def is_face_up(patch: np.ndarray) -> bool:
     # 會被藍通道拉高到門檻以上 —— 那會讓空格子變成「有牌」。
     grey = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
     hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
-    dense = face_coverage(patch) >= _DENSE_FACE
-    if float(np.median(grey)) < _OCCUPIED_MEDIAN and not dense:
+    return _face_up(patch, grey, hsv)
+
+
+def _face_up(patch: np.ndarray, grey: np.ndarray, hsv: np.ndarray) -> bool:
+    """同一格的亮度、色相與紙面佔比共用轉好的通道,判斷條件完全相同。"""
+    face, _ = _tile_masks(grey, hsv)
+    dense = float(face.mean()) >= _DENSE_FACE
+    if median_u8(grey) < _OCCUPIED_MEDIAN and not dense:
         return False
     # 赤五整張紅,中位數落在牌背的色相上:實測赤 5 筒因此被當成牌背,河中間一個洞,
     # 整家判成不連續。兩個條件要一起看:牌背也紅,但沒有紙。只看紙的話,動畫中的牌
     # 與半張牌背會過關。
-    if dense and red_ink(patch) >= WHOLE_RED:
+    if dense and red_ink(patch, hsv=hsv) >= WHOLE_RED:
         return True
-    return not _is_back(float(np.median(hsv[:, :, 0])), float(np.median(hsv[:, :, 1])))
+    return not _is_back(median_u8(hsv, 0), median_u8(hsv, 1))
 
 
 def face_coverage(patch: np.ndarray) -> float:
@@ -1020,6 +1177,10 @@ def tile_masks(patch: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
     grey = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
     hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+    return _tile_masks(grey, hsv)
+
+
+def _tile_masks(grey: np.ndarray, hsv: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     hue, saturation = hsv[:, :, 0], hsv[:, :, 1]
     back = ((hue <= _BACK_HUE[0]) | (hue >= _BACK_HUE[1])) & (saturation >= _BACK_SATURATION)
     return (grey > _OCCUPIED_MEDIAN) & ~back, back

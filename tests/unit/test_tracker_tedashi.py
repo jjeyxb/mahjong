@@ -69,6 +69,26 @@ class TestInPieces:
 
 
 class TestNoVerdict:
+    def test_an_initial_joined_hand_does_not_prove_tsumogiri(self) -> None:
+        watcher = TsumogiriWatcher()
+        joined = BackShape(360.0, False, 1, True)
+        now = feed(watcher, 2, joined, joined, REST, REST)
+        assert watcher.tsumogiri(2, now) is None
+
+    def test_a_separate_draw_establishes_the_reference_for_later_turns(self) -> None:
+        watcher = TsumogiriWatcher()
+        now = feed(watcher, 2, REST, DRAWN, REST)
+        later = feed(watcher, 2, *([REST] * 24), start=now)
+        assert watcher.tsumogiri(2, later) is True
+
+    def test_a_meld_requires_a_new_reference_for_the_shorter_hand(self) -> None:
+        watcher = TsumogiriWatcher()
+        now = feed(watcher, 2, REST, DRAWN, REST)
+        watcher.forget(2)
+        short = BackShape(250.0, False, 1, True)
+        now = feed(watcher, 2, short, short, start=now)
+        assert watcher.tsumogiri(2, now) is None
+
     def test_nothing_seen(self) -> None:
         assert TsumogiriWatcher().tsumogiri(2, 1.0) is None
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from mia.mjai.events import (
     Ankan,
     Chi,
@@ -17,6 +19,7 @@ from mia.mjai.events import (
     Tsumo,
 )
 from mia.tracker import Action, KyokuLog, Move, OwnMove, Step, compose, resynced
+from mia.tracker.stream import MeldPick, MeldShape
 from mia.vision.hud import Hud
 
 T = Action.TSUMO
@@ -251,6 +254,36 @@ class TestOwnKans:
         )
         assert body(compose(kyoku).events)[-1] == Ankan(actor=0, consumed=["E"] * 4)
 
+    def test_a_closed_kan_confirmed_a_turn_late(self) -> None:
+        """手牌先看到暗槓,副露區下一手才確認:排序器補的那一步槓不是新的動作(044833 東二局)。"""
+        moves = [
+            OwnMove(Move.DRAW, ("E",)),
+            OwnMove(Move.CALL, ("E", "E", "E", "E")),
+            OwnMove(Move.DRAW, ("7p",)),
+            OwnMove(Move.DISCARD, ("7p",), tsumogiri=True),
+            OwnMove(Move.DRAW, ("N",)),
+            OwnMove(Move.DISCARD, ("N",), tsumogiri=True),
+        ]
+        hand = ("E", "E", "E", *TEHAI[:9], "S")
+        steps = [
+            Step(T, 0),
+            Step(D, 0, "7p"),
+            Step(T, 1),
+            Step(D, 1, "1p"),
+            Step(C, 0, target=1, kan=True),
+            Step(T, 0),
+            Step(D, 0, "N"),
+        ]
+        kyoku = KyokuLog(
+            hud=HUD, tehai=hand, doras=[(0, "9m"), (1, "3s")], steps=steps, moves=moves
+        )
+        stream = compose(kyoku)
+        assert not stream.stalled
+        events = body(stream.events)
+        assert sum(isinstance(event, Ankan) for event in events) == 1
+        assert Tsumo(actor=0, pai="N") in events
+        assert events[-1] == Dahai(actor=0, pai="N", tsumogiri=True)
+
     def test_an_added_kan_is_one_tile(self) -> None:
         moves = [OwnMove(Move.DRAW, ("E",)), OwnMove(Move.CALL, ("E",))]
         events = body(compose(log(steps=[Step(T, 0)], moves=moves)).events)
@@ -442,6 +475,119 @@ class TestRedInMelds:
         assert called == Chi(actor=2, target=1, pai="6s", consumed=["4s", "5s"])
 
 
+class _Look:
+    """假的 :class:`~mia.tracker.stream.MeldLook`:選 ``tiles`` 那個候選,記下問過什麼。"""
+
+    def __init__(self, tiles: tuple[str, ...] | None, reds: tuple[bool, ...] = ()) -> None:
+        self.tiles = tiles
+        self.reds = reds
+        self.asked: list[tuple[MeldShape, ...]] = []
+        self.pending = False
+
+    def pick(self, shapes: tuple[MeldShape, ...]) -> MeldPick | None:
+        self.asked.append(shapes)
+        for index, shape in enumerate(shapes):
+            if shape.tiles == self.tiles:
+                return MeldPick(index, self.reds or (False,) * len(shape.tiles))
+        return None
+
+
+class TestMeldsCheckedOnScreen:
+    """畫面比過候選的吃碰,見 ``mia/vision/tiles/meld_fit.py``。"""
+
+    def _called(
+        self,
+        look: _Look,
+        *,
+        pai: str = "7p",
+        actor: int = 2,
+        faces: tuple[str, ...] = ("?", "?", "?"),
+        tehai: tuple[str, ...] = TEHAI,
+    ) -> list[MjaiEvent]:
+        steps = [Step(T, 1), Step(D, 1, pai), Step(C, actor, target=1), Step(D, actor, "1s")]
+        melds: list[list[tuple[str, ...]]] = [[], [], [], []]
+        melds[actor].append(faces)
+        kept = KyokuLog(
+            hud=HUD,
+            tehai=tehai,
+            doras=[(0, "9m")],
+            steps=steps,
+            melds=melds,
+            meld_looks={(actor, 0): look},
+        )
+        return body(compose(kept).events)
+
+    def test_the_next_seat_gets_a_pon_and_every_run(self) -> None:
+        look = _Look(("7p", "8p", "9p"))
+        self._called(look)
+        assert look.asked[-1] == (
+            MeldShape(("7p", "7p", "7p"), 0),
+            MeldShape(("7p", "5p", "6p"), 0),
+            MeldShape(("7p", "6p", "8p"), 0),
+            MeldShape(("7p", "8p", "9p"), 0),
+        )
+
+    def test_the_picture_picks_the_run(self) -> None:
+        called = self._called(_Look(("7p", "8p", "9p")))[2]
+        assert called == Chi(actor=2, target=1, pai="7p", consumed=["8p", "9p"])
+
+    @pytest.mark.parametrize("pai", ["7p", "P"])
+    def test_a_growing_group_is_not_guessed_before_its_picture_exists(self, pai: str) -> None:
+        steps = [Step(T, 1), Step(D, 1, pai), Step(C, 2, target=1), Step(D, 2, "1s")]
+        events = compose(log(steps=steps, meld_growing={2})).events
+        assert Dahai(actor=1, pai=pai, tsumogiri=False) in events
+        calls = [event for event in events if isinstance(event, Chi | Pon)]
+        assert bool(calls) == (pai == "P")
+
+    def test_the_picture_beats_the_faces(self) -> None:
+        """牌面認成 6 7 8,畫面比出來是 7 8 9:牌面掃到了隔壁那組的 6。"""
+        called = self._called(_Look(("7p", "8p", "9p")), faces=("6p", "7p", "8p"))[2]
+        assert called == Chi(actor=2, target=1, pai="7p", consumed=["8p", "9p"])
+
+    def test_the_faces_still_count_when_the_picture_abstains(self) -> None:
+        called = self._called(_Look(None), faces=("6p", "7p", "8p"))[2]
+        assert called == Chi(actor=2, target=1, pai="7p", consumed=["6p", "8p"])
+
+    def test_a_pending_picture_does_not_publish_a_guessed_meld(self) -> None:
+        look = _Look(None)
+        look.pending = True
+        events = self._called(look, faces=("5p", "6p", "7p"))
+        assert Dahai(actor=1, pai="7p", tsumogiri=False) in events
+        assert not any(isinstance(event, Chi | Pon) for event in events)
+
+    def test_the_first_confirmed_meld_preserves_the_red_five(self) -> None:
+        look = _Look(("7p", "5p", "6p"), (False, True, False))
+        called = self._called(look)[2]
+        assert called == Chi(actor=2, target=1, pai="7p", consumed=["5pr", "6p"])
+
+    def test_a_pon_from_the_seat_across_lies_in_the_middle(self) -> None:
+        look = _Look(("5p", "5p", "5p"), (False, False, True))
+        called = self._called(look, pai="5p", actor=3)[2]
+        assert look.asked[-1] == (MeldShape(("5p", "5p", "5p"), 1),)
+        assert called == Pon(actor=3, target=1, pai="5p", consumed=["5p", "5pr"])
+
+    def test_nothing_to_ask_without_a_choice_or_a_five(self) -> None:
+        look = _Look(("7p", "7p", "7p"))
+        called = self._called(look, actor=3)[2]
+        assert look.asked == []
+        assert called == Pon(actor=3, target=1, pai="7p", consumed=["7p", "7p"])
+
+    def test_the_red_five_in_the_run(self) -> None:
+        called = self._called(_Look(("6s", "4s", "5s"), (False, False, True)), pai="6s")[2]
+        assert called == Chi(actor=2, target=1, pai="6s", consumed=["4s", "5sr"])
+
+    def test_a_red_five_already_seen_is_not_red_again(self) -> None:
+        look = _Look(("6s", "4s", "5s"), (False, False, True))
+        called = self._called(look, pai="6s", tehai=("5sr", *TEHAI[1:]))[2]
+        assert called == Chi(actor=2, target=1, pai="6s", consumed=["4s", "5s"])
+
+    def test_the_called_tile_stays_as_the_river_read_it(self) -> None:
+        look = _Look(("5s", "6s", "7s"), (True, False, False))
+        events = self._called(look, pai="5s")
+        assert events[1] == Dahai(actor=1, pai="5s", tsumogiri=False)
+        assert events[2] == Chi(actor=2, target=1, pai="5s", consumed=["6s", "7s"])
+
+
 class TestOtherMelds:
     def _called(
         self, faces: tuple[str, ...], *, actor: int = 2, pai: str | None = "7p"
@@ -620,6 +766,32 @@ class TestOtherMelds:
         doras = [(0, "9m"), (3, "3s")]
         events = body(compose(log(steps=steps, melds=melds, doras=doras)).events)
         assert events[1] == Ankan(actor=1, consumed=["C"] * 4)
+
+    def test_a_kan_on_our_own_discard_showing_other_faces_is_closed(self) -> None:
+        """槓的是自己剛打的 1 萬,牌面卻是 9 筒:不是大明槓,是下家摸牌之後暗槓,副露晚一輪才確認。
+        照大明槓排就得把自己打的牌改掉,整局停住(011937 東一局)。"""
+        moves = [OwnMove(Move.DRAW, ("N",)), OwnMove(Move.DISCARD, ("1m",))]
+        steps = [
+            Step(T, 0),
+            Step(D, 0, "1m"),
+            Step(C, 1, target=0, kan=True),
+            Step(T, 1),
+            Step(D, 1, "2p"),
+        ]
+        melds: list[list[tuple[str, ...]]] = [[], [("9p", "?", "?")], [], []]
+        kyoku = log(steps=steps, moves=moves, melds=melds, doras=[(0, "9m"), (2, "3s")])
+        events = body(compose(kyoku).events)
+        assert events[1] == Dahai(actor=0, pai="1m", tsumogiri=False)
+        assert events[2:4] == [Tsumo(actor=1, pai="?"), Ankan(actor=1, consumed=["9p"] * 4)]
+        assert not any(isinstance(event, Daiminkan) for event in events)
+        assert events[-1] == Dahai(actor=1, pai="2p", tsumogiri=False)
+
+    def test_a_kan_on_our_own_discard_with_its_faces_is_open(self) -> None:
+        moves = [OwnMove(Move.DRAW, ("9p",)), OwnMove(Move.DISCARD, ("1m",))]
+        steps = [Step(T, 0), Step(D, 0, "1m"), Step(C, 1, target=0, kan=True), Step(T, 1)]
+        melds: list[list[tuple[str, ...]]] = [[], [("1m", "?", "?")], [], []]
+        events = body(compose(log(steps=steps, moves=moves, melds=melds)).events)
+        assert events[2] == Daiminkan(actor=1, target=0, pai="1m", consumed=["1m", "1m", "1m"])
 
 
 class TestMarks:

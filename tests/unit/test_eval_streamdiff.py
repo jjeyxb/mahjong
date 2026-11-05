@@ -13,8 +13,10 @@ import pytest
 
 from mia.engine.base import Advice, EngineError
 from mia.eval.streamdiff import (
+    Run,
     TruthKyoku,
     Version,
+    _advice_lags,
     agreement,
     compare,
     load_run,
@@ -271,6 +273,29 @@ class TestAgreement:
         got = agreement([_truth(*TURN)], [_version(*wrong)], make)
         assert got.errors == 1
         assert len(made) == 2
+
+
+class TestAdviceTiming:
+    def test_an_answer_before_the_discard_counts(self) -> None:
+        run = Run((), ({"wall": 101.4, "action": {"type": "dahai", "pai": "N"}},))
+        assert _advice_lags(run, [_truth(*TURN)]) == pytest.approx([0.4])
+
+    @pytest.mark.parametrize("action", [None, {"type": "dahai", "pai": "N"}])
+    def test_a_later_answer_is_not_assigned_to_a_turn_already_played(
+        self, action: dict[str, str] | None
+    ) -> None:
+        run = Run((), ({"wall": 103.5, "action": action},))
+        assert _advice_lags(run, [_truth(*TURN)]) == []
+
+    def test_a_pass_is_not_a_discard_recommendation(self) -> None:
+        run = Run((), ({"wall": 101.4, "action": None},))
+        assert _advice_lags(run, [_truth(*TURN)]) == []
+
+    def test_the_reach_declaration_already_ends_the_decision_window(self) -> None:
+        truth = _truth(Tsumo(actor=0, pai="N"), Reach(actor=0),
+                       Dahai(actor=0, pai="N", tsumogiri=True))
+        run = Run((), ({"wall": 102.5, "action": {"type": "reach"}},))
+        assert _advice_lags(run, [truth]) == []
 
 
 class TestFiles:

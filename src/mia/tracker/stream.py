@@ -68,6 +68,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
+from typing import Protocol
 
 from mia.mjai.events import (
     Ankan,
@@ -88,7 +89,7 @@ from mia.tracker.hand import Move, OwnMove
 from mia.tracker.turns import Action, Step
 from mia.vision.hud import Hud
 
-__all__ = ["KyokuLog", "Stream", "compose", "resynced"]
+__all__ = ["KyokuLog", "MeldLook", "MeldPick", "MeldShape", "Stream", "compose", "resynced"]
 
 _SEATS = 4
 _COPIES = 4
@@ -108,6 +109,48 @@ _FILLERS = (
 #: 新寶牌翻開之後,再過幾步還找不到是誰槓的就不找了。排序最多落後一輪。
 _KAN_REACH = 12
 
+#: 碰的橫放牌在第幾張,依 ``(被鳴的人 - 鳴的人) % 4``:上家的放最左、對家的放中間、下家的
+#: 放最右。吃一定是上家的,排成 [被吃的, 小, 大]。
+_PON_SIDEWAYS = {3: 0, 2: 1, 1: 2}
+
+
+@dataclass(frozen=True, slots=True)
+class MeldShape:
+    """一組吃碰可能的樣子。
+
+    Attributes:
+        tiles: 由左而右的牌,MJAI 記法、不分赤。
+        sideways: 橫放的是第幾張,也就是被鳴的那張。
+    """
+
+    tiles: tuple[str, ...]
+    sideways: int
+
+
+@dataclass(frozen=True, slots=True)
+class MeldPick:
+    """畫面選出來的候選。
+
+    Attributes:
+        index: 第幾個候選。
+        reds: 每一張是不是赤五,由左而右。
+    """
+
+    index: int
+    reds: tuple[bool, ...]
+
+
+class MeldLook(Protocol):
+    """拿畫面比一組副露的候選,見 :mod:`mia.vision.tiles.meld_fit`。
+
+    不能卡住:一組要比零點幾秒,而事件流每一輪都重算。還沒比完就回 ``None``,下一輪再問。
+    """
+
+    def pick(self, shapes: tuple[MeldShape, ...]) -> MeldPick | None: ...
+
+    @property
+    def pending(self) -> bool: ...
+
 
 @dataclass
 class KyokuLog:
@@ -121,6 +164,8 @@ class KyokuLog:
         melds: 四家的副露,牌面認到多少算多少,依發生順序。
         meld_reds: 副露裡看到赤五 ``(誰, 第幾組) -> 花色``。見
             :attr:`~mia.vision.tiles.melds.MeldFaces.red_suits`。
+        meld_looks: 別家每一組吃碰的畫面 ``(誰, 第幾組)``,拿來比候選。見 :class:`MeldLook`。
+        meld_growing: 畫面正在長出新一組、尚未確認的座位。推測的數牌鳴牌等它確認再認牌面。
         meld_sideways: 只認到一張、而且只在橫的框裡認到的副露 ``(誰, 第幾組)``。那張是
             被鳴的牌,分不出吃碰。見 :attr:`~mia.vision.tiles.melds.MeldFaces.upright`。
         tsumogiri: 別家的捨牌是不是摸切 ``(誰, 第幾張) -> 摸切``,排進事件流那一刻看手牌的
@@ -144,6 +189,8 @@ class KyokuLog:
     )
     meld_reds: dict[tuple[int, int], frozenset[str]] = field(default_factory=dict)
     meld_sideways: set[tuple[int, int]] = field(default_factory=set)
+    meld_looks: dict[tuple[int, int], MeldLook] = field(default_factory=dict)
+    meld_growing: set[int] = field(default_factory=set)
     tsumogiri: dict[tuple[int, int | None], bool] = field(default_factory=dict)
     reaches: list[tuple[int, int]] = field(default_factory=list)
     own_reach: int | None = None
@@ -248,6 +295,8 @@ class _Composer:
         self.moves = list(log.moves)
         self.calls = [0 for _ in range(_SEATS)]
         self.own_drops = 0
+        #: 手牌先排出來、副露區還沒確認的自己的暗槓。見 :meth:`_own_kans`。
+        self.early_kans = 0
         self.unmatched = sum(s.action is Action.TSUMO and s.actor == 0 for s in self.steps) - sum(
             m.move is Move.DRAW for m in log.moves
         )
@@ -491,6 +540,7 @@ class _Composer:
         ):
             call = self._own_call(self.moves.pop(0))
             assert call is not None
+            self.early_kans += isinstance(call, Ankan)
             self.events += [call, Tsumo(actor=0, pai=self.moves.pop(0).tiles[0])]
 
     def _discarded(self, step: Step) -> str:
@@ -519,6 +569,12 @@ class _Composer:
 
     def _call(self, step: Step) -> bool:
         if step.actor == 0:
+            called = bool(self.moves) and self.moves[0].move is Move.CALL
+            if step.kan and self.early_kans and not called:
+                # 手牌已經排過的暗槓,副露區晚一輪才確認,排序器在下一手補了一次槓。它不是新的
+                # 動作;當成摸牌的話會吃掉下一次真的摸牌,整局停住(044833 東二局)。
+                self.early_kans -= 1
+                return True
             if not (self.moves and self.moves[0].move is Move.CALL):
                 # 手牌沒有鳴牌,這一步是排序器推出來的:順序亂掉時,自己打牌看起來像跳家。自己的
                 # 動作聽手牌的:手牌接下來是摸牌,這一步就是摸牌。手牌只是還沒跟上的話,下一輪重算
@@ -544,16 +600,86 @@ class _Composer:
         if not any(isinstance(event, Dahai) for event in self.events):
             # 被鳴的那張還沒排出來,可能是自己打的、手牌還沒跟上。
             return False
+        last = self.events[self._last_dahai()]
+        assert isinstance(last, Dahai)
+        if (
+            index >= len(groups)
+            and step.actor in self.log.meld_growing
+            and normalize_red(last.pai) not in HONOR_ORDER
+        ):
+            # 排序器能從副露正在變長先推得有人鳴牌,此時快照還沒建立。
+            # 不能因為沒有正在執行的比對,就把尚未確認的順子或普通五送出去。
+            return False
+        if step.kan and last.actor == 0 and known and not _same_tile(known, last.pai):
+            # 槓的是自己打的牌,牌面卻是別的牌:不是大明槓,是他摸牌之後暗槓。自己打的牌來自手牌不會錯,
+            # 照大明槓排就得改掉它,整局停在這裡(011937 東一局:下家暗槓 9 筒,副露晚一輪才確認,
+            # 那時上一張是自己的 7 筒)。暗槓之前的那次摸牌由這裡補,嶺上與打牌照排序器的。
+            self.events.append(Tsumo(actor=step.actor, pai=UNKNOWN))
+            self.events.append(self._ankan(step.actor, known))
+            return True
         step = self._unseen_call(step, known)
         known = self._agreeing(known)
-        red_suits = self.log.meld_reds.get((step.actor, index), frozenset())
-        sideways = (step.actor, index) in self.log.meld_sideways
-        self.events.append(
-            self._open_kan(step, known)
-            if step.kan
-            else self._with_red(self._open_meld(step, known, sideways=sideways), red_suits)
-        )
+        if step.kan:
+            self.events.append(self._open_kan(step, known))
+            return True
+        look = self.log.meld_looks.get((step.actor, index))
+        meld = self._looked(step, look)
+        if meld is None:
+            if look is not None and look.pending:
+                # 背景比對尚未完成不等於棄權。先組一個普通五或猜錯的順子,
+                # 下一輪又改掉,會讓引擎收到當下已知仍待確認的錯誤副露。
+                return False
+            red_suits = self.log.meld_reds.get((step.actor, index), frozenset())
+            sideways = (step.actor, index) in self.log.meld_sideways
+            meld = self._with_red(self._open_meld(step, known, sideways=sideways), red_suits)
+        self.events.append(meld)
         return True
+
+    def _looked(self, step: Step, look: MeldLook | None) -> Chi | Pon | None:
+        """畫面比過候選的吃碰。還沒比完、差距不夠、沒什麼好選的,回 ``None``。
+
+        候選是「被鳴的牌、從誰那裡鳴的」推得出來的每一種,張數湊不出來的不列。這比
+        :meth:`_open_meld` 從牌面推準:十四份錄影別家 84 組要選的吃碰,這裡錯 0 組、棄權 2 組,牌面
+        認得全的只有 43 組(``docs/cv_mjai.md``)。
+
+        被鳴的那張照河裡的,不聽畫面:相鄰數字的牌面只差上面那個字,河裡的牌讀錯時,
+        錯的候選常常跟對的一樣像。
+        """
+        assert step.target is not None
+        if look is None:
+            return None
+        at = self._last_dahai()
+        pai = self.events[at].pai  # type: ignore[attr-defined]
+        plain = normalize_red(pai)
+        if plain in HONOR_ORDER:
+            return None
+        shapes = []
+        if self.left[plain] >= 2:
+            side = _PON_SIDEWAYS[(step.target - step.actor) % _SEATS]
+            shapes.append(MeldShape((plain,) * 3, side))
+        if step.actor == (step.target + 1) % _SEATS:
+            for run in _runs_with(plain):
+                others = tuple(tile for tile in run if tile != plain)
+                if all(self.left[tile] > 0 for tile in others):
+                    shapes.append(MeldShape((plain, *others), 0))
+        if not shapes or (len(shapes) == 1 and not set(shapes[0].tiles) & set(_FIVES)):
+            # 只剩一種、又沒有五要看赤不赤:畫面沒有要回答的。
+            return None
+        found = look.pick(tuple(shapes))
+        if found is None:
+            return None
+        shape = shapes[found.index]
+        consumed = []
+        for index, (tile, red) in enumerate(zip(shape.tiles, found.reds, strict=True)):
+            if index == shape.sideways:
+                continue
+            wanted = f"{tile}r"
+            if red and tile in _FIVES and not self._red_seen(wanted) and wanted not in consumed:
+                consumed.append(self._pick(wanted, tile))
+            else:
+                consumed.append(self._pick(tile))
+        meld = Pon if len(set(shape.tiles)) == 1 else Chi
+        return meld(actor=step.actor, target=step.target, pai=pai, consumed=consumed)
 
     def _agreeing(self, known: list[str]) -> list[str]:
         """牌面與河裡有把握的那張湊不成一組:牌面讀錯了。
@@ -820,6 +946,11 @@ def _without_phantom_turns(steps: list[Step], discards: int) -> list[Step]:
         else:
             drop |= {index - 1, index}
     return [step for index, step in enumerate(steps) if index not in drop]
+
+
+def _same_tile(known: list[str], pai: str) -> bool:
+    """認到的牌面全是 ``pai``(赤五算同一張)。"""
+    return {normalize_red(tile) for tile in known} == {normalize_red(pai)}
 
 
 def _without_phantom_ankans(steps: list[Step], flips: int) -> list[Step]:

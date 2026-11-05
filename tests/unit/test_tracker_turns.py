@@ -174,6 +174,16 @@ class TestCalls:
         assert shape(steps) == [(T, 1), (D, 1), (T, 2), (D, 2)]
         assert [s.pai for s in steps if s.action is D] == ["2p", "5p"]
 
+    def test_a_late_chi_is_still_a_chi(self) -> None:
+        """下家吃了莊家的牌,但下家的牌比對家的晚讀到。換回來時不能當成下家摸過牌:吃沒有摸。"""
+        turns = self._after_first_discard()
+        steps = turns.tick(3, [(2, "5p")], wall=69, growing=[1])
+        steps += turns.tick(4, [(1, "2p")], wall=68, growing=[1])
+        steps += turns.tick(5, melds=[1], wall=68)
+        for tick in range(6, 6 + WAIT):
+            steps += turns.tick(tick, wall=68)
+        assert shape(steps)[:2] == [(C, 1), (D, 1)]
+
     def test_own_turn_flushes_what_is_waiting(self) -> None:
         """自己摸到牌了:前面的事都發生過,Mortal 要的是完整的局面。"""
         turns = TurnTracker(oya=1)
@@ -412,15 +422,27 @@ class TestTheTurnLight:
         return turns
 
     def test_a_draw_the_wall_missed_is_still_a_draw(self) -> None:
-        """余牌多算了一張:下家正常摸打,看起來卻像沒人摸牌。真人鳴牌前猶豫好幾秒,余牌一直不動,
-        沒有燈的話這張牌等不到副露,被當成假的丟掉。"""
+        """之前多算了一張:下家正常摸打,算出來卻像沒人摸牌。真人鳴牌前猶豫好幾秒,余牌一直不動,
+        沒有燈的話這張牌等不到副露,被當成假的丟掉。燈換過來之後的余牌比之前少一張,就是摸了。"""
         turns = self._after_first_discard()
+        turns.drawn += 1
         turns.see_light(2.5, 1)
-        assert shape(turns.tick(3, [(1, "2m")], wall=69)) == [(T, 1), (D, 1)]
+        turns.see_wall(2.6, 68)
+        assert shape(turns.tick(3, [(1, "2m")], wall=68)) == [(T, 1), (D, 1)]
 
     def test_without_the_light_it_waits(self) -> None:
         turns = self._after_first_discard()
+        turns.drawn += 1
+        turns.see_wall(2.6, 68)
+        assert turns.tick(3, [(1, "2m")], wall=68) == []
+
+    def test_a_chi_is_not_a_draw(self) -> None:
+        """下家吃也是燈直接換過來,但余牌沒少。副露還沒在長(電腦一打出就吃)也不能當成摸打。"""
+        turns = self._after_first_discard()
+        turns.see_light(2.5, 1)
+        turns.see_wall(2.6, 69)
         assert turns.tick(3, [(1, "2m")], wall=69) == []
+        assert shape(turns.tick(4, melds=[1], wall=69)) == [(C, 1), (D, 1)]
 
     def test_a_draw_counted_twice_is_absorbed(self) -> None:
         """燈換過來之後的余牌說這次摸牌已經算過了:之前多算了一張,不再加。"""
@@ -431,9 +453,59 @@ class TestTheTurnLight:
         turns.tick(3, [(1, "2m")], wall=68)
         assert turns.drawn == 2
 
+    def test_a_dead_wall_draw_is_absorbed_too(self) -> None:
+        """加槓的嶺上讓余牌多減一張。少算的話,之後沒摸牌的吃看起來像摸打。"""
+        turns = self._after_first_discard()
+        turns.see_light(2.5, 1)
+        turns.see_wall(2.6, 67)
+        turns.tick(3, [(1, "2m")], wall=67)
+        assert turns.drawn == 3
+
+    def _around(self, turns: TurnTracker, tick: int, wall: int) -> int:
+        """對家、上家、自己各摸打一張,燈照順序換。回傳下一輪的 tick 與余牌。"""
+        for seat, pai in ((2, "3m"), (3, "4m"), (0, "5m")):
+            wall -= 1
+            turns.see_light(tick - 0.5, seat)
+            turns.see_wall(tick - 0.4, wall)
+            assert shape(turns.tick(tick, [(seat, pai)], wall=wall)) == [(T, seat), (D, seat)]
+            tick += 1
+        return wall
+
+    def test_a_closed_kan_confirmed_a_turn_late(self) -> None:
+        """下家摸、暗槓、嶺上、打:余牌一次少兩張,燈照樣直接換過來。暗槓的副露晚一輪以上才確認,
+        那時下家已經又摸了一張,只看那一手的話只能排成大明槓上家的牌(011937、164613)。"""
+        turns = self._after_first_discard()
+        turns.see_light(2.5, 1)
+        turns.see_wall(2.6, 67)
+        assert shape(turns.tick(3, [(1, "2m")], wall=67)) == [(T, 1), (D, 1)]
+        wall = self._around(turns, 4, 67)
+        turns.see_light(6.5, 1)
+        turns.see_wall(6.6, wall - 1)
+        steps = turns.tick(7, [(1, "6m")], melds=[1], kans=[1], wall=wall - 1)
+        assert shape(steps) == [(T, 1), (C, 1), (T, 1), (D, 1)]
+        assert steps[1] == Step(C, 1, kan=True)
+
+    def test_a_dead_wall_draw_is_only_remembered_for_one_turn(self) -> None:
+        """余牌多減的那一手之後,下家又正常摸打過一手:之後的槓是那時的大明槓,不是暗槓。"""
+        turns = self._after_first_discard()
+        turns.see_light(2.5, 1)
+        turns.see_wall(2.6, 67)
+        turns.tick(3, [(1, "2m")], wall=67)
+        wall = self._around(turns, 4, 67)
+        turns.see_light(6.5, 1)
+        turns.see_wall(6.6, wall - 1)
+        assert shape(turns.tick(7, [(1, "6m")], wall=wall - 1)) == [(T, 1), (D, 1)]
+        wall = self._around(turns, 8, wall - 1)
+        turns.see_light(10.5, 1)
+        turns.see_wall(10.6, wall - 1)
+        steps = turns.tick(11, [(1, "7m")], melds=[1], kans=[1], wall=wall - 1)
+        assert shape(steps) == [(C, 1), (T, 1), (D, 1)]
+        assert steps[0] == Step(C, 1, target=0, kan=True)
+
     def test_a_plain_draw_still_counts(self) -> None:
         turns = self._after_first_discard()
         turns.see_light(2.5, 1)
+        turns.see_wall(2.6, 68)
         turns.tick(3, [(1, "2m")], wall=68)
         assert turns.drawn == 2
 
@@ -483,6 +555,8 @@ class TestTheTurnLight:
 
     def test_an_unread_light_is_not_a_change(self) -> None:
         turns = self._after_first_discard()
+        turns.drawn += 1
         turns.see_light(2.4, 1)
+        turns.see_wall(2.45, 68)
         turns.see_light(2.5, None)
-        assert shape(turns.tick(3, [(1, "2m")], wall=69)) == [(T, 1), (D, 1)]
+        assert shape(turns.tick(3, [(1, "2m")], wall=68)) == [(T, 1), (D, 1)]
