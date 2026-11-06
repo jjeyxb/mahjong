@@ -249,16 +249,68 @@ def split_digits(mask, seat="P0"):
     return out
 
 
+# ★ 2026-11-06 selfplay-20261106 三場:電腦房關掉擊飛,點數會變負的。負號被
+#   _runs 的高度門檻濾掉,-4600 讀成 4600,總和永遠對不上 -> 有人負分之後
+#   整場每一局的 start_kyoku 都不能確認(三場共丟 24 局)。量到的負號(轉正後):
+#       左右兩家  寬 9~10、高 4~5(數字高約 25)
+#       上下兩家  寬 13、高 3(數字高約 17)
+#   都在第一個數字左邊、高度正中間。有時候會跟後面的數字黏成一塊(-4600 的「-4」)。
+MINUS_W = 0.5           # 負號至少有字距的這個比例寬
+MINUS_MAX_W = 1.3       # 單獨一塊時最寬是字距的這個倍數
+MINUS_MID = (0.3, 0.7)  # 負號的筆畫全部落在數字高度的這個範圍裡
+
+
+def strip_minus(mask, seat="P0"):
+    """找負號。回傳 (是不是負的, 拿掉負號之後的遮罩)。
+
+    兩種情況:
+      單獨一塊  又扁又短、在第一個數字左邊不到一個字距、中心在數字的中段。
+      黏在一起  第一塊最左邊連續好幾欄,筆畫都只在數字的中段(數字的左緣不會
+               這樣:「4」左邊只有斜線末端跟橫槓那 2~3 欄)。
+    """
+    runs = _runs(mask, seat)
+    if not runs:
+        return False, mask
+    pitch = PITCH[seat]
+    fx, fy, fw, fh = runs[0]
+    lo, hi = fy + MINUS_MID[0] * fh, fy + MINUS_MID[1] * fh
+    n, lab, st, _c = cv2.connectedComponentsWithStats(mask, 8)
+    for i in range(1, n):
+        x, y, w, h = (int(v) for v in st[i][:4])
+        if (MINUS_W * pitch <= w <= MINUS_MAX_W * pitch
+                and y >= lo and y + h <= hi
+                and x + w <= fx + 1 and fx - (x + w) <= pitch):
+            out = mask.copy()
+            out[lab == i] = 0
+            return True, out
+    width = 0
+    for c in range(fx, fx + fw):
+        rows = np.flatnonzero(mask[fy:fy + fh, c])
+        if not len(rows) or fy + rows[0] < lo or fy + rows[-1] > hi:
+            break
+        width += 1
+    if width >= MINUS_W * pitch and fw - width >= MINUS_W * pitch:
+        out = mask.copy()
+        out[:, fx:fx + width] = 0
+        return True, out
+    return False, mask
+
+
 def read_seat(frame, seat, templates):
     """讀一家的點數。回傳 (點數 or None, 最弱的那一位的分數, 說明)。
 
     任何一位認不出來就整個回報失敗——五位裡讀對四位不是「差不多對」,而是
     一個完全錯誤的數字(鐵則 5)。
     """
-    digits = split_digits(gold_mask(upright(frame, seat)), seat)
+    negative, mask = strip_minus(gold_mask(upright(frame, seat)), seat)
+    digits = split_digits(mask, seat)
     if not digits:
         return None, 0.0, "看不到數字(被蓋住或還沒開始)"
-    if not (MIN_DIGITS <= len(digits) <= MAX_DIGITS):
+    # ★ 2026-11-06 錄影 20261024 東3局1本場:下家剛好 0 點,畫面只有一個「0」。
+    #   雀魂 0 點還能繼續打(負的才結束),原本 3~6 位的規則把它擋掉,
+    #   四家點數永遠湊不齊,整局 start_kyoku 不能確認。只有一位時只接受 0。
+    single = len(digits) == 1
+    if not single and not (MIN_DIGITS <= len(digits) <= MAX_DIGITS):
         return None, 0.0, f"切出 {len(digits)} 位,不在 {MIN_DIGITS}~{MAX_DIGITS} 之間"
     field = f"score{seat}"
     text, worst = "", 1.0
@@ -272,8 +324,14 @@ def read_seat(frame, seat, templates):
         text += label
         worst = min(worst, score)
     value = int(text)
+    if single and value != 0:
+        return None, worst, f"只切出 1 位而且不是 0(讀到 {value}),位數一定有錯"
     if value % STEP:
         return None, worst, f"{value} 不是 {STEP} 的倍數,一定有一位看錯"
+    if negative:
+        if single:
+            return None, worst, "負號後面只有 1 位,一定有錯"
+        value = -value
     return value, worst, ""
 
 

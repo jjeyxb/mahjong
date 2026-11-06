@@ -140,6 +140,22 @@ def _separated_right(hit, hand_dets, pitch=94.0):
     return hit["center"][0] - max(others) >= 1.15 * pitch
 
 
+def _apart_from_row(det, hand_x, pitch=94.0):
+    """局勢模型的摸入牌框,跟上一份手牌讀數比:在最右邊、跟暗牌隔一段空隙才算。
+
+    ★ 2026-11-06 錄影 selfplay-20261106-103105 東3局1本場 f4192~f4272:打出最右邊的東,
+      摸到的 5s 補進東的位置;滑鼠還停在那裡,那張牌浮起來(y 989 -> 944),局勢模型
+      把它當成摸入牌(信心多半 0.10~0.18,剛點完 0.7~0.9)。暗牌扣掉它只剩 12 張,
+      打牌前後兩份都少同一張 -> 「內容一樣」-> 判成摸切,牌河那張變成摸到的牌。
+      十段錄影 P0「12 張沒變」判摸切 85 次錯、1 次對。真人打牌滑鼠也會停在牌上。
+      牌名投票早就有同一條(_separated_right),這裡補在「哪一張是摸入牌」本身。"""
+    if not hand_x:
+        return True
+    x = det["center"][0]
+    others = [h for h in hand_x if abs(h - x) > pitch / 2]
+    return not others or x - max(others) >= 1.15 * pitch
+
+
 class _Edge:
     def __init__(self):
         self.present = 0
@@ -179,6 +195,7 @@ class TurnSignals:
         self.p0_weak_hand = Counter()   # 低信心但一直讀到的牌名(這一次摸牌)
         self.p0_weak_lib = Counter()
         self.p0_with_drawn = None       # 摸入牌還在時的穩定暗牌(打牌前基準)
+        self.p0_hand_x = None           # 上一份手牌讀數每張的 x(認摸入牌用)
         self.forced = {s: False for s in SEATS}
         self.pai_of_slot = None         # slot_id -> 牌河定案的牌面(pipeline 設)
         self.drawn_hist = {s: deque(maxlen=60) for s in OPP}  # (frame, 在不在)
@@ -196,6 +213,7 @@ class TurnSignals:
         self.p0_stable_drawn = {}
         self.p0_with_drawn = None
         self.p0_draw_frame = None
+        self.p0_hand_x = None
         self.forced = {s: False for s in SEATS}
         self.drawn_hist = {s: deque(maxlen=60) for s in OPP}
         self.reach_last = {}
@@ -277,7 +295,8 @@ class TurnSignals:
                           and d["conf"] >= DRAWN_CONF]
             self.watch.observe(drawn_dets, frame)
             was = self.p0_drawn is not None
-            self.p0_drawn = pick_p0_drawn(drawn_dets)
+            self.p0_drawn = pick_p0_drawn(
+                [d for d in drawn_dets if _apart_from_row(d, self.p0_hand_x)])
             if self.p0_drawn is not None and not was:
                 self.p0_weak_hand = Counter()
                 self.p0_weak_lib = Counter()
@@ -306,6 +325,7 @@ class TurnSignals:
                   for d in p0_hand["tiles"]]
             # 暗牌的樣板比對修正(drawn_lib.fix_hand,錄製端算好的)
             hd = apply_hand_fix(hd, p0_hand.get("hand_fix"))
+            self.p0_hand_x = [d["center"][0] for d in hd]
             if self.p0_drawn is not None:
                 hit = match_drawn(hd, self.p0_drawn)
                 if hit is not None and not _separated_right(hit, hd):

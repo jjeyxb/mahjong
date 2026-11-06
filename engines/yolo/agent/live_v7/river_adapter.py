@@ -178,6 +178,22 @@ def is_hover_tip(seat, d):
     return min(r, 60 - r) <= 12
 
 
+def is_bottom_clip(seat, d, zone):
+    """P0 牌河區底邊切到的扁框:不是牌河的牌。
+
+    ★ 2026-11-06 錄影 human-20261103 東3局 f4332:P0 牌河區底邊一個 83x45 的扁框
+      讀成白(0.56)、停了 8 幀 -> 被當成一次打牌定案,佔住第三排第一格的位置。
+      之後真的九索落在那裡,Gate 以為那格已經打過 -> 那一打整個漏掉,之後
+      P0 每一摸都錯開一位。
+      真的第三排直牌也貼著底邊,但高 81;立直橫放的高約 64。五份錄影裡貼底邊、
+      橫的、高不到 55 的框一共 9 段,全部是假的(最寬 163)。"""
+    if seat != "P0" or not zone:
+        return False
+    b = d["box"]
+    w, h = b[2] - b[0], b[3] - b[1]
+    return w > h and h < 55 and b[3] >= zone[1] + zone[3] - 3
+
+
 class RiverAdapter:
     """四家牌河 -> RiverCandidate / RiverConfirmed / RiverReleased。
 
@@ -258,17 +274,23 @@ class RiverAdapter:
           判準:同位置、GONE_FRAMES 內、牌種一樣 -> 是同一張。
           真的被鳴走後同家再打到同一格,中間要隔三家行動,遠超過 GONE_FRAMES;
           而且還得剛好是同一種牌。
+        ★ 2026-11-07 被鳴走的那一格也一樣:鳴牌確認時牌還留在牌河上幾幀,封存之後
+          同位置同一張又被看成新格子 -> 一次假打牌 -> 狀態機以為那一家又打了一張,
+          等鳴牌那家打牌時再「推定」一次鳴牌。錄影 selfplay-20261106-110134
+          東1局 f1464 吃 8s(8s 留到 f1469),事件流丟了四巡左右。
         """
         from tiles import base_pai
         pai = slot["last"]
         for old in reversed(self.tracker.done[seat]):
-            if old.get("released") != "count_drop":
+            if old.get("released") not in ("count_drop", "claim", "claim_ghost"):
                 continue
             if frame - old.get("released_frame", -10 ** 9) > self.gone_frames:
                 continue
             if not _near(old["center"], slot["center"], self.match_dist):
                 continue
             if old.get("answer") and base_pai(old["answer"]) == base_pai(pai):
+                old["resurrected_from"] = ("claim" if old["released"]
+                                           .startswith("claim") else old["released"])
                 old["released"] = "resurrected"
                 return old
         return None
@@ -314,7 +336,7 @@ class RiverAdapter:
             dets = []
             for d in part["tiles"]:
                 if d.get("conf", 1) < MIN_DET_CONF or is_hover_tip(seat, d) \
-                        or is_sliver(d):
+                        or is_sliver(d) or is_bottom_clip(seat, d, part.get("zone")):
                     continue
                 dd = dict(d)
                 dd["box"] = tuple(d["box"])
@@ -326,6 +348,13 @@ class RiverAdapter:
             self.visible[seat] = len(items)
             released_center = self.gate.observe(seat, len(items))
             marks = self.tracker.update(seat, [d for d, *_ in items], frame)
+            # 被鳴走的牌的殘影一不見就封存:留著的話,這一家下一張打到同一格
+            # (GONE_FRAMES 內)會被配回殘影,不會變成新格子(selfplay-20261102-155238
+            # 東4局4本場:下家碰白,上家接著打 3s 到同一格,整串錯一位)
+            seen_now = {id(m[0]) for m in marks}
+            for sl in list(self.tracker.live[seat]):
+                if sl.get("claim_ghost") and id(sl) not in seen_now:
+                    self._archive(seat, sl, frame, "claim_ghost")
 
             # --- (b) 張數掉了:Gate 放掉的那個位置,tracker 那一格也封存 --
             if released_center is not None:
@@ -360,6 +389,12 @@ class RiverAdapter:
                         slot["said"] = True
                         slot["answer"] = ghost.get("answer")
                         slot["ghost_of"] = ghost.get("slot_id")
+                        if ghost.get("resurrected_from") == "claim":
+                            # 被鳴走的牌還沒消失:位置已經放掉,別再佔住,
+                            # 不然這一家下一張打到同一格會被擋
+                            slot["claim_ghost"] = True
+                            self.stats["claimed_lingering"] += 1
+                            continue
                         self.gate.note_said(seat, slot["center"])
                         self.stats["resurrected"] += 1
                         continue

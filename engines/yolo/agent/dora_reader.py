@@ -41,6 +41,7 @@ N_SLOTS = 5
 
 CROP = (25, 44, 309, 128)       # x1, y1, x2, y2:5 格再外擴一點
 SCALE = 2.0                     # 放大後牌大約 104x154,跟手牌模型的牌差不多
+RETRY_SCALES = (1.6, 2.2, 2.5)  # 牌面朝上卻沒讀到時依序再試,見 DoraReader.read_slots
 CANVAS = (170, 1610)            # 手牌模型訓練時的輸入大小(固定範圍 1610x170)
 PASTE_X, PASTE_Y = 100, 1
 CANVAS_GRAY = 40
@@ -78,11 +79,12 @@ def is_back(hsv):
     return BACK_HUE[0] <= h <= BACK_HUE[1] and s >= BACK_SAT
 
 
-def make_canvas(frame):
+def make_canvas(frame, scale=None):
     import cv2
+    scale = scale or SCALE
     x1, y1, x2, y2 = CROP
     pan = frame[y1:y2, x1:x2]
-    big = cv2.resize(pan, None, fx=SCALE, fy=SCALE,
+    big = cv2.resize(pan, None, fx=scale, fy=scale,
                      interpolation=cv2.INTER_CUBIC)
     can = np.full((CANVAS[0], CANVAS[1], 3), CANVAS_GRAY, np.uint8)
     h = min(CANVAS[0] - PASTE_Y, big.shape[0])
@@ -90,8 +92,8 @@ def make_canvas(frame):
     return can
 
 
-def to_frame_x(cx_canvas):
-    return (cx_canvas - PASTE_X) / SCALE + CROP[0]
+def to_frame_x(cx_canvas, scale=None):
+    return (cx_canvas - PASTE_X) / (scale or SCALE) + CROP[0]
 
 
 class DoraReader:
@@ -127,12 +129,25 @@ class DoraReader:
                 sl["state"] = "dim"
             self.last = slots
             return slots
-        r = self.model.predict(make_canvas(frame), conf=self.conf,
+        self._predict(frame, slots, SCALE)
+        # ★ 2026-11-06 錄影 selfplay-20261102-170335 東1局1本場:八筒擺得清清楚楚,
+        #   2 倍時模型只給 0.147(門檻 0.25),整局寶牌讀不到 -> start_kyoku 不能確認,
+        #   整局沒有事件流。換倍率信心差很多(1.6 倍 0.45、2.5 倍 0.75),所以
+        #   牌面朝上卻沒讀到的格子才換倍率再試。讀得到的格子不會多花時間。
+        for scale in RETRY_SCALES:
+            if not any(sl["state"] == "empty" for sl in slots):
+                break
+            self._predict(frame, slots, scale)
+        self.last = slots
+        return slots
+
+    def _predict(self, frame, slots, scale):
+        r = self.model.predict(make_canvas(frame, scale), conf=self.conf,
                                **self.pred_kw,
                                verbose=False)[0]
         for b in r.boxes:
             x1, _, x2, _ = (float(v) for v in b.xyxy[0])
-            cx = to_frame_x((x1 + x2) / 2)
+            cx = to_frame_x((x1 + x2) / 2, scale)
             k = int(round((cx - SLOT_X0 - SLOT_W / 2) / SLOT_PITCH))
             if not 0 <= k < N_SLOTS:
                 continue
@@ -145,8 +160,6 @@ class DoraReader:
             if c > s["conf"]:
                 s.update(state="tile", pai=self.names[int(b.cls[0])],
                          conf=round(c, 4))
-        self.last = slots
-        return slots
 
     def detect(self, frame):
         """跟舊 tile_model.detect 同格式(給 RawUiReader 直接替換)。"""

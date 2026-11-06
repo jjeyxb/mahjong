@@ -45,6 +45,34 @@ def _initial_from_hand(events: Sequence[MjaiEvent], hand: Sequence[str]) -> list
     return sorted(result) if _counts_ok(result) else None
 
 
+def _with_initial(events: list[MjaiEvent], initial: list[str] | None) -> list[MjaiEvent]:
+    """把配牌換成 ``initial``(``None`` 就原樣)。不改動傳進來的串列。"""
+    if initial is None:
+        return events
+    body = events[0].to_dict()
+    body["tehais"][0] = list(initial)
+    return [parse_event(body), *events[1:]]
+
+
+def _calls_after_sources(ledger: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """鳴牌排到它鳴的那一打之後。
+
+    事件帳照「第一次看到」排序。立直宣言牌被吃時,宣言牌晚好幾幀才落定,吃的橫幅反而先到
+    (錄影 043327 東3局3本場:吃赤五索排在打赤五索前面)-> 鳴牌找不到來源被丟掉。
+    """
+    ordered = list(ledger)
+    ids = [e.get("event_id") for e in ordered]
+    for call in [e for e in ordered if e.get("type") in ("chi", "pon", "daiminkan")]:
+        source = call.get("source_discard")
+        if source not in ids or ids.index(source) < ids.index(call.get("event_id")):
+            continue
+        ordered.remove(call)
+        claimed = next(e for e in ordered if e.get("event_id") == source)
+        ordered.insert(ordered.index(claimed) + 1, call)
+        ids = [e.get("event_id") for e in ordered]
+    return ordered
+
+
 def _counts_ok(tiles: Sequence[str]) -> bool:
     return (
         all(t != "?" for t in tiles)
@@ -68,7 +96,7 @@ class LedgerStream:
             self.hand_id = hand_id
             self.kyoku += 1
             self._initial = None
-        ledger = payload.get("events", [])
+        ledger = _calls_after_sources(payload.get("events", []))
         start = next((e for e in ledger if e["type"] == "start_kyoku"), None)
         if not start or not start.get("export_eligible"):
             return Stream(stalled=True)
@@ -105,6 +133,10 @@ class LedgerStream:
         rejected: list[str] = []
         own_last: Mapping[str, Any] | None = None
         waiting_own = False
+        # 輪到自己摸、之後又有打牌指著它的摸牌確實發生過。牌面還沒讀到就停在這裡:
+        # 跳過去的話,接著那一打不合輪次被丟掉,下一張摸牌頂替它,之後每一摸都錯開一位。
+        # 鳴牌之後不摸牌,那時冒出來的待定摸牌是假的(錄影 170335 東1局1本場碰三筒後),照舊跳過。
+        drawn = {e.get("p0_tsumo") for e in ledger if e["type"] == "dahai"} - {None}
         for e in ledger:
             typ = e["type"]
             cancelled_reach = typ == "reach" and e.get("status") == "CANCELLED"
@@ -113,6 +145,8 @@ class LedgerStream:
             if not e.get("export_eligible") and not cancelled_reach:
                 if e.get("actor") == "P0" and typ in CALLS | {"tsumo", "dahai"}:
                     waiting_own = True
+                    if typ == "tsumo" and e["event_id"] in drawn and turn == 0 and not can_discard:
+                        break
                 continue
             actor, target = _seat(e.get("actor")), _seat(e.get("target"))
             eid = e["event_id"]
@@ -184,20 +218,24 @@ class LedgerStream:
                 own_last = e
         self.rejected = tuple(rejected)
 
+        # 用畫面上的穩定手牌倒推配牌,讓「現在的手牌」跟畫面一致。Mortal 要的是做決定
+        # 那一刻的手牌,所以每一份都拿來同步(只在對不上時才改的版本,五場 selfplay
+        # 引擎答案相同反而少 14 次)。
+        # 但自己有摸打還沒確認時不改:畫面已經是打完的手牌,倒推出來是「配牌 + 剛摸的
+        # - 剛打的」,一樣 13 張,會蓋掉對的配牌。擋掉之後十段錄影的引擎答案相同
+        # 1210 -> 1233 次,報錯 115 -> 96 次。
         physical = payload.get("hand") or {}
         full = physical.get("tiles") or []
         if (
             physical.get("stable")
             and own_last is not None
+            and not waiting_own
             and int(physical.get("frame", -1)) >= int(own_last.get("frame_first", 0))
         ):
             repaired = _initial_from_hand(events, full)
             if repaired is not None:
                 self._initial = repaired
-        if self._initial is not None:
-            initial = events[0].to_dict()
-            initial["tehais"][0] = list(self._initial)
-            events[0] = parse_event(initial)
+        events = _with_initial(events, self._initial)
 
         reason = validate_inventory(events)
         if waiting_own and reason is None:

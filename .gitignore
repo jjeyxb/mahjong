@@ -39,6 +39,9 @@ models/*
 *.pt
 *.onnx
 
+# 組員提供的原始程式包(含模型)。需要的部分已複製到 engines/yolo/agent 與 models/yolo
+downloads/
+
 # Mortal 原始碼若 clone 進來,不納入本 repo
 engines/mortal/Mortal/
 engines/mortal/*.whl

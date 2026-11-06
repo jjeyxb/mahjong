@@ -129,11 +129,25 @@ COMPOSITE = {"kyoku": {"expect": 3, "use": (0, 1)}}
 # 計數器之間相似度 0.99~1.00,不同數字 0.30~0.62。共用之後兩邊的樣板互通,
 # 其中一邊沒收到的值可以用另一邊的補(實測 kyotaku 缺 3,honba 有)。
 SHARED_POOL = {"honba": "digit", "kyotaku": "digit",
+               # ★ 2026-11-06 補「5」(ui/templates_v7/honbax__5.png,selfplay-20261106-113550
+               #   三個 5 本場切的)。原本只有 0~4,5 本場讀成 0(0.62,過不了門檻),
+               #   那一局整局不送。「6」「7」從 selfplay-20261102-053001 / 155238 切
+               #   (原本 0.58 / 0.52 讀不出來,補了之後跟別的數字最高 0.58)。
+               #   8 以上沒錄到,由 kyoku_info 用上一局推(見 HONBA_SIG)。
+               "honbax": "digit",
                # 點數(scores.py):水平的兩家一組、垂直的兩家一組。
                # 為什麼不是四家共用一個池:實測同一個數字在水平家與垂直家
                # 之間只有 0.11~0.36,那是兩種長寬比完全不同的字。
                "scoreP0": "score_flat", "scoreP2": "score_flat",
-               "scoreP1": "score_side", "scoreP3": "score_side"}
+               "scoreP1": "score_side", "scoreP3": "score_side",
+               # ★ 2026-11-06 第二份點數樣板(ui/templates_v7/scoreP0x__8.png 這種),
+               #   從 selfplay-20261106 三場、封包確認過答案的數字裡,每家每個數字
+               #   挑跟同類平均最像的一張。舊樣板 P0 的「8」比「6」還不像 8
+               #   (0.71 對 0.73),自己的點數有 8 就有一半讀成 6,總和對不上,
+               #   那一局 start_kyoku 出不來。只多加、不換掉舊的:沒參與挑選的
+               #   另外五段錄影,四家讀錯從 13 次降到 1 次。
+               "scoreP0x": "score_flat", "scoreP2x": "score_flat",
+               "scoreP1x": "score_side", "scoreP3x": "score_side"}
 
 # 池裡的鍵是「標籤 + 來源欄位」,因為同一個標籤會有好幾份樣板(P0 的 0 跟
 # P2 的 0 都要留著,比對時取最像的那一份)。舊寫法是 setdefault,同一個標籤

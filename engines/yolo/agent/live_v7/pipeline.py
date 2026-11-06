@@ -24,7 +24,7 @@ from fsm import RoundFSM
 from kyoku_info import KyokuInfo
 from ledger import Ledger
 from meld_reader import MeldReader
-from river_adapter import RiverAdapter, is_hover_tip, is_sliver
+from river_adapter import RiverAdapter, is_bottom_clip, is_hover_tip, is_sliver
 from fsm import nxt
 from turn_signals import TurnSignals
 
@@ -48,7 +48,13 @@ COUNT_CONF = 0.30    # 判斷「牌河全空/回來幾張」時只算信心 >= �
 #   中間會有一兩幀只讀到 1 張,接著 46 張全部回來(20261026_232930 f647~654)。
 #   所以先看 NH_CONFIRM 幀:一直都只有少數幾張 -> 換局;又冒出一大堆 -> 特效。
 NH_CONFIRM = 4
+# 余牌對帳(見 Pipeline._wall_kans)。余牌由 MIA 讀好放在觀測的 hud 欄位,YOLO 不讀。
+WALL_STABLE = 2          # 同一個讀值連續幾幀才算數
+WALL_MAX_STEP = 4        # 一次掉超過這麼多張當成讀錯(稀疏幀最多差一兩巡)
+WALL_SETTLE_MS = 2000    # 下一打出現後再等多久才對帳(推定的摸牌要先補上)
+WALL_KAN_WINDOW_MS = 20000   # 槓寶牌被讀到之前多久內找槓(寶牌要投票,晚好幾秒)
 NH_CANCEL = 6
+LATE_DRAW_VOTES = 1     # P0 漏看的摸牌:幾份打牌後的暗牌指向同一張才補(原本就是一份),見 _late_p0_draw
 NO_START_EMPTY = 20  # 沒有場況的局:牌河空這麼久再回來才算換局
 REPLAY_EMPTY = 6     # 換局時重新餵給新局的「牌河全空」幀數(只取最後幾幀:
                      # 更早的是結算畫面)
@@ -208,8 +214,12 @@ class Pipeline:
         之前的事件牌面還不知道 -> 先不填(等)。"""
         f0, _f1, tiles = snap
         tiles = list(tiles)
+        # ★ 2026-11-06 錄影 human-20261103 東1局:第 170 幀一筆摸牌被取消(沒有牌面),
+        #   原本照樣算進倒推 ->「之前的摸牌牌面還不知道」,十四份穩定暗牌全部放棄,
+        #   整局沒有 start_kyoku。被取消的事件沒有發生過,不能拿來倒推。
         evs = [e for e in self.ledger.ordered(self.hand_id)
                if e.get("actor") == "P0" and e["frame_first"] is not None
+               and e.get("status") != "CANCELLED"
                and e["frame_first"] < f0
                and e["type"] in ("tsumo", "dahai", "chi", "pon",
                                  "daiminkan", "ankan", "kakan", "kan_self")]
@@ -223,6 +233,7 @@ class Pipeline:
                 #   暗牌裡已經沒有摸入牌位置 = 那一打已經發生,把它算進來。
                 nxt_d = [e for e in self.ledger.ordered(self.hand_id)
                          if e.get("actor") == "P0" and e["type"] == "dahai"
+                         and e.get("status") != "CANCELLED"
                          and e["frame_first"] is not None
                          and e["frame_first"] >= f0]
                 if not nxt_d:
@@ -489,20 +500,47 @@ class Pipeline:
                               "沒看到終局宣告就換局了(漏看和牌/流局)")
                 self.fsm._end(t - 1, frame, "漏看終局")
         self._update_start(t)
+        # 上一局有沒有真的打過(要在 hand_no 往前之前看:hand_id 跟著 hand_no 變)。
+        # 只算定案的:錄影開頭載入畫面的假牌河會留下牌面讀不到的待定打牌。
+        played = any(e["type"] in ("dahai", "chi", "pon", "daiminkan", "ankan",
+                                   "kakan", "hora", "ryukyoku")
+                     and e.get("export_eligible")
+                     for e in self.ledger.ordered(self.hand_id))
         self.hand_no += 1
         rel = self.adapter.new_hand(self.hand_id, frame)
         self.signals.new_hand()
         self.declare = DeclarationDetector()
         st_ev = self.ledger.get(self.start_eid) if self.start_eid else None
-        self.kyoku.reset(remember=bool(st_ev and st_ev.get("export_eligible")))
+        # ★ 2026-11-07 錄影 20261024-123746:錄影一開始就是東1局發牌,第 1 幀開的那一局
+        #   讀到「東1/0」,f98 手牌整手出現又換一次局(_fresh_deal)-> 新局的「東1/0」
+        #   被當成上一局的舊面板擋掉,局末讀到「東2」才填 -> 之後每一局都錯一位。
+        #   上一局什麼都沒發生(沒人打牌、鳴牌、和牌、流局)就不算數。
+        self.kyoku.reset(remember=bool(st_ev and st_ev.get("export_eligible"))
+                         and played)
         self.meld.reset()
         self.fsm.new_hand(self.hand_id, t, frame)
         self.start_eid = None
+        self._wall_reset()
         self.stats["hands"] += 1
         self._say(f"f{frame} ── 換局 -> {self.hand_id}(封存 {len(rel)} 格)")
 
     # ------------------------------------------------------------------
     def feed(self, obs):
+        # ★ 2026-11-07 還沒進過牌桌的畫面整幀不看:selfplay-20261106-103105 / 110134 /
+        #   113550 開局前的載入畫面(約 40~50 秒)四家牌河都讀到假的「白」-> 一串假打牌,
+        #   假局的場況後來被真的東1局填齊,第一打時換局條件一條都不成立 -> 假牌佔住的
+        #   位置把下家真的打牌擋掉(DahaiGate),東1局丟了四巡。只擋牌河不夠:
+        #   selfplay-20261102-170335 載入畫面一個假的「下家摸牌」讓狀態機等下家,
+        #   莊家(自己)第一打前沒有推定第 14 張 -> MIA 丟掉那一打,整局錯一位。
+        #   從開始到現在一次余牌都沒讀到、也從沒看到一整手手牌 = 還沒進過牌桌。
+        #   手牌一出現就不再管(余牌讀取壞掉時不會一直擋)。沒有 hud 欄位的呼叫端不受影響。
+        if not getattr(self, "_at_table", False):
+            ph0 = obs.get("p0_hand")
+            if "hud" not in obs or (obs["hud"] or {}).get("wall") is not None \
+                    or (ph0 and len(ph0.get("tiles") or ()) >= 10):
+                self._at_table = True
+            else:
+                return []
         if self.nh_pending is not None:
             return self._pending_step(obs)
         return self._feed(obs)
@@ -516,7 +554,8 @@ class Pipeline:
             return None
         return sum(1 for s in SEATS for d in river[s]["tiles"]
                    if d.get("conf", 1) >= COUNT_CONF
-                   and not is_hover_tip(s, d) and not is_sliver(d))
+                   and not is_hover_tip(s, d) and not is_sliver(d)
+                   and not is_bottom_clip(s, d, river[s].get("zone")))
 
     def _pending_step(self, obs):
         """疑似換局:先觀察 NH_CONFIRM 幀再決定(見 NH_CONFIRM 的說明)。"""
@@ -621,6 +660,17 @@ class Pipeline:
         river = obs.get("river")
         total = self._total(obs)
         empty = None if total is None else total == 0
+        # ★ 2026-11-06 selfplay-20261106-110134 南4局1本場 -> 西1局:和牌的結算畫面蓋住
+        #   余牌,攤開的和牌手牌落在牌河區 -> 讀成牌河「回來 1~2 張」-> 多開一局幽靈局,
+        #   還把西1局的場況吃走(本場是舊面板的 1),真的西1局被當成「還在看上一局的
+        #   面板」整局不送。上一局結束之後余牌讀不到 = 還不是牌桌,牌河先不算(牌留在
+        #   牌河上,余牌讀得到時一樣看得到,只是晚幾幀)。只管 ROUND_END:發牌動畫時
+        #   余牌也常讀不到,連「這一局還沒有人打牌」都擋的話,莊家第一打會漏掉
+        #   (human-20261103 東3局、selfplay-170335 東1局實測)。
+        #   沒有 hud 欄位(MIA 以外的呼叫端)不受影響。
+        if "hud" in obs and (obs["hud"] or {}).get("wall") is None \
+                and self.fsm.state.name == "ROUND_END":
+            hide_river = True
         if hide_river:
             river = None
             empty = None
@@ -696,6 +746,10 @@ class Pipeline:
         for v in self.signals.judge(frame):
             fsm.on_cut(v, t, frame)
 
+        # 余牌對帳:沒看到宣告的槓
+        self._see_wall(obs.get("hud"), t, frame)
+        self._wall_kans(t, frame)
+
         # 鳴牌區(第 4 步):consumed、槓型
         self._melds(obs, n_before, frame, t)
 
@@ -705,6 +759,7 @@ class Pipeline:
             if idx >= 1:
                 self._add_dora(idx, pai, t, frame)
         self._update_start(t)
+        self._late_p0_draw(t)
 
         if fsm.tick(t, frame, empty):     # 只剩「長時間全空 = 漏看終局」
             self._new_hand(t, frame)
@@ -714,6 +769,169 @@ class Pipeline:
                 self._say(f"f{frame} + {describe(ev)}  [{fsm.state!r}]")
         self._pump(t)
         return self.ledger.events[n_before:]
+
+    # ------------------------------------------------------------------
+    # 余牌對帳
+    def _wall_reset(self):
+        self._wall = None                 # 目前認定的余牌
+        self._wall_seen = (None, 0, None, None)   # (讀值, 連續幾幀, 第一次的 t, frame)
+        self._drops = []                  # 余牌每少一張一筆 {"t", "frame", "done"}
+
+    def _see_wall(self, hud, t, frame):
+        """記下余牌每一次減少的時刻。MIA 的余牌讀取(樣板版用來排輪次)每幀都讀。"""
+        if not hasattr(self, "_drops"):
+            self._wall_reset()
+        w = (hud or {}).get("wall")
+        if w is None:
+            return
+        was, n, t0, f0 = self._wall_seen
+        self._wall_seen = (w, n + 1, t0, f0) if w == was else (w, 1, t, frame)
+        w, n, t0, f0 = self._wall_seen
+        if n != WALL_STABLE or w == self._wall:
+            return
+        if self._wall is not None and 0 < self._wall - w <= WALL_MAX_STEP:
+            self._drops += [{"t": t0, "frame": f0, "done": False}
+                            for _ in range(self._wall - w)]
+        elif self._wall is not None and 0 < w - self._wall <= WALL_MAX_STEP:
+            # 往回跳:剛才那幾張是讀錯,撤掉(換局會整個重設,不會走到這裡)
+            del self._drops[len(self._drops) - (w - self._wall):]
+        self._wall = w
+
+    def _wall_kans(self, t, frame):
+        """沒看到宣告的自家槓。
+
+        ★ 2026-11-06 錄影 human-20261103 東3局:上家暗槓八筒,槓的橫幅與鳴牌區的變化都沒
+          抓到,只看到新翻的寶牌 -> 帳上那一巡少了暗槓與嶺上牌。
+        兩個獨立的證據都要有才推:
+          ・翻出了新的槓寶牌,帳上卻沒有對應的槓;
+          ・余牌比帳上的摸牌多少了一張(嶺上牌)。一打到下一打之間余牌只少一張,
+            槓多摸一張嶺上牌就少兩張,而且摸牌與下一打是同一家 -> 就是那一家槓的。
+        只看余牌不夠:電腦對局一個動作 0.5 秒,牌河的牌比下一家摸牌還晚被看到時,
+        下一家那一摸會算進上一段(一場錄影 30 筆假的)。
+        槓型與牌面照常交給鳴牌區(kan_self)。P0 不推:自己的槓看手牌就知道。
+        帳上有鳴牌的那一段也不推(大明槓、碰後加槓太多種)。"""
+        if not getattr(self, "_drops", None):
+            return
+        evs = [e for e in self.ledger.ordered(self.hand_id)
+               if e.get("status") != "CANCELLED" and e.get("t_first_ms") is not None]
+        kans = [e for e in evs if e["type"] in ("ankan", "kakan", "daiminkan", "kan_self")]
+        doras = sorted((e for e in evs if e["type"] == "dora" and (e.get("index") or 0) >= 1),
+                       key=lambda e: e["index"])
+        if len(doras) <= len(kans):
+            return
+        seen = doras[len(kans)]["t_first_ms"]       # 沒有槓的寶牌照觀測時間排
+        bounds = ("dahai",) + self.CALL_TYPES + ("ankan", "kakan")
+        found = None
+        for d in self._drops:
+            if d["done"] or not seen - WALL_KAN_WINDOW_MS <= d["t"] <= seen:
+                continue
+            nxt_d = next((e for e in evs if e["type"] == "dahai"
+                          and e["t_first_ms"] > d["t"]), None)
+            if nxt_d is None or t - nxt_d["t_first_ms"] < WALL_SETTLE_MS:
+                return          # 寶牌之前還有沒對完帳的一段,等它
+            prev = max((e["t_first_ms"] for e in evs if e["type"] in bounds
+                        and e["t_first_ms"] < d["t"]), default=float("-inf"))
+            end = nxt_d["t_first_ms"]
+            seg = [x for x in self._drops if prev < x["t"] <= end]
+            inside = [e for e in evs if prev < e["t_first_ms"] < end]
+            tsumos = [e for e in inside if e["type"] == "tsumo"]
+            seat = nxt_d.get("actor")
+            if len(seg) - len(tsumos) == 1 and tsumos and seat != "P0" \
+                    and all(e.get("actor") == seat for e in tsumos) \
+                    and not any(e["type"] in bounds for e in inside):
+                found = (seg, tsumos, seat, end)      # 留最晚的一段:離寶牌最近
+        if found is None:
+            return
+        seg, tsumos, seat, end = found
+        for x in seg:
+            x["done"] = True
+        last = max(e["t_first_ms"] for e in tsumos)
+        rin = max(seg, key=lambda x: x["t"])
+        tk = rin["t"] if last < rin["t"] < end else (last + end) / 2
+        k = self.fsm._ev("kan_self", tk, frame, "INFERRED", actor=seat,
+                         pai=None, consumed=None,
+                         kan_type=("kakan_or_ankan" if self.fsm.pons[seat]
+                                   else "ankan"))
+        # 鳴牌區的槓比嶺上牌早出現(實測早 5 幀),「槓之前」要從槓前那次摸牌算
+        k["call_frame"] = max(tsumos, key=lambda e: e["t_first_ms"])["frame_first"]
+        self.ledger.note(k["event_id"], f"翻了新的槓寶牌、帳上沒有槓;余牌在 {seat} 摸牌與"
+                                        "打牌之間多少了一張(嶺上牌)-> 推定自家槓")
+        r = self.fsm._ev("tsumo", tk + (end - tk) / 2, frame, "INFERRED",
+                         actor=seat, pai="?", origin="RINSHAN")
+        self.ledger.note(r["event_id"], "推定槓的嶺上牌")
+        self.stats["wall_inferred_kan"] += 1
+        self._say(f"f{frame} 余牌對帳:{seat} 推定自家槓")
+
+    def _late_p0_draw(self, t):
+        """P0 手切了,摸到什麼牌卻一直沒補上:拿打牌後**之後**的穩定暗牌再比一次。
+
+        ★ 2026-11-06 錄影 20261024 東2局 f1119:摸三索,打東。打牌後第一份穩定暗牌把
+          七索看成八索 -> 差分「少了 7s、E,多了 3s、8s」,判不出摸到哪張,摸牌一直
+          PENDING。下游等不到這一摸,之後每一次摸牌都錯開一位。兩秒後的那份暗牌
+          已經讀對(少了 E、多了 3s)。切法判斷只看第一份,所以這裡往後找:
+          打牌前那份暗牌 → 打牌後任何一份,恰好少了牌河那張、多了一張,那一張就是摸到的。
+          只看到暗牌下一次改變之前。"""
+        from hand import diff
+        evs = [e for e in self.ledger.ordered(self.hand_id) if e.get("actor") == "P0"
+               and e.get("status") != "CANCELLED"]
+        for i, ts in enumerate(evs):
+            # ★ 2026-11-06 也補 INFERRED(摸牌沒看到、牌河出現新棄牌才推出來的那種)。
+            #   selfplay-20261106-113550 東1局4本場、東3局、東4局1本場:都是這種,下游
+            #   等這一摸的牌面等到局尾,整局後半沒有事件流。
+            if ts["type"] != "tsumo" or ts.get("pai") is not None \
+                    or ts["status"] not in ("PENDING", "INFERRED"):
+                continue
+            d = next((e for e in evs[i + 1:] if e["type"] == "dahai"
+                      and e.get("p0_tsumo") == ts["event_id"]), None)
+            if d is None or d.get("tsumogiri") is not False or not d.get("pai"):
+                continue
+            # 打牌前的暗牌:推出來的摸牌,幀數是看到棄牌那一幀(比真的摸牌晚),最後
+            # 一份可能已經是打完的。所以從上一次 P0 動作之後的每一份都試。
+            lower = max((e["frame_first"] for e in evs[:i]
+                         if e["type"] != "tsumo" and e["frame_first"] is not None),
+                        default=-1)
+            prevs = [h for f0, f1, h in reversed(self.signals.p0_stable)
+                     if f0 < ts["frame_first"] and f1 > lower][:6]
+            # 更早的暗牌用之間已知的動作往後推到「摸牌前」。★ 113550 東4局1本場:
+            # 摸牌前那兩份一份少讀 9s、一份把 6s 讀成 6m,再早一份是讀對的。
+            # 「之後的動作」從哪一幀算:摸到的牌放旁邊時暗牌不變,一份暗牌會跨過摸牌;
+            # 牌河又比手牌晚一兩幀。開始幀 +3 與結束幀兩種都試,算錯的那種不會剛好
+            # 差一張,投不出票。
+            for f0, f1, h in list(reversed(self.signals.p0_stable)):
+                if f1 > lower:
+                    continue
+                if len(prevs) >= 16:
+                    break
+                for cut in (f0 + 3, f1):
+                    fwd = _redo_p0(h, [e for e in evs[:i] if e["frame_first"] is not None
+                                       and e["frame_first"] > cut])
+                    if fwd is not None and fwd not in prevs:
+                        prevs.append(fwd)
+            # 打牌後的暗牌:不只看到下一次改變為止。★ 2026-11-06 113550 東1局4本場:
+            # 打牌後只有一份,而那份把 2p 讀成 7m,差兩張判不出來。之後的每一份用
+            # 已知的後續動作倒推回「剛打完」,各投一票。
+            later = evs[evs.index(d) + 1:]
+            votes = Counter()
+            for f0, f1, cur in self.signals.p0_stable:
+                if f1 <= d["frame_first"]:
+                    continue
+                back = _undo_p0(cur, [e for e in later if e["frame_first"] is not None
+                                      and e["frame_first"] < f0])
+                if back is None:    # 這份讀錯(倒推出負的)或之後的動作牌面還不知道
+                    continue
+                for prev in prevs:
+                    inn, out = diff(back, list(prev)), diff(list(prev), back)
+                    if len(inn) == 1 and out == [d["pai"]]:
+                        votes[inn[0]] += 1
+                        break
+            top = votes.most_common(2)
+            if top and top[0][1] >= LATE_DRAW_VOTES and (
+                    len(top) == 1 or top[0][1] >= 2 * top[1][1]):
+                src = (f"手切:打牌後的暗牌倒推,多出來的那張 {top[0][0]}"
+                       f"(投票 {dict(votes)})")
+                self.ledger.update(ts["event_id"], t_ms=t, reason=src, pai=top[0][0])
+                ts["pai_source"] = src
+                self.fsm.stats["p0_tsumo_late"] += 1
 
     def _pump(self, t):
         """第 4 步:Mortal 守門器。上一局的尾巴(end_kyoku)也要送完。"""
@@ -740,6 +958,67 @@ class Pipeline:
         self._pump(None)
         if self.guard is not None:
             self.guard.finish()
+
+
+def _redo_p0(tiles, events):
+    """_undo_p0 的反方向:把一份暗牌往後推過這些 P0 動作。"""
+    from hand import diff
+    add, sub = [], []
+    for e in events:
+        if e.get("actor") != "P0" or e.get("status") == "CANCELLED":
+            continue
+        t = e["type"]
+        if t == "tsumo":
+            if not e.get("pai") or e["pai"] == "?":
+                return None
+            add.append(e["pai"])
+        elif t == "dahai":
+            if not e.get("pai"):
+                return None
+            sub.append(e["pai"])
+        elif t in ("chi", "pon", "daiminkan", "ankan", "kakan"):
+            if not e.get("consumed"):
+                return None
+            sub += list(e["consumed"])
+            if t == "kakan":
+                sub.append(e["pai"])
+    whole = list(tiles) + add
+    left = diff(whole, sub)
+    if len(left) != len(whole) - len(sub):
+        return None
+    return left
+
+
+def _undo_p0(tiles, events):
+    """把一份暗牌倒推回這些 P0 動作之前:加回打掉/鳴牌用掉的、扣掉摸到的。
+
+    任何一個動作牌面還不知道、或倒推出負的張數,回傳 None。摸切(打的就是剛摸的)
+    兩邊抵銷,不碰暗牌。"""
+    from hand import diff
+    add, sub = [], []
+    for e in events:
+        if e.get("actor") != "P0" or e.get("status") == "CANCELLED":
+            continue
+        t = e["type"]
+        if t == "tsumo":
+            if not e.get("pai") or e["pai"] == "?":
+                return None
+            sub.append(e["pai"])
+        elif t == "dahai":
+            if not e.get("pai"):
+                return None
+            add.append(e["pai"])
+        elif t in ("chi", "pon", "daiminkan", "ankan", "kakan"):
+            if not e.get("consumed"):
+                return None
+            add += list(e["consumed"])
+            if t == "kakan":
+                add.append(e["pai"])
+    whole = list(tiles) + add
+    left = diff(whole, sub)
+    if len(left) != len(whole) - len(sub):
+        return None
+    return left
 
 
 def _is_run(tiles):

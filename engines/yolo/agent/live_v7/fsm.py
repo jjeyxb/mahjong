@@ -75,6 +75,7 @@ class RoundFSM:
 
     def _reset_hand_vars(self):
         self.slot_event = {}          # slot_id -> dahai event id
+        self.ghost_next = {}          # 被當成飛行中假格子取消的 dahai -> 接手的那一筆
         self.last_discard = None      # 最新一張未被鳴走的 dahai event id
         self.last_p0_tsumo = None
         self.riichi_pending = {}      # seat -> {"reach": eid, "decl": eid}
@@ -184,6 +185,7 @@ class RoundFSM:
             self.stats["candidate_after_end"] += 1
             return None
         ok = False
+        ghost = None
         if s.name == "WAIT_REACTION" and s.actor == seat:
             prev = self.ledger.get(s.ref)
             if prev is not None and not (prev.get("evidence") or {}).get(
@@ -199,6 +201,7 @@ class RoundFSM:
                                  "判定為打牌飛行中的假格子,取消")
                 self._hook("cancel_cut", prev.get("slot_id"))
                 self.stats["ghost_discard_cancelled"] += 1
+                ghost = prev["event_id"]
                 self._go("WAIT_ACTION", seat, why="取消假打牌", frame=frame)
                 s = self.state
                 if prev.get("p0_tsumo"):
@@ -249,6 +252,8 @@ class RoundFSM:
                       call_status="UNCLAIMED",
                       tedashi_forced=(s.name == "WAIT_DISCARD_AFTER_CALL"))
         self.slot_event[c.slot_id] = ev["event_id"]
+        if ghost is not None:
+            self.ghost_next[ghost] = ev["event_id"]
         if seat == "P0" and self.last_p0_tsumo:
             ev["p0_tsumo"] = self.last_p0_tsumo
         rp = self.riichi_pending.get(seat)
@@ -264,7 +269,29 @@ class RoundFSM:
         if eid is None:
             return
         cur = self.ledger.get(eid)
-        if cur.get("p0_hand_pai") and cur["p0_hand_pai"] != c.pai:
+        nxt = self.ledger.get(self.ghost_next.get(eid))
+        if cur["status"] == "CANCELLED" and nxt is not None \
+                and nxt["status"] == "PENDING" and nxt.get("pai") is None:
+            # ★ 2026-11-06 錄影 selfplay-20261102-170335 東1局:對家的立直宣言牌(橫放)
+            #   先有一格,接著同一家又冒出一格 -> 前一格被當成飛行中的假格子取消。
+            #   結果前一格之後在牌河定案(西),接手的那一格永遠沒有牌面,那一打
+            #   一直 PENDING,之後整整一輪的事件都對不上輪次。
+            #   假格子不會定案;會定案就是真的那張,牌面交給接手的那一筆
+            #   (兩筆之間沒有別的事件,順序一樣)。
+            self.stats["ghost_confirmed_late"] += 1
+            self.ledger.note(nxt["event_id"], f"被取消的 {eid} 之後在牌河定案"
+                                              f"({c.pai}),牌面由這一筆接手")
+            eid, cur = nxt["event_id"], nxt
+        hconf = cur.get("p0_hand_conf")
+        if cur.get("p0_hand_pai") and cur["p0_hand_pai"] != c.pai and \
+                hconf is not None and c.conf is not None and hconf < c.conf:
+            # 手牌差分先到、牌河後定案而且比較有把握 -> 改用牌河(見 _p0_pai_from_hand)
+            self.stats["p0_river_vs_hand"] += 1
+            self.ledger.note(eid, f"★牌河讀 {c.pai}({c.conf:.2f})、手牌差分是 "
+                                  f"{cur['p0_hand_pai']}({hconf:.2f})—— 用牌河")
+            cur.pop("p0_hand_pai")
+            upd = {"pai": c.pai}
+        elif cur.get("p0_hand_pai") and cur["p0_hand_pai"] != c.pai:
             self.stats["p0_river_vs_hand"] += 1
             self.ledger.note(eid, f"★牌河讀 {c.pai}、手牌差分是 "
                                   f"{cur['p0_hand_pai']} —— 用手牌差分")
@@ -324,6 +351,11 @@ class RoundFSM:
             #   以為北還在手上,整局一直叫你打北。張數不合法的差分不可信,
             #   當成「沒把握」,以牌河為準。
             conf = 0.0 if "不是合法的暗牌" in (v.why or "") else v.pai_conf
+            # ★ 2026-11-07 判成摸切時「差分」那張其實是摸入牌的牌名,不是手牌的證據
+            #   (錄影 selfplay-20261102-053001 西4局:牌河讀對東 0.95,摸入牌名北
+            #   蓋掉了它;113550 南2局1本場 西 -> 白 同樣)。
+            if v.tsumogiri:
+                conf = 0.0
             self._p0_pai_from_hand(ev, v.pai_guess, t, conf)
         elif ev["actor"] == "P0":
             self._p0_same_suit(ev, t)
@@ -346,7 +378,16 @@ class RoundFSM:
         ev["evidence"]["cut"]["pai_from_hand"] = pai
         ev["evidence"]["cut"]["pai_from_hand_conf"] = conf
         river = ev.get("pai")
-        weak = conf is not None and conf < HAND_OVER_RIVER
+        # ★ 2026-11-07 牌河已經定案、而且比手牌那張有把握 -> 用牌河。十段錄影兩邊
+        #   不一致 4 次:手牌信心 0.97 > 牌河 0.88 那次手牌對;手牌 0.81 < 0.96、
+        #   0.62 < 0.92 那兩次牌河對(selfplay-20261106-113550 東3局、
+        #   20261024-123746 東1局)。實機 20261027 的反例(牌河 0.94 讀錯)手牌
+        #   0.94~0.98,照樣用手牌。
+        rconf = ((ev.get("evidence") or {}).get("river") or {}).get("conf")
+        weak = conf is not None and (
+            conf < HAND_OVER_RIVER
+            or (river is not None and rconf is not None and conf < rconf))
+        ev["p0_hand_conf"] = conf
         if weak:
             if river is not None and river != pai:
                 self.stats["p0_river_vs_hand"] += 1

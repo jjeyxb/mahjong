@@ -135,6 +135,22 @@ def test_stable_physical_hand_repairs_initial_inventory_and_survives_skipped_fra
     assert adapter.update(dict(hand_id="H002", events=events)).doubt is not None
 
 
+def test_the_hand_after_an_unconfirmed_draw_and_discard_does_not_rewrite_the_initial_hand():
+    # 錄影 selfplay-20261102-053001 等五場:第二巡摸 5p 打 1m 都還沒確認,
+    # 畫面已經是打完的手牌
+    events = [
+        start(),
+        event("t", "tsumo", 0, pai="4p"),
+        event("d", "dahai", 0, pai="P", tsumogiri=False),
+        dict(event("t2", "tsumo", 0, pai="5p"), export_eligible=False),
+        dict(event("d2", "dahai", 0, pai="1m", tsumogiri=False), export_eligible=False),
+    ]
+    after = [t for t in HAND if t not in ("P", "1m")] + ["4p", "5p"]
+    adapter = LedgerStream()
+    stream = adapter.update(snapshot(events, hand=dict(tiles=after, stable=True, frame=10)))
+    assert sorted(stream.events[0].tehais[0]) == sorted(HAND)
+
+
 def test_red_fives_and_cancellations_remain_distinct():
     events = [
         start(),
@@ -169,3 +185,56 @@ def test_pending_own_draw_pauses_advice_until_its_face_is_known():
     draw.update(pai="4p", status="CONFIRMED", export_eligible=True)
     confirmed = adapter.update(snapshot([start(), draw]))
     assert not confirmed.stalled and confirmed.doubt is None
+
+
+def test_a_draw_its_discard_points_to_holds_the_stream_until_its_face_is_known():
+    """錄影 20261024 東2局:摸三索沒讀到,跳過的話打東被丟掉,下一張摸牌頂替它。"""
+    draw = event("t1", "tsumo", 0, pai=None)
+    draw.update(status="PENDING", export_eligible=False)
+    events = [
+        start(),
+        draw,
+        event("d1", "dahai", 0, pai="P", tsumogiri=False, p0_tsumo="t1"),
+        event("t2", "tsumo", 0, pai="4p"),
+        event("d2", "dahai", 0, pai="4p", tsumogiri=True, p0_tsumo="t2"),
+    ]
+    adapter = LedgerStream()
+    held = adapter.update(snapshot(events))
+    assert held.stalled
+    assert [e.TYPE for e in held.events] == ["start_kyoku"]
+    draw.update(pai="3s", status="CONFIRMED", export_eligible=True)
+    stream = adapter.update(snapshot(events))
+    assert not stream.stalled
+    assert [e.to_dict().get("pai") for e in stream.events[1:3]] == ["3s", "P"]
+
+
+def test_a_pending_draw_right_after_our_own_call_is_not_waited_for():
+    """錄影 170335 東1局1本場:碰牌後冒出一筆待定摸牌,打牌還指著它。碰牌後不摸牌。"""
+    hand = ["3p", "3p"] + HAND[:11]
+    fake = event("t2", "tsumo", 0, pai=None)
+    fake.update(status="PENDING", export_eligible=False)
+    events = [
+        start(hand, dealer=3),
+        event("t3", "tsumo", 3, pai="?"),
+        event("d3", "dahai", 3, pai="3p", tsumogiri=False),
+        event("p", "pon", 0, target="P3", pai="3p", consumed=["3p", "3p"], source_discard="d3"),
+        fake,
+        event("d0", "dahai", 0, pai="P", tsumogiri=False, p0_tsumo="t2"),
+    ]
+    stream = LedgerStream().update(snapshot(events))
+    assert [e.TYPE for e in stream.events][-2:] == ["pon", "dahai"]
+
+
+def test_a_call_seen_before_the_discard_it_claims_still_follows_it():
+    """錄影 043327 東3局3本場:吃的橫幅比被吃的立直宣言牌早幾幀,事件帳裡排在前面。"""
+    events = [
+        start(),
+        event("t", "tsumo", 0, pai="P"),
+        event("c", "chi", 1, target="P0", pai="3m", consumed=["2m", "4m"], source_discard="d"),
+        event("d", "dahai", 0, pai="3m", tsumogiri=False),
+        event("d1", "dahai", 1, pai="1s", tsumogiri=False),
+    ]
+    adapter = LedgerStream()
+    stream = adapter.update(snapshot(events))
+    assert [e.TYPE for e in stream.events] == ["start_kyoku", "tsumo", "dahai", "chi", "dahai"]
+    assert adapter.rejected == ()

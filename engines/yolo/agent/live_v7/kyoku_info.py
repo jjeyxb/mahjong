@@ -35,6 +35,18 @@ import _paths  # noqa: F401
 WINDS = ("E", "S", "W", "N")
 SEAT_ORDER = ("P0", "P1", "P2", "P3")
 PANEL_MATCH_MIN = 0.70
+# ★ 2026-11-06 本場 8 以上沒有樣板(錄影最多錄到 7 本場),改用推的:
+#   本場只會是 0 或「上一局 + 1」,而 0 讀得到。所以上一局已知、本場又讀不出來,
+#   就是上一局 + 1。只在「上一局 + 1」沒有樣板時才推(有樣板就等它讀)。
+#   難的是舊面板:上一局是 8 的話,換局那幾幀的舊面板也是「讀不出來」,
+#   跟新的 9 分不開。所以讀不出來的那幀帶一個縮小的字形指紋(HONBA_SIG),
+#   跟上一局讀不出來時的指紋一樣就是舊面板。實測 24x12 同一個字 1.0、
+#   不同字最高 0.57。
+HONBA_TEMPLATED_MAX = 7     # templates_v7/honbax__6、7 是 selfplay-20261102 切的
+HONBA_SIG_BELOW = 0.85      # 分數低於這個就帶指紋(對的讀值實測最低 0.88)
+HONBA_SIG = (24, 12)
+HONBA_SAME_SIG = 0.85
+HONBA_GUESS_VOTES = 4       # 同一個新字形要看到幾次才推
 WIND_MATCH_MIN = 0.70
 MIN_VOTES = 2
 VOTE_MARGIN = 2
@@ -108,6 +120,8 @@ class RawUiReader:
             else:
                 lab, sc = self.tpl.match(f, n)
                 p[f] = [lab, round(float(sc), 3)]
+                if f == "honba" and sc < HONBA_SIG_BELOW:
+                    p[f].append(honba_sig(n))
         w, red, wsc = self.wreader.read(frame)
         winds = {s: ([w[s], round(float(wsc[s]), 3)] if w[s] else None)
                  for s in SEAT_ORDER}
@@ -130,6 +144,22 @@ class RawUiReader:
         return ui, dora
 
 
+def honba_sig(norm):
+    """正規化後的本場遮罩縮成 HONBA_SIG,壓成十六進位字串(存進觀測檔)。"""
+    import cv2
+    import numpy as np
+    small = cv2.resize(norm.astype(np.float32), HONBA_SIG,
+                       interpolation=cv2.INTER_AREA) > 0.5
+    return np.packbits(small.ravel()).tobytes().hex()
+
+
+def sig_similarity(a, b):
+    """兩個 honba_sig 的交集/聯集。"""
+    x, y = int(a, 16), int(b, 16)
+    union = bin(x | y).count("1")
+    return bin(x & y).count("1") / union if union else 0.0
+
+
 # ---------------------------------------------------------------------------
 # 下游:投票、檢查、組 start_kyoku
 # ---------------------------------------------------------------------------
@@ -146,6 +176,7 @@ def actors_of(winds, kyoku):
 class KyokuInfo:
     def __init__(self):
         self.previous = None        # 上一局的 (kyoku_label, honba)
+        self.previous_sig = None    # 上一局本場是推出來的:它的字形指紋(認舊面板用)
         self.p0_actor = None        # 整場固定;第一局 start_kyoku 確定後由 pipeline 設
         self.reset()
 
@@ -159,6 +190,11 @@ class KyokuInfo:
                 and self.value.get("kyoku_label") \
                 and self.value.get("honba") is not None:
             self.previous = (self.value["kyoku_label"], self.value["honba"])
+            self.previous_sig = (max(self.honba_sigs, key=lambda c: c[1])[0]
+                                 if self.honba_guessed and self.honba_sigs
+                                 else None)
+        self.honba_sigs = []        # [[指紋, 次數]],讀不出來的本場依字形分組
+        self.honba_guessed = False
         self.value = {"kyoku_label": None, "honba": None, "kyotaku": None,
                       "winds": None, "scores": None, "dora": []}
         self.votes = {"kyoku_label": Counter(), "honba": Counter()}
@@ -211,6 +247,8 @@ class KyokuInfo:
     def _panel(self, p):
         for f, key in (("kyoku", "kyoku_label"), ("honba", "honba")):
             r = p.get(f)
+            if f == "honba" and r and self._honba_unread(r, p.get("kyoku")):
+                continue
             if not r or r[0] is None or r[1] < PANEL_MATCH_MIN:
                 continue
             lab = r[0] if f == "kyoku" else int(r[0])
@@ -234,6 +272,49 @@ class KyokuInfo:
             self._streak = (lab, n)
             if n >= LIVE_CONFIRM:
                 self.value["kyotaku"] = lab
+
+    def _honba_unread(self, r, rk):
+        """這一幀的本場算不算「讀不出來」;是的話順便看能不能推(見 HONBA_SIG)。
+
+        回傳 True 表示這一幀不投票。弱的讀值(低於 HONBA_SIG_BELOW)如果不是
+        0 也不是上一局 + 1,一樣當讀不出來:那是沒有樣板的字被硬配到別的字。
+        """
+        expect = self.previous[1] + 1 if self.previous else None
+        weak = r[0] is None or r[1] < PANEL_MATCH_MIN
+        if not weak:
+            if expect is None or r[1] >= HONBA_SIG_BELOW \
+                    or int(r[0]) in (0, expect):
+                return False
+            self.rejected["honba_impossible"] += 1
+        sig = r[2] if len(r) > 2 else None
+        if sig is None:
+            return True
+        if self.previous_sig and \
+                sig_similarity(sig, self.previous_sig) >= HONBA_SAME_SIG:
+            # 跟下面「(局數,本場) 跟上一局一樣」同一件事:舊面板,清掉重讀
+            # (不清的話舊面板的局數票會一直壓著新的)
+            self.rejected["honba_old_panel"] += 1
+            self.stale += 1
+            self.value["kyoku_label"] = self.value["honba"] = None
+            self.votes = {"kyoku_label": Counter(), "honba": Counter()}
+            return True
+        for c in self.honba_sigs:
+            if sig_similarity(sig, c[0]) >= HONBA_SAME_SIG:
+                c[1] += 1
+                break
+        else:
+            c = [sig, 1]
+            self.honba_sigs.append(c)
+        label = self.value["kyoku_label"]
+        if (self.value["honba"] is None and expect is not None
+                and expect > HONBA_TEMPLATED_MAX and label
+                and rk and rk[0] == label and rk[1] >= PANEL_MATCH_MIN
+                and not self.votes["honba"][0]
+                and c[1] >= HONBA_GUESS_VOTES):
+            self.value["honba"] = expect
+            self.honba_guessed = True
+            self.rejected["honba_guessed"] += 1
+        return True
 
     def _winds(self, w, red):
         if self.value["winds"] is not None:
@@ -308,9 +389,12 @@ class KyokuInfo:
             f["kyoku"] = int(v["kyoku_label"][1])
         else:
             miss += ["bakaze", "kyoku"]
-        f["honba"] = v["honba"]
+        # ★ 2026-11-06 selfplay-20261106-110134 西1局:本場比局數先湊滿票,舊面板的「1」
+        #   還沒被「跟上一局一樣」那條識破就寫進 start_kyoku(欄位第一次有值就固定)。
+        #   局數還沒定的時候本場也不交出去。
+        f["honba"] = v["honba"] if v["kyoku_label"] else None
         f["kyotaku"] = v["kyotaku"]
-        if v["honba"] is None:
+        if f["honba"] is None:
             miss.append("honba")
         if v["kyotaku"] is None:
             miss.append("kyotaku")

@@ -17,7 +17,11 @@ from typing import Any, BinaryIO
 import numpy as np
 
 from mia.engine.base import EngineError
+from mia.utils.geometry import Rect
 from mia.utils.paths import LOG_DIR, PROJECT_ROOT
+from mia.vision.hud import HudDigits, read_turn, read_wall
+
+_FRAME = Rect(0, 0, 1920, 1080)
 
 
 class YoloClient:
@@ -36,6 +40,7 @@ class YoloClient:
         self._lock = threading.Lock()
         self.device = ""
         self.supports_observations = False
+        self._digits: HudDigits | None = None
 
     def start(self) -> None:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -92,7 +97,21 @@ class YoloClient:
             return result
         raise EngineError("YOLO 已停止")
 
+    def hud(self, image: np.ndarray) -> dict[str, int | None]:
+        """中央面板的余牌數與燈(輪到誰,視角座位)。YOLO 不讀這兩樣,追蹤器拿來對帳摸牌次數。"""
+        if self._digits is None:
+            self._digits = HudDigits.load()
+        return {"wall": read_wall(image, _FRAME, self._digits), "turn": read_turn(image, _FRAME)}
+
     def feed(self, image: np.ndarray, wall: float, *, raw: bool = False) -> dict[str, Any]:
+        """``raw`` 只回原始觀測(含 :meth:`hud`);否則回追蹤後的事件快照。"""
+        if self.supports_observations:
+            observation = self._send(image, wall, raw=True)
+            observation["hud"] = self.hud(image)
+            return observation if raw else self.track(observation)
+        return self._send(image, wall, raw=raw)
+
+    def _send(self, image: np.ndarray, wall: float, *, raw: bool) -> dict[str, Any]:
         if image.shape != (1080, 1920, 3) or image.dtype != np.uint8:
             raise ValueError("YOLO requires 1920×1080 uint8 BGR")
         process = self._process

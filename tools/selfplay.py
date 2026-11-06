@@ -323,6 +323,20 @@ class RecordingLink(TableLink):
         super().offer_frame(image, calibration)
 
 
+class YoloTee:
+    """``--vision yolo/hybrid``:校正後的畫面交給 YOLO 執行緒,牌桌矩形照樣寫進 manifest。"""
+
+    def __init__(self, worker: Any, recorder: FrameRecorder) -> None:
+        self._worker, self._recorder = worker, recorder
+
+    def offer_frame(self, image: Any, calibration: Calibration) -> None:
+        self._recorder.table_rect = calibration.table_rect
+        self._worker.offer_frame(image, calibration)
+
+    def offer_hand(self, tiles: Sequence[str], drawn: str | None = None) -> None:
+        pass
+
+
 class ReplayBackend:
     """把錄好的畫面照原本的時間播回去,對 :class:`VisionWorker` 來說就是一個擷取後端。"""
 
@@ -436,17 +450,39 @@ def play(args: argparse.Namespace, config: AppConfig) -> Path | None:
         log.close()
         return None
     logger.info("擷取目標:{}", window)
-    vision = VisionWorker(
-        bus,
-        config=config,
-        backend=TeeBackend(backend, recorder),  # type: ignore[arg-type]
-        window=window,
-        canvas=CanvasChoice(Canvas.parse(CANVAS)),
-        sink=link,
-    )
+    if args.vision == "template":
+        vision = VisionWorker(
+            bus,
+            config=config,
+            backend=TeeBackend(backend, recorder),  # type: ignore[arg-type]
+            window=window,
+            canvas=CanvasChoice(Canvas.parse(CANVAS)),
+            sink=link,
+        )
+    else:
+        # app 裡同一條 YOLO 執行緒;擷取換成錄影那一份,事件流每一版記進 vision.jsonl。
+        # 建議不即時跑(要算的話報告用 --engine 事後重算)。
+        from mia.live.yolo import YoloHub, YoloVisionWorker
+
+        hub = YoloHub()
+        hub.subscribe(lambda kyoku, stream: log.stream(kyoku, stream))
+        vision = YoloVisionWorker(
+            bus, config=config, hub=hub, canvas=CanvasChoice(Canvas.parse(CANVAS)),
+            hybrid=args.vision == "hybrid",
+        )
+        vision._capture = VisionWorker(  # noqa: SLF001 - 擷取要換成錄影那一份,app 沒有這個需要
+            bus,
+            config=config,
+            backend=TeeBackend(backend, recorder),  # type: ignore[arg-type]
+            window=window,
+            canvas=CanvasChoice(Canvas.parse(CANVAS)),
+            sink=YoloTee(vision, recorder),
+            recognize_hand=False,
+        )
     vision.status = LoggedStatus("畫面", log)
     recorder.start()
-    advice.start()
+    if args.vision == "template":
+        advice.start()
     vision.start()
 
     watcher = GameWatcher(dump)
@@ -486,7 +522,8 @@ def play(args: argparse.Namespace, config: AppConfig) -> Path | None:
         vision.stop()
         advice.stop()
         vision.join(timeout=5)
-        advice.join(timeout=5)
+        if advice.ident is not None:
+            advice.join(timeout=5)
         recorder.finish()
         writer.close()
         log.close()
@@ -638,6 +675,12 @@ def main(argv: list[str] | None = None) -> int:
         "--overtime", action="store_true", help="1 位必要點數設最大、關掉擊飛,一定打進西入"
     )
     parser.add_argument("--max-minutes", type=float, default=_MAX_MINUTES)
+    parser.add_argument(
+        "--vision",
+        choices=("template", "yolo", "hybrid"),
+        default="template",
+        help="實打時用哪一種畫面辨識。yolo/hybrid 不即時給建議",
+    )
     parser.add_argument("--report", type=Path, metavar="DIR", help="不打,只重新比對這個 session")
     parser.add_argument("--replay", type=Path, metavar="DIR", help="把這個 session 重播一次再比對")
     parser.add_argument("--kyoku", type=int, metavar="N", help="--replay 只播第 N 局,從 1 算")
