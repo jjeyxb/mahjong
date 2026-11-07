@@ -1269,3 +1269,67 @@ class TestDoraOfTheLastKyoku:
     ) -> None:
         """自己是莊家時,打第一張之前就要知道寶牌。"""
         assert self._reads(templates, monkeypatch, 70)
+
+
+class TestHoldBehindALeaningTile:
+    """宣言牌橫放、格線還沒挪:它的後半截落在下一格,不能當成一張新的捨牌。
+
+    錄影 selfplay-20261102-043327 東3局2本場:上家宣言牌 8p 一落下,後半截就被讀成一張讀不出來的
+    新牌送出去,之後猜成白。點數 2 秒後才變,那張假牌留在事件流裡。
+    """
+
+    @pytest.fixture
+    def worker(self, templates: TemplateSet, monkeypatch: pytest.MonkeyPatch) -> TableWorker:
+        worker, _ = _worker(templates)
+        worker._leaning[3].add(13)  # noqa: SLF001
+        worker._leaning_at[3][13] = 100.0  # noqa: SLF001
+        self.now = 100.0
+        monkeypatch.setattr("mia.live.table.time.monotonic", lambda: self.now)
+        return worker
+
+    def _held(self, worker: TableWorker, pai: str = "?") -> bool:
+        return worker._behind_leaning(3, 14, pai)  # noqa: SLF001
+
+    def test_the_cell_after_a_leaning_tile_waits(self, worker: TableWorker) -> None:
+        assert self._held(worker)
+        self.now += 1.0
+        assert self._held(worker)
+
+    def test_it_gives_up_after_the_hold(self, worker: TableWorker) -> None:
+        for _ in range(7):  # 0~6 秒
+            assert self._held(worker)
+            self.now += 1.0
+        assert not self._held(worker)  # 滿 7 秒
+
+    def test_a_break_restarts_the_wait(self, worker: TableWorker) -> None:
+        self._held(worker)
+        self.now += 1.0
+        self._held(worker)
+        worker._leaning_at[3][13] = self.now + 3.0  # noqa: SLF001 - 宣言牌又被重讀成疑似
+        self.now += 3.0  # 那半截不見了一陣子,之後又冒出來
+        assert self._held(worker)
+        self.now += 1.0
+        assert self._held(worker)
+
+    def test_a_readable_tile_or_a_known_sideways_cell_does_not_wait(
+        self, worker: TableWorker
+    ) -> None:
+        assert not self._held(worker, "6p")
+        worker._sideways[3] = 13  # noqa: SLF001
+        assert not self._held(worker)
+
+    def test_a_tile_thrown_long_after_the_leaning_one_does_not_wait(
+        self, worker: TableWorker
+    ) -> None:
+        """錄影 155238 南1局6本場:中被當成疑似,5 秒後真的宣言牌落在後面。"""
+        self.now += 5.0
+        assert not self._held(worker)
+
+    def test_a_leaning_tile_read_again_this_round_still_counts(self, worker: TableWorker) -> None:
+        """錄影 043327 東3局2本場:宣言牌那格閃過一下被剪掉,下一張打出來時兩格一起讀回來。"""
+        self.now += 7.0
+        assert worker._behind_leaning(3, 14, "?", together=True)  # noqa: SLF001
+
+    def test_no_leaning_tile_no_wait(self, worker: TableWorker) -> None:
+        worker._leaning[3].clear()  # noqa: SLF001
+        assert not self._held(worker)

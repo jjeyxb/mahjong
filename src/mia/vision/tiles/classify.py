@@ -451,6 +451,16 @@ RED_INK = {"m": 0.73, "p": 0.50, "s": 0.46}
 #: 不管是哪張牌,紅到這個程度就只可能是赤五或中。同一份素材其他牌最高 0.72。
 WHOLE_RED = 0.8
 
+#: 染過色的紙:主色的飽和度在紙與這個上限之間、亮度高於這個下限。
+#:
+#: 滑鼠停在手牌某張牌上時,河裡同種的牌整張染成淡藍。實測紙的飽和度 76~78、亮度 181~198,
+#: 桌布是 140 / 150,不能被當成紙。
+_TINT_SATURATION = 110
+_TINT_VALUE = 170
+
+#: 白平衡把紙調回多亮,模板的紙約 220。
+_WHITE = 220.0
+
 
 def ink_masks(
     patch: np.ndarray, *, hsv: np.ndarray | None = None
@@ -473,10 +483,35 @@ def red_ink(patch: np.ndarray, *, hsv: np.ndarray | None = None) -> float:
 
     赤五與普通五形狀一樣,差別只在顏色,而模板比對要看整張牌的圖案,差距很薄。
     這裡直接問顏色:牌框要裁到牌面上,外面的桌布會被算成墨水。
+
+    整張被染色的牌先做白平衡再量,見 :func:`_untint`。
     """
+    if hsv is None:
+        hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+    balanced = _untint(patch, hsv)
+    if balanced is not patch:
+        patch, hsv = balanced, cv2.cvtColor(balanced, cv2.COLOR_BGR2HSV)
     ink, red = ink_masks(patch, hsv=hsv)
     total = int(ink.sum())
     return float(red.sum()) / total if total else 0.0
+
+
+def _untint(patch: np.ndarray, hsv: np.ndarray) -> np.ndarray:
+    """牌面的主色是染過色的紙時,把紙調回白色,沒染色就原樣回傳。
+
+    染藍之後紙的飽和度超過紙的門檻,整張都算成墨水;紅字也偏紫變暗,色相與亮度掉出紅色的範圍。
+    實測對家兩張被染色的赤五,紅墨 0.18 與 0.07,都被判成普通五,而它們的模板其實認對了。
+    各色版乘上「白 / 紙色」之後是 0.82 與 0.68,沒染色的牌一個像素都不動,原本量的門檻照用。
+    """
+    # 紙色只看最亮的四分之一:萬子的字多,整張的中位數實測被墨水拉到 167。
+    bright = hsv[:, :, 2] >= np.percentile(hsv[:, :, 2], 75)
+    saturation = float(np.median(hsv[:, :, 1][bright]))
+    value = float(np.median(hsv[:, :, 2][bright]))
+    if not (_PAPER_SATURATION <= saturation < _TINT_SATURATION and value > _TINT_VALUE):
+        return patch
+    paper = np.median(patch[bright], axis=0)
+    gain = _WHITE / np.maximum(paper, 1.0)
+    return np.clip(patch * gain, 0, 255).astype(np.uint8)
 
 
 def settle_five(label: str, patch: np.ndarray) -> str:

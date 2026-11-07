@@ -168,6 +168,20 @@ _DORA_ROI = "dora_indicators"
 #: 四家的牌河至少幾家讀得到,這一輪的副露長度才採信。見 ``_read_melds``。
 _MELD_QUORUM = 2
 
+#: 疑似宣言牌後面那一格讀不出來時,最多等幾秒讓點數標出宣言牌。見 ``_read_seat``。
+#:
+#: 橫放的牌比一格寬,沒挪格線時後半截落在下一格,被讀成一張讀不出來的新牌(常猜成白)。
+#: 實測立直到點數變:2.2 / 2.4 / 5.9 秒(human-20261103 東1局,等 5 秒時剛好在下一張落下那一刻
+#: 放行,那張在沒挪的格線上讀成 8p 或 6s 看時機)。等不到(點數沒讀到)就照舊收下,不讓那一家卡住。
+_LEAN_HOLD = 7.0
+
+#: 等待中斷超過這麼久就重新計時。一輪最久約 0.5 秒,留三倍。
+_LEAN_GAP = 1.5
+
+#: 疑似宣言牌出現之後多久內冒出來的後一格才可能是它的後半截。實測晚 0.1 秒;
+#: 真的下一張捨牌至少隔三家行動(實測 5 秒)。
+_LEAN_FRESH = 1.5
+
 #: 白(雀魂記法 ``5z`` 經 :func:`ms_to_mjai` 之後)。見 ``_read_seat``。
 _HAKU = "P"
 
@@ -470,6 +484,10 @@ class TableWorker(threading.Thread):
         self._clear: list[bool] = [False for _ in SEATS]
         # 轉過來比較像的格子,見 _turned。
         self._leaning: list[set[int]] = [set() for _ in SEATS]
+        # 每一格什麼時候第一次被當成疑似宣言牌,見 _behind_leaning。
+        self._leaning_at: list[dict[int, float]] = [{} for _ in SEATS]
+        # 疑似宣言牌後面那一格從什麼時候開始等,見 _read_seat。
+        self._lean_wait: list[tuple[int, float, float] | None] = [None for _ in SEATS]
         # 動畫中途先讀的格子,停穩之後要重讀。
         self._unsteady: list[set[int]] = [set() for _ in SEATS]
         self._uncertain_until: list[dict[int, float]] = [{} for _ in SEATS]
@@ -802,6 +820,17 @@ class TableWorker(threading.Thread):
             if not steady and not urgent and not self._clear[position]:
                 break
             pai, guess = self._read_cell(position, flat, river, cell)
+            together = cell - 1 in fresh
+            if cell == filled[-1] and self._behind_leaning(position, cell, pai, together):
+                # 前一格看起來是橫放的宣言牌、橫放位置還沒定:這一格多半是它的後半截。
+                # 錄影 selfplay-20261102-043327 東3局2本場:上家宣言牌 8p 一落下,後半截就被
+                # 當成一張讀不出來的新牌送出去(之後猜成白);點數 2 秒後才變,那張假牌留在
+                # 事件流裡。先等點數標出宣言牌、格線挪好再讀。後半截一定是河的最後一格,
+                # 中間的格子不等(剛接上時整條河一次讀,早就立直的宣言牌後面還有好幾張)。
+                # 前一格也要是剛剛才被當成疑似的(:data:`_LEAN_FRESH`):後半截跟宣言牌一起出現,
+                # 最多晚一輪(043327 晚 0.1 秒)。錄影 155238 南1局6本場下家的中被當成「疑似」,
+                # 5 秒後真的宣言牌 5s 落在它後面,被當成後半截擋住,立直標記就落到中上面。
+                break
             if not steady and pai in (UNKNOWN, _HAKU) and self._haku[position] != cell:
                 # 還在飛的牌只收看得清楚的。先收一個猜測的話,這張牌常常馬上被鳴走,沒有機會停穩重讀:
                 # 實測自己碰的那張被記成別的牌,整組副露跟著錯。
@@ -825,6 +854,31 @@ class TableWorker(threading.Thread):
                 self._uncertain_until[position][cell] = time.monotonic() + _UNCERTAIN_RETRY
 
         self._emit(position, known)
+
+    def _behind_leaning(
+        self, position: int, cell: int, pai: str, together: bool = False
+    ) -> bool:
+        """這一格要不要先等:前一格疑似宣言牌、橫放還沒定、這一格又讀不出來。
+
+        最多等 :data:`_LEAN_HOLD`。``together``:前一格是這一輪才收進來的(閃過一下被剪掉、
+        這一輪又讀回來也算),那就不必看它多久以前被當成疑似。
+        """
+        if pai != UNKNOWN or self._sideways[position] is not None:
+            return False
+        if cell - 1 not in self._leaning[position]:
+            return False
+        now = time.monotonic()
+        wait = self._lean_wait[position]
+        # 中間斷過(那半截不見了、之後同一格才又出現)就重新算:錄影 043327 東3局2本場
+        # 後半截 2 秒後消失,7 秒後那一家真的打出下一張到這一格,舊的起點讓它直接放行。
+        if wait is None or wait[0] != cell or now - wait[2] > _LEAN_GAP:
+            # 新的一段等待:前一格要是剛剛才被當成疑似的,見 _LEAN_FRESH
+            if not together and now - self._leaning_at[position].get(cell - 1, now) > _LEAN_FRESH:
+                return False
+            self._lean_wait[position] = (cell, now, now)
+            return True
+        self._lean_wait[position] = (cell, wait[1], now)
+        return now - wait[1] < _LEAN_HOLD
 
     def _shifted(self, position: int, flat: np.ndarray, river: River) -> River:
         """這一家有橫放牌的話,換成讓開它的格線。"""
@@ -890,6 +944,7 @@ class TableWorker(threading.Thread):
         if turned.score <= upright.score + _TURNED:
             return None
         self._leaning[position].add(cell)
+        self._leaning_at[position].setdefault(cell, time.monotonic())
         return ms_to_mjai(turned.label)
 
     def _revisit(
@@ -1662,6 +1717,8 @@ class TableWorker(threading.Thread):
         self._still = [set() for _ in SEATS]
         self._clear = [False for _ in SEATS]
         self._leaning = [set() for _ in SEATS]
+        self._leaning_at = [{} for _ in SEATS]
+        self._lean_wait = [None for _ in SEATS]
         self._unsteady = [set() for _ in SEATS]
         self._uncertain_until = [{} for _ in SEATS]
         self._cells = {}

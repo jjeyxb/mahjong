@@ -25,6 +25,7 @@ from mia.vision.tiles.classify import (
     WHOLE_RED,
     Match,
     TemplateSet,
+    _untint,
     classify,
     classify_hand,
     red_ink,
@@ -616,6 +617,21 @@ class TestRedFive:
         cell = cv2.copyMakeBorder(face, 8, 8, 8, 8, cv2.BORDER_REPLICATE)
         assert classify(cell, templates, size=(64, 92)).label == "7z"
         assert classify(cell, templates, size=(64, 92), labels={"1m", "2m"}).label != "7z"
+
+    @pytest.mark.parametrize("suit", "mps")
+    def test_a_tinted_tile_is_balanced_back(self, templates: TemplateSet, suit: str) -> None:
+        """滑鼠停在手牌時,河裡同種的牌染成淡藍。紙色取自實測(BGR 190/166/145)。"""
+        tint = np.array([190.0, 166.0, 145.0]) / 220.0
+        for label, want in ((f"0{suit}", f"0{suit}"), (f"5{suit}", f"5{suit}")):
+            face = templates.scaled((64, 92))[templates.labels.index(label)][1]
+            tinted = np.clip(face * tint, 0, 255).astype(np.uint8)
+            assert settle_five(label, tinted) == want
+
+    @pytest.mark.parametrize("colour", [(235, 235, 235), (150, 90, 66)], ids=["paper", "felt"])
+    def test_paper_and_felt_are_not_tinted(self, colour: tuple[int, int, int]) -> None:
+        patch = np.full((20, 20, 3), colour, np.uint8)
+        hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+        assert _untint(patch, hsv) is patch
 
     def test_a_blank_patch_has_no_ink(self) -> None:
         assert red_ink(np.full((20, 20, 3), 235, np.uint8)) == 0.0
