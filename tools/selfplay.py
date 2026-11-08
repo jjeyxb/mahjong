@@ -561,18 +561,23 @@ def replay(args: argparse.Namespace, config: AppConfig) -> None:
         log=log,
     )
     advice.status = LoggedStatus("AI 建議", log)
-    vision = VisionWorker(
-        bus,
-        config=config,
-        backend=backend,  # type: ignore[arg-type]
-        window=session.manifest.window,
-        canvas=CanvasChoice(Canvas.parse(CANVAS)),
-        sink=link,
-    )
+    vision: Any
+    if args.vision == "template":
+        vision = VisionWorker(
+            bus,
+            config=config,
+            backend=backend,  # type: ignore[arg-type]
+            window=session.manifest.window,
+            canvas=CanvasChoice(Canvas.parse(CANVAS)),
+            sink=link,
+        )
+    else:
+        vision = _replay_yolo(args, config, bus, backend, session, log)
     vision.status = LoggedStatus("畫面", log)
-    advice.start()
-    while not link.attached:
-        time.sleep(0.05)
+    if args.vision == "template":
+        advice.start()
+        while not link.attached:
+            time.sleep(0.05)
     print(f"重播 {end - start:.0f} 秒", flush=True)
     vision.start()
     try:
@@ -582,8 +587,54 @@ def replay(args: argparse.Namespace, config: AppConfig) -> None:
         vision.stop()
         advice.stop()
         vision.join(timeout=5)
-        advice.join(timeout=5)
+        if advice.ident is not None:
+            advice.join(timeout=5)
         log.close()
+
+
+def _replay_yolo(
+    args: argparse.Namespace,
+    config: AppConfig,
+    bus: UpdateBus,
+    backend: ReplayBackend,
+    session: SessionReader,
+    log: RunLog,
+) -> Any:
+    """``--vision yolo/hybrid`` 的重播:app 裡同一條 YOLO 執行緒,擷取換成錄影。
+
+    合併之前兩邊各自的事件流也記下來(``kind`` 是 ``raw_template`` / ``raw_yolo``),
+    合併規則改了可以拿實打的時間差離線重算,不必再播一次。建議不即時跑,報告用 --engine 重算。
+    """
+    from mia.live.yolo import YoloHub, YoloVisionWorker
+
+    hub = YoloHub()
+    hub.subscribe(lambda kyoku, stream: log.stream(kyoku, stream))
+    hybrid = args.vision == "hybrid"
+    vision = YoloVisionWorker(
+        bus, config=config, hub=hub, canvas=CanvasChoice(Canvas.parse(CANVAS)), hybrid=hybrid
+    )
+    vision._capture = VisionWorker(  # noqa: SLF001 - 擷取換成錄影那一份
+        bus,
+        config=config,
+        backend=backend,  # type: ignore[arg-type]
+        window=session.manifest.window,
+        canvas=CanvasChoice(Canvas.parse(CANVAS)),
+        sink=vision,
+        recognize_hand=hybrid,
+    )
+    offer = vision._offer  # noqa: SLF001
+
+    def tapped(source: str, kyoku: int, stream: Stream) -> None:
+        log.write(
+            kind=f"raw_{source}",
+            kyoku=kyoku,
+            note=stream.doubt or ("等手牌" if stream.stalled else ""),
+            events=[event.to_dict() for event in stream.events],
+        )
+        offer(source, kyoku, stream)
+
+    vision._offer = tapped  # type: ignore[method-assign]  # noqa: SLF001
+    return vision
 
 
 def _span(

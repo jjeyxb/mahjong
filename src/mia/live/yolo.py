@@ -14,8 +14,9 @@ from mia.calibration.canvas import CanvasChoice
 from mia.calibration.manual import HandRoiChoice, TableRectChoice
 from mia.calibration.table import Calibration
 from mia.config.models import AppConfig
-from mia.hybrid.fusion import guard_stream
+from mia.hybrid.merge import StreamMerger
 from mia.live.bus import CvHand, Dangers, UpdateBus, WorkerStatus
+from mia.live.table import TableWorker
 from mia.live.vision import VisionWorker
 from mia.mjai.events import StartGame
 from mia.mjai.handstate import HandTracker
@@ -93,12 +94,19 @@ class YoloVisionWorker(threading.Thread):
         self._bus, self._hub = bus, hub
         self.backend = "hybrid" if hybrid else "yolo"
         self.label = "混合辨識" if hybrid else "YOLO"
+        self._client = YoloClient()
+        # 混合辨識:同一份畫面另外交給樣板的牌桌那條路,兩條事件流在事件層合併再發佈。
+        # 見 mia.hybrid.merge。手牌由擷取那一條用樣板認,樣板的牌桌要它。
+        self._merger: StreamMerger | None = None
+        self._table: TableWorker | None = None
         if hybrid:
-            from mia.hybrid.client import HybridClient
-
-            self._client: YoloClient = HybridClient(skin=skin)
-        else:
-            self._client = YoloClient()
+            self._merger = StreamMerger(hub.publish)
+            self._table = TableWorker(
+                UpdateBus(),
+                config=config.roi,
+                skin=skin,
+                on_stream=lambda kyoku, stream: self._offer(StreamMerger.TEMPLATE, kyoku, stream),
+            )
         self._stream = LedgerStream()
         self._lock = threading.Lock()
         self._fresh = threading.Event()
@@ -112,7 +120,8 @@ class YoloVisionWorker(threading.Thread):
             hand_roi=hand_roi,
             table_rect=table_rect,
             sink=self,
-            recognize_hand=False,
+            recognize_hand=hybrid,
+            skin=skin,
         )
         self.status = WorkerStatus("畫面")
         self.frames = 0
@@ -121,14 +130,26 @@ class YoloVisionWorker(threading.Thread):
         with self._lock:
             self._latest = (image, calibration, time.time())
         self._fresh.set()
+        if self._table is not None:
+            self._table.offer_frame(image, calibration)
 
     def offer_hand(self, tiles: Sequence[str], drawn: str | None = None) -> None:
-        pass
+        if self._table is not None:
+            self._table.offer_hand(tiles, drawn)
+
+    def _offer(self, source: str, kyoku: int, stream: Stream) -> None:
+        """事件流交出去:混合辨識先合併,YOLO 直接發佈。"""
+        if self._merger is not None:
+            self._merger.offer(source, kyoku, stream)
+        else:
+            self._hub.publish(kyoku, stream)
 
     def stop(self) -> None:
         self._stopping.set()
         self._fresh.set()
         self._capture.stop()
+        if self._table is not None:
+            self._table.stop()
         self._hub.publish(self._stream.kyoku, Stream(doubt=f"{self.label}已停止"))
         self._client.close()
 
@@ -138,6 +159,8 @@ class YoloVisionWorker(threading.Thread):
         try:
             self.status.say(f"載入{self.label}模型…")
             self._client.start()
+            if self._table is not None:
+                self._table.start()
             self._capture.start()
             while not self._stopping.is_set():
                 self._fresh.wait(0.25)
@@ -157,12 +180,13 @@ class YoloVisionWorker(threading.Thread):
                 payload = self._client.feed(frame, wall)
                 if self._stopping.is_set():
                     break
-                stream = guard_stream(self._stream.update(payload), payload)
+                stream = self._stream.update(payload)
                 if not stream.events:
                     stream = Stream(stalled=True, doubt=f"{self.label}等待開局資訊")
-                self._hub.publish(self._stream.kyoku, stream)
+                self._offer(StreamMerger.YOLO, self._stream.kyoku, stream)
                 hand = payload.get("hand") or {}
-                if hand.get("confident"):
+                # 混合辨識的手牌由擷取那一條用樣板認,已經投過了。
+                if self._table is None and hand.get("confident"):
                     tiles = list(hand["tiles"])
                     drawn = hand.get("drawn")
                     if drawn in tiles:
@@ -178,7 +202,7 @@ class YoloVisionWorker(threading.Thread):
                 self.status.say(
                     stream.doubt
                     or (
-                        "YOLO 等待開局資訊"
+                        f"{self.label}等待開局資訊"
                         if not stream.events
                         else f"{self.label} · {self._client.device.upper()}"
                     )
@@ -193,6 +217,10 @@ class YoloVisionWorker(threading.Thread):
             self._capture.stop()
             if self._capture.ident is not None:
                 self._capture.join(timeout=2)
+            if self._table is not None:
+                self._table.stop()
+                if self._table.ident is not None:
+                    self._table.join(timeout=2)
             self._client.close()
             self.status.alive = False
 
