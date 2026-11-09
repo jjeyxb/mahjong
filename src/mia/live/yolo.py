@@ -30,6 +30,10 @@ from mia.yolo.stream import LedgerStream
 
 Listener = Callable[[int, Stream], None]
 
+#: YOLO 等開局等這麼久就記一筆它卡在哪,之後原因變了再記(同樣隔這麼久才記一次,原因來回跳
+#: 也不會洗版)。換局之間的結算畫面本來就要等幾秒,所以不能太短。
+_START_WARN = 8.0
+
 
 class YoloHub:
     def __init__(self) -> None:
@@ -127,6 +131,10 @@ class YoloVisionWorker(threading.Thread):
         )
         self.status = WorkerStatus("畫面")
         self.frames = 0
+        #: 從什麼時候開始等開局,與已經記過的那個原因。見 _watch_start。
+        self._waiting_since: float | None = None
+        self._waiting_logged = ""
+        self._waiting_logged_at = 0.0
 
     def offer_frame(self, image: np.ndarray, calibration: Calibration) -> None:
         with self._lock:
@@ -150,6 +158,34 @@ class YoloVisionWorker(threading.Thread):
             self._merger.offer(source, kyoku, stream)
         else:
             self._hub.publish(kyoku, stream)
+
+    def _watch_start(self, started: bool) -> None:
+        """等開局等太久就記下 :attr:`LedgerStream.waiting`。實打才出現過,重播重現不了。"""
+        now = time.monotonic()
+        if started:
+            if self._waiting_logged and self._waiting_since is not None:
+                logger.warning(
+                    "YOLO 第 {} 局開局資訊到了,等了 {:.1f} 秒",
+                    self._stream.kyoku,
+                    now - self._waiting_since,
+                )
+            self._waiting_since, self._waiting_logged = None, ""
+            return
+        if self._waiting_since is None:
+            self._waiting_since = now
+        reason = self._stream.waiting
+        if (
+            now - self._waiting_since > _START_WARN
+            and now - self._waiting_logged_at > _START_WARN
+            and reason != self._waiting_logged
+        ):
+            self._waiting_logged, self._waiting_logged_at = reason, now
+            logger.warning(
+                "YOLO 第 {} 局等開局 {:.0f} 秒:{}",
+                self._stream.kyoku,
+                now - self._waiting_since,
+                reason or "沒有說明",
+            )
 
     def stop(self) -> None:
         self._stopping.set()
@@ -188,6 +224,7 @@ class YoloVisionWorker(threading.Thread):
                 if self._stopping.is_set():
                     break
                 stream = self._stream.update(payload)
+                self._watch_start(bool(stream.events))
                 if not stream.events:
                     stream = Stream(stalled=True, doubt=f"{self.label}等待開局資訊")
                 self._offer(StreamMerger.YOLO, self._stream.kyoku, stream)

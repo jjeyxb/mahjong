@@ -44,7 +44,7 @@
 
 * ``ws.jsonl``:封包,答案從這裡算。
 * ``frames/``、``manifest.json``:畫面,與 ``tools/record.py`` 同一種格式,之後可以重播。
-* ``vision.jsonl``:每個版本的事件流、手牌動作、排序步驟、每次建議、每句狀態,都帶牆上時鐘。
+* ``vision.jsonl``:每個版本的事件流、手牌動作、排序步驟、每次建議、每句狀態、辨識的警告,都帶牆上時鐘。
 * ``report.txt``:比對結果。
 """
 
@@ -160,6 +160,14 @@ class RunLog:
         self._file = path.open("w", encoding="utf-8")
         self._lock = threading.Lock()
         self._last: tuple[int, tuple[Any, ...], str] | None = None
+        # 辨識那幾條的警告也記進來(``kind`` 是 ``log``),跟事件流排在同一條時間線上:擷取中斷、
+        # YOLO 等不到開局都只在實打出現過,要知道當時卡在哪一步。
+        self._sink: int | None = logger.add(
+            lambda message: self.write(kind="log", message=message.record["message"]),
+            level="WARNING",
+            filter="mia",
+            format="{message}",
+        )
 
     def now(self) -> float:
         return time.time()
@@ -186,6 +194,9 @@ class RunLog:
         )
 
     def close(self) -> None:
+        if self._sink is not None:
+            logger.remove(self._sink)
+            self._sink = None
         with self._lock:
             self._file.close()
 

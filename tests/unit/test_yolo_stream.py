@@ -238,3 +238,18 @@ def test_a_call_seen_before_the_discard_it_claims_still_follows_it():
     stream = adapter.update(snapshot(events))
     assert [e.TYPE for e in stream.events] == ["start_kyoku", "tsumo", "dahai", "chi", "dahai"]
     assert adapter.rejected == ()
+
+
+def test_waiting_says_why_the_start_is_not_exported_yet():
+    """實打時 YOLO 整局等不到開局,重播卻讀得到;要記下當時卡在哪一步。"""
+    adapter = LedgerStream()
+    adapter.update(snapshot([]))
+    assert "沒有 start_kyoku" in adapter.waiting
+    pending = start() | dict(export_eligible=False, status="PENDING", missing=["tehais"])
+    adapter.update(snapshot([pending]))
+    assert "PENDING" in adapter.waiting
+    assert "tehais" in adapter.waiting
+    adapter.update(snapshot([start() | dict(seat_map={})]))
+    assert "seat_map" in adapter.waiting
+    assert adapter.update(snapshot([start()])).events
+    assert adapter.waiting == ""

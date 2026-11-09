@@ -667,3 +667,47 @@ class TestTheManuallyFramedHand:
         )
         _run_until(worker, lambda: len(bus) > 0)
         assert bus.drain(), "沒框過時原本那條路壞了"
+
+
+class TestStallWarnings:
+    """實打時擷取停過 30 秒,事後只知道沒有畫面。中斷與恢復都要記下來,連同當時的原因。"""
+
+    def test_a_stall_and_its_recovery_are_logged_with_the_reason(
+        self, window: WindowInfo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from mia.utils.logging import logger
+
+        frame, roi = _frame_with_hand(window, _hand_image())
+        monkeypatch.setattr(vision, "_STALL_WARN", 1.0)
+        backend = FakeBackend(window, [frame] + [None] * 250 + [frame])
+        worker = VisionWorker(
+            UpdateBus(), config=_config(roi), backend=backend, window=window
+        )
+        messages: list[str] = []
+        sink = logger.add(lambda m: messages.append(m.record["message"]), level="WARNING")
+        try:
+            _run_until(worker, lambda: any("恢復" in m for m in messages), timeout=5)
+        finally:
+            logger.remove(sink)
+        stalls = [m for m in messages if "沒有交出畫面" in m]
+        assert len(stalls) == 1
+        assert "擷取失敗" in stalls[0]
+        assert any("擷取恢復" in m for m in messages)
+
+    def test_a_slow_capture_is_logged(
+        self, window: WindowInfo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from mia.utils.logging import logger
+
+        frame, roi = _frame_with_hand(window, _hand_image())
+        monkeypatch.setattr(vision, "_SLOW_CAPTURE", 0.0)
+        worker = VisionWorker(
+            UpdateBus(), config=_config(roi), backend=FakeBackend(window, [frame]), window=window
+        )
+        messages: list[str] = []
+        sink = logger.add(lambda m: messages.append(m.record["message"]), level="WARNING")
+        try:
+            _run_until(worker, lambda: any("花了" in m for m in messages), timeout=3)
+        finally:
+            logger.remove(sink)
+        assert any("擷取一次花了" in m for m in messages)

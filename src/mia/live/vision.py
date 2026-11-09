@@ -117,6 +117,13 @@ _WINDOW_RETRY = 2.0
 #: 舊的 CGWindowID 不會自己變有效。
 _REFIND_AFTER = 15
 
+#: 這麼久沒有畫面交出去就記一筆警告。實打時擷取整整停過 30 秒(selfplay-20261110-003121
+#: 東3局),事後只知道「沒有畫面」,不知道是找不到視窗、擷取失敗、校正失敗還是擷取本身卡住。
+_STALL_WARN = 5.0
+
+#: 一次擷取超過這麼久就記一筆。擷取卡住的話迴圈也停在那裡,上面那個警告要等它回來才發得出。
+_SLOW_CAPTURE = 1.0
+
 #: 畫面連續變動這麼多幀之後,即使還沒停下來也認一次。
 #:
 #: 15 fps 下約一秒,也就是一段摸打動畫的長度。正常情況碰不到這個上限 ——
@@ -223,6 +230,11 @@ class VisionWorker(threading.Thread):
         #: 認過幾手、跳過幾幀。用來回答「CV 到底有沒有在動」。
         self.reads = 0
         self.skipped = 0
+        #: 上一次把畫面交出去的時間,與是不是已經為這次中斷記過警告。見 _watch。
+        self._delivered = time.monotonic()
+        self._stalled = False
+        #: 上次交出畫面之後狀態列說過的最後一句話。重找視窗會把狀態清成空的,原因不能跟著不見。
+        self._why = ""
 
     # ------------------------------------------------------------------ 生命週期
 
@@ -268,6 +280,23 @@ class VisionWorker(threading.Thread):
                 continue
             next_tick = max(now, next_tick + interval)
             self._tick()
+            self._watch()
+
+    def _watch(self) -> None:
+        """很久沒有畫面交出去就記一筆,原因是狀態列最後說的那句話。"""
+        self._why = self.status.read() or self._why
+        idle = time.monotonic() - self._delivered
+        if idle > _STALL_WARN and not self._stalled:
+            self._stalled = True
+            logger.warning("擷取 {:.1f} 秒沒有交出畫面:{}", idle, self._why or "沒有說明")
+
+    def _deliver(self) -> None:
+        """這一幀交出去了。之前記過中斷的話,記一筆停了多久。"""
+        now = time.monotonic()
+        if self._stalled:
+            self._stalled = False
+            logger.warning("擷取恢復,中斷 {:.1f} 秒", now - self._delivered)
+        self._delivered, self._why = now, ""
 
     # ------------------------------------------------------------------ 一幀
 
@@ -277,6 +306,7 @@ class VisionWorker(threading.Thread):
             return
 
         assert self._backend is not None
+        began = time.monotonic()
         try:
             frame = self._backend.capture(window)
         except CaptureFailedError as exc:
@@ -287,6 +317,10 @@ class VisionWorker(threading.Thread):
                 self._window = None
                 self._failures = 0
             return
+        finally:
+            took = time.monotonic() - began
+            if took > _SLOW_CAPTURE:
+                logger.warning("擷取一次花了 {:.1f} 秒", took)
         self._failures = 0
 
         if not self._recognize_hand:
@@ -298,6 +332,7 @@ class VisionWorker(threading.Thread):
         # 每一幀都重讀這個格子,所以重框是立刻生效的,不必重啟執行緒。
         manual = self._crop_manual(frame.image)
         if manual is not None:
+            self._deliver()
             # **但牌桌那條路仍然需要牌桌矩形。** 手牌框與牌桌框是兩件事
             # (見 TableRectChoice 的說明),框了手牌不代表不看牌河。
             # 只在真的有人要的時候才算 —— 沒接牌桌那條路時這裡照舊整段跳過。
@@ -318,6 +353,7 @@ class VisionWorker(threading.Thread):
                 self.status.say(f"牌桌校正中 {done}/{need}")
             return
 
+        self._deliver()
         if self._sink is not None:
             self._sink.offer_frame(frame.image, calibration)
 
@@ -332,6 +368,7 @@ class VisionWorker(threading.Thread):
         assert self._sink is not None
         calibration = self._calibrator.feed(frame)
         if calibration is not None:
+            self._deliver()
             self._sink.offer_frame(frame.image, calibration)
         elif not self._recognize_hand:
             failure = self._calibrator.failure

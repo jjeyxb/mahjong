@@ -88,6 +88,9 @@ class LedgerStream:
         self.hand_id: str | None = None
         self.kyoku = 0
         self.rejected: tuple[str, ...] = ()
+        #: 這一份為什麼還不能輸出開局。給記錄用:實打時 YOLO 整局停在「等待開局資訊」
+        #: (selfplay-20261110-003121 東4 ~ 南2局),重播同一段錄影卻讀得到,事後查不出卡在哪。
+        self.waiting = ""
         self._initial: list[str] | None = None
 
     def update(self, payload: Mapping[str, Any]) -> Stream:
@@ -98,11 +101,20 @@ class LedgerStream:
             self._initial = None
         ledger = _calls_after_sources(payload.get("events", []))
         start = next((e for e in ledger if e["type"] == "start_kyoku"), None)
-        if not start or not start.get("export_eligible"):
+        self.waiting = ""
+        if not start:
+            self.waiting = f"事件帳沒有 start_kyoku(共 {len(ledger)} 筆)"
+            return Stream(stalled=True)
+        if not start.get("export_eligible"):
+            self.waiting = (
+                f"start_kyoku 未齊:status={start.get('status')} "
+                f"missing={start.get('missing')} tehais_note={start.get('tehais_note')!r}"
+            )
             return Stream(stalled=True)
         sm = start.get("seat_map") or {}
         me = sm.get("P0")
         if not isinstance(me, int) or me not in range(4):
+            self.waiting = f"start_kyoku 的 seat_map 沒有 P0:{sm!r}"
             return Stream(stalled=True)
         try:
             msg = {
@@ -123,7 +135,8 @@ class LedgerStream:
             for key in ("scores", "tehais"):
                 msg[key] = [msg[key][(me + i) % 4] for i in range(4)]
             events: list[MjaiEvent] = [parse_event(msg)]
-        except KeyError, TypeError, ValueError, IndexError:
+        except (KeyError, TypeError, ValueError, IndexError) as exc:
+            self.waiting = f"start_kyoku 欄位錯誤:{exc!r}"
             return Stream(stalled=True)
 
         turn, can_discard = msg["oya"], False

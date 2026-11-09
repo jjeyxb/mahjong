@@ -141,3 +141,39 @@ def test_the_three_feature_pages_share_one_backend_choice(qtbot):
     pickers[0].setCurrentIndex(0)
     assert [c.currentData() for c in pickers] == ["template"] * 3
     assert picker.calls == 2
+
+
+def test_a_long_wait_for_the_start_is_logged_with_the_reason(monkeypatch):
+    """實打時 YOLO 整局停在「等待開局資訊」,重播卻讀得到。等太久要記下它卡在哪。"""
+    from mia.live import yolo
+    from mia.utils.logging import logger
+    from mia.yolo.stream import LedgerStream
+
+    clock = [100.0]
+    monkeypatch.setattr(yolo.time, "monotonic", lambda: clock[0])
+    stream = LedgerStream()
+    worker = object.__new__(yolo.YoloVisionWorker)
+    vars(worker).update(
+        _stream=stream, _waiting_since=None, _waiting_logged="", _waiting_logged_at=0.0
+    )
+    watch = worker._watch_start  # noqa: SLF001
+    patience = yolo._START_WARN  # noqa: SLF001
+    messages = []
+    sink = logger.add(lambda m: messages.append(m.record["message"]), level="WARNING")
+    try:
+        stream.waiting = "start_kyoku 未齊:missing=['tehais']"
+        watch(False)
+        clock[0] += patience - 1
+        watch(False)
+        assert messages == []
+        clock[0] += 2
+        watch(False)
+        watch(False)
+        assert len(messages) == 1
+        assert "tehais" in messages[0]
+        clock[0] += 3
+        watch(True)
+    finally:
+        logger.remove(sink)
+    assert len(messages) == 2
+    assert "等了 12.0 秒" in messages[1]
