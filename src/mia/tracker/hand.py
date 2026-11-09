@@ -134,6 +134,7 @@ class HandWatcher:
     _doubted: tuple[str, ...] = ()
     _doubts: int = 0
     _unexplained: tuple[str, ...] = ()
+    _last_read: tuple[tuple[str, ...], str | None] = ((), None)
     _called: int = 0
     _combined_calls: set[int] = field(default_factory=set)
 
@@ -147,6 +148,7 @@ class HandWatcher:
         self._doubted = ()
         self._doubts = 0
         self._unexplained = ()
+        self._last_read = ((), None)
         self._called = 0
         self._combined_calls.clear()
 
@@ -182,8 +184,10 @@ class HandWatcher:
             return self._deal(tiles, drawn)
         discards = sum(move.move is Move.DISCARD for move in self.moves)
         quiet = thrown is not None and thrown <= discards
+        read = (tuple(sorted(tiles)), drawn)
+        again, self._last_read = read == self._last_read, read
         fresh = self._explain(
-            change, lost, gained, drawn, self._swap(tiles, thrown, called), quiet=quiet
+            change, lost, gained, drawn, self._swap(tiles, thrown, called), quiet=quiet, again=again
         )
         if fresh is None:
             if lost or gained:
@@ -309,10 +313,11 @@ class HandWatcher:
         swap: _Swap,
         *,
         quiet: bool = False,
+        again: bool = True,
     ) -> list[OwnMove] | None:
         """這兩副手牌的差是哪個動作。解釋不了回 ``None``。
 
-        ``quiet`` 是河讀得到、卻沒有多一張。
+        ``quiet`` 是河讀得到、卻沒有多一張。``again`` 是這副手牌上一次也是這樣讀的。
         """
         waiting = len(self.hand) % 3 == 1
         if change == 1 and waiting:
@@ -337,6 +342,12 @@ class HandWatcher:
             return None
         if change == -2 and waiting:
             if len(lost) == 2 and not gained:
+                # 要連續讀到兩次。打完牌手牌滑回去的那一幀,一對牌還沒到位沒讀到,看起來就是碰了那一對
+                # (selfplay-20261110-035646 南2局1本場:一幀少兩張發,收成碰發,牌桌再把別家的捨牌
+                # 改成發,事件流停到局尾)。真的鳴牌之後同一副手牌 0.3 ~ 0.4 秒內一定會再讀到一次
+                # (同一場六次吃碰都是),代價就是晚這麼久。
+                if not again:
+                    return None
                 return [OwnMove(Move.CALL, tuple(lost))]
             if len(lost) == 3 and len(gained) == 1:
                 draw = OwnMove(Move.DRAW, (gained[0],))

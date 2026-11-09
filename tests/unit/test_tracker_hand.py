@@ -44,9 +44,22 @@ class TestMoves:
         assert watcher.observe(TEHAI) == [OwnMove(Move.DISCARD, ("9p",), tsumogiri=True)]
 
     def test_a_pon_takes_two_tiles(self) -> None:
+        """鳴牌要連續讀到兩次:真的鳴牌之後手牌停在那裡,下一次讀數一樣。"""
         watcher = dealt()
+        assert watcher.observe(TEHAI[:9] + TEHAI[11:]) == []
         moves = watcher.observe(TEHAI[:9] + TEHAI[11:])
         assert moves == [OwnMove(Move.CALL, ("E", "E"))]
+
+    def test_a_pair_missing_for_one_read_is_not_a_pon(self) -> None:
+        """打完牌手牌滑回去的那一幀,一對牌還沒到位。下一次讀數又回來了,不是碰。"""
+        watcher = dealt()
+        watcher.observe([*TEHAI, "9p"], "9p")
+        watcher.observe(["9p", *TEHAI[1:]])
+        sliding = [tile for tile in TEHAI[1:] if tile != "E"]
+        assert watcher.observe([*sliding, "9p"], "9p") == []
+        assert watcher.observe(["9p", *TEHAI[1:]]) == []
+        assert watcher.observe([*TEHAI[1:], "9p", "1p"], "1p") == [OwnMove(Move.DRAW, ("1p",))]
+        assert [move.move for move in watcher.moves] == [Move.DRAW, Move.DISCARD, Move.DRAW]
 
     def test_a_pon_and_a_discard_between_two_reads(self) -> None:
         """手牌一次少三張,兩張一樣一張不同:是碰完打牌,不是大明槓。"""
@@ -63,6 +76,7 @@ class TestMoves:
         sliding = [tile for tile in TEHAI if tile not in ("S", "1m")]
         assert watcher.observe(sliding, thrown=0) == []
         settled = [tile for tile in TEHAI if tile != "S"]
+        assert watcher.observe(settled, thrown=0) == []
         assert watcher.observe(settled, thrown=0) == [OwnMove(Move.CALL, ("S", "S"))]
         assert watcher.observe(sliding, thrown=1) == [OwnMove(Move.DISCARD, ("1m",))]
 
