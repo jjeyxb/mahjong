@@ -9,8 +9,8 @@
 
 所以以樣板為主幹,YOLO 追上之後拿來核對別家:
 
-1. 兩條事件流逐事件對齊(:func:`difflib.SequenceMatcher`)。一致的段落照用。
-   對齊之前,立直成立先排回宣言牌後面(:func:`canonical`)。
+1. 兩條事件流逐事件對齊(:func:`difflib.SequenceMatcher`)。一致的段落照用,只有別家的摸切
+   與否換成 YOLO 的(:func:`_yolo_cuts`)。對齊之前,立直成立先排回宣言牌後面(:func:`canonical`)。
 2. 夾在兩個一致點之間、不一致的一段,整段挑一邊。兩邊各自都合乎輪次,一致點上局面相同,
    整段換掉仍然合法。
 
@@ -19,7 +19,8 @@
    * 別家的段落用 YOLO,除非 YOLO 在那一段落後太多(:data:`LAG_OK`):那是 YOLO 卡住、整局錯位。
    * 樣板有吃碰、YOLO 整段什麼都沒有,用樣板。被立刻鳴走的牌只在河裡停一下,YOLO 要牌停穩才收,
      捨牌、鳴牌、鳴後打的那張整段都不在;樣板的假吃碰則是 YOLO 在同一個位置看到那家照常摸打。
-     立直成立也一樣:立直棒放上桌之前 YOLO 不送。
+     立直成立也一樣:立直棒放上桌之前 YOLO 不送。樣板有槓、YOLO 那段沒有槓、整局那家的槓也比樣板少
+     (:func:`_missed_kans`),也用樣板。
 
 3. 最後一個一致點之後用樣板:YOLO 還沒追上,不等它,建議的速度由樣板決定。
 4. 拼起來會被引擎拒收的(:func:`plausible`),一段一段換,換了會拒收的那段退回樣板。
@@ -35,7 +36,7 @@ import threading
 import time
 from collections import Counter
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from mia.mjai.events import (
     Ankan,
@@ -56,6 +57,7 @@ from mia.tracker import Stream
 
 _OWN = 0
 _CALLS = (Chi, Pon, Daiminkan)
+_KANS = (Ankan, Kakan, Daiminkan)
 
 #: 一致點上 YOLO 比樣板晚超過這麼多秒,中間那段不信 YOLO。
 #:
@@ -94,6 +96,9 @@ def tokens(events: Sequence[MjaiEvent]) -> tuple[Token, ...]:
 
     別家摸牌看不到牌面,單獨比的話每一個都長得一樣,錯位的兩段也會到處「對上」。
     綁上它後面那個事件(通常就是摸完打的那張)。
+
+    翻寶牌綁上它前面那個事件。實測 YOLO 漏了一個暗槓、只讀到翻寶牌,兩邊同一張翻寶牌被當成
+    一致點,把槓切成前後兩段,兩段都換成 YOLO,暗槓就不見了。
     """
     out = []
     for index, event in enumerate(events):
@@ -101,6 +106,8 @@ def tokens(events: Sequence[MjaiEvent]) -> tuple[Token, ...]:
         if isinstance(event, Tsumo) and event.actor != _OWN:
             after = events[index + 1] if index + 1 < len(events) else None
             token = (*token, _token(after) if after is not None else None)
+        elif isinstance(event, Dora):
+            token = (*token, _token(events[index - 1]) if index else None)
         out.append(token)
     return tuple(out)
 
@@ -159,16 +166,26 @@ def merge(
     if not yolo.events or template.tokens[0] != yolo.tokens[0]:
         return template.events
     t, y = template, yolo
+    ruled = _ruled_cuts(t.events)
+    missed = _missed_kans(t.events, y.events)
     # 每一段:(樣板那段, YOLO 那段;不換的話是 None)。
     pieces: list[tuple[Sequence[MjaiEvent], Sequence[MjaiEvent] | None]] = []
     matcher = difflib.SequenceMatcher(None, t.tokens, y.tokens, autojunk=False)
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag == "equal" or i2 == len(t.tokens) or j2 == len(y.tokens):
+        if tag == "equal":
+            pieces.append((_yolo_cuts(t.events, y.events, i1, i2, j1, ruled, stats), None))
+            continue
+        if i2 == len(t.tokens) or j2 == len(y.tokens):
             pieces.append((t.events[i1:i2], None))
             continue
         mine, theirs = t.events[i1:i2], y.events[j1:j2]
         own = any(_own(event) for event in mine + theirs)
         flash = not theirs and any(isinstance(event, _CALLS) for event in mine)
+        # 槓也是:YOLO 讀副露區比較會漏,樣板要讀出假的槓得同時看到四張牌與翻寶牌。
+        flash = flash or (
+            any(isinstance(event, _KANS) and event.actor in missed for event in mine)
+            and not any(isinstance(event, _KANS) for event in theirs)
+        )
         # 立直棒放上桌之前 YOLO 不送立直成立,樣板已經有了:YOLO 是還沒看到,不是看到沒有。
         flash = flash or (not theirs and all(isinstance(event, ReachAccepted) for event in mine))
         late = y.seen[j2] - t.seen[i2] > lag_ok
@@ -194,6 +211,65 @@ def merge(
         elif stats is not None:
             stats["implausible"] += 1
     return _assemble(pieces, chosen)
+
+
+def _missed_kans(template: Sequence[MjaiEvent], yolo: Sequence[MjaiEvent]) -> set[int]:
+    """YOLO 整局讀到的槓比樣板少的那幾家。
+
+    只看那一段沒有槓不夠:錄影 053001 西二局三本場,樣板把上家的暗槓晚讀一巡,YOLO 在對的位置
+    讀到,兩邊的槓落在不同段,兩個都收進來就多一個槓。
+    """
+    def count(events: Sequence[MjaiEvent]) -> Counter[int]:
+        return Counter(event.actor for event in events if isinstance(event, _KANS))
+
+    mine, theirs = count(template), count(yolo)
+    return {actor for actor, kans in mine.items() if kans > theirs[actor]}
+
+
+def _ruled_cuts(events: Sequence[MjaiEvent]) -> set[int]:
+    """規則就決定了摸切與否的別家捨牌:鳴牌後打的一定手切,立直成立之後一定摸切。"""
+    out = set()
+    reached: set[int] = set()
+    for index, event in enumerate(events):
+        if isinstance(event, ReachAccepted):
+            reached.add(event.actor)
+        elif isinstance(event, Dahai) and event.actor != _OWN:
+            before = events[index - 1] if index else None
+            called = isinstance(before, Chi | Pon) and before.actor == event.actor
+            if called or event.actor in reached:
+                out.add(index)
+    return out
+
+
+def _yolo_cuts(
+    template: Sequence[MjaiEvent],
+    yolo: Sequence[MjaiEvent],
+    i1: int,
+    i2: int,
+    j1: int,
+    ruled: set[int],
+    stats: Counter[str] | None,
+) -> Sequence[MjaiEvent]:
+    """一致的一段,別家捨牌的摸切與否換成 YOLO 的。
+
+    樣板看別家手牌的形狀估(:mod:`mia.tracker.tedashi`),YOLO 看摸進來的那張還在不在。八份
+    錄影、別家 2200 張自己決定的捨牌:樣板 92 ~ 95%,YOLO 98 ~ 99%。規則決定的(:func:`_ruled_cuts`)
+    樣板全對,不換。
+    """
+    out = list(template[i1:i2])
+    for offset, event in enumerate(out):
+        other = yolo[j1 + offset]
+        if (
+            isinstance(event, Dahai)
+            and isinstance(other, Dahai)
+            and event.actor != _OWN
+            and i1 + offset not in ruled
+            and event.tsumogiri != other.tsumogiri
+        ):
+            out[offset] = replace(event, tsumogiri=other.tsumogiri)
+            if stats is not None:
+                stats["cut"] += 1
+    return out
 
 
 def _assemble(

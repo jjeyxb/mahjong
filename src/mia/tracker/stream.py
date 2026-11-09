@@ -55,7 +55,11 @@ TurnTracker 是捨牌驅動的,打出去才排得出那一手。但 Mortal 要�
 
 但 Mortal 要的是**現在的局面**,不是歷史:手牌對、河對、余牌對,就算過去的摸打不完全對,答案也
 差不多。所以分歧持續一陣子之後,:func:`resynced` 用畫面上現在的手牌與河重寫自己的動作:配牌換成
-推回去的手牌,之前每一手當成摸切。摸切與手切的標記會失真,其他都是真的,這比沒有建議好得多。
+推回去的手牌。手牌之前記下的摸打,打的牌與河一致的照用;從第一手對不上開始,之後每一手當成摸切。
+那幾手的摸牌與摸切標記會失真,其他都是真的,這比沒有建議好得多。
+
+以前一律當成摸切。2026-11-08 真人場東二局:自己打的 3p 被下家吃走,手牌追丟、重寫,「摸 3p 打
+6p」「摸 6p 打 3p」被改成「摸 6p 摸切」「摸 3p 摸切」,配牌也跟著換了一張,其實手牌早就記對了。
 
 不需要的事件
 ------------
@@ -66,7 +70,7 @@ TurnTracker 是捨牌驅動的,打出去才排得出那一手。但 Mortal 要�
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Protocol
 
@@ -249,10 +253,23 @@ def resynced(
         if drawn not in hand:
             return None
         hand.remove(drawn)
+    return _rewrite(log, hand, drawn, _known_turns(log.moves)) or _rewrite(log, hand, drawn, [])
+
+
+def _rewrite(
+    log: KyokuLog,
+    hand: list[str],
+    drawn: str | None,
+    known: Sequence[tuple[str | None, str, bool]],
+) -> tuple[tuple[str, ...], list[OwnMove]] | None:
+    """:func:`resynced` 的本體。``known`` 是手牌記下的摸打,打的牌與河一致的那幾手照用。"""
     calls = [move for move in log.moves if move.move is Move.CALL]
     moves: list[OwnMove] = []
     spent: list[str] = []
+    took: list[str] = []
     drew = False
+    trusted = True
+    thrown = 0
     discards = sum(move.move is Move.DISCARD for move in log.moves)
     for step in _Composer(log, discards=discards).steps:
         if step.actor != 0:
@@ -269,7 +286,17 @@ def resynced(
             pai = step.pai or step.guess
             if pai is None:
                 return None
-            if drew:
+            turn = known[thrown] if thrown < len(known) else None
+            thrown += 1
+            trusted = trusted and turn is not None and turn[1] == pai
+            if drew and trusted and turn is not None and turn[0] is not None:
+                moves += [
+                    OwnMove(Move.DRAW, (turn[0],)),
+                    OwnMove(Move.DISCARD, (pai,), tsumogiri=turn[2]),
+                ]
+                spent.append(pai)
+                took.append(turn[0])
+            elif drew:
                 moves += [OwnMove(Move.DRAW, (pai,)), OwnMove(Move.DISCARD, (pai,), tsumogiri=True)]
             else:
                 moves.append(OwnMove(Move.DISCARD, (pai,)))
@@ -277,8 +304,27 @@ def resynced(
             drew = False
     if drawn is not None:
         moves.append(OwnMove(Move.DRAW, (drawn,)))
-    tehai = (*hand, *spent)
+    pool = Counter([*hand, *spent])
+    if not Counter(took) <= pool:
+        # 手牌記下的摸牌湊不回配牌:那幾手本來就記錯了。
+        return None
+    tehai = tuple((pool - Counter(took)).elements()) if took else (*hand, *spent)
     return (tehai, moves) if len(tehai) == 13 else None
+
+
+def _known_turns(moves: Sequence[OwnMove]) -> list[tuple[str | None, str, bool]]:
+    """手牌記下的每一手:``(摸了什麼, 打了什麼, 摸切)``。鳴牌後打的那手沒有摸牌。"""
+    out: list[tuple[str | None, str, bool]] = []
+    draw: str | None = None
+    for move in moves:
+        if move.move is Move.DRAW:
+            draw = move.tiles[0]
+        elif move.move is Move.CALL:
+            draw = None
+        else:
+            out.append((draw, move.tiles[0], move.tsumogiri))
+            draw = None
+    return out
 
 
 class _Composer:

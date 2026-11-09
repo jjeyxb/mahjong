@@ -128,6 +128,52 @@ def test_only_the_implausible_correction_is_dropped():
     assert merge(side(template), side(yolo)) == tuple(truth)
 
 
+def test_a_kan_yolo_missed_is_kept():
+    """2026-11-08 真人場:YOLO 漏了對家暗槓 9p,只讀到翻寶牌,而且排在那家摸牌之前。"""
+    head = [*OPENING[:5]]
+    template = [*head, Tsumo(actor=2, pai="?"), Ankan(actor=2, consumed=["9p"] * 4),
+                Tsumo(actor=2, pai="?"), Dora(dora_marker="3s"),
+                Dahai(actor=2, pai="6p", tsumogiri=True), *OPENING[7:], *NEXT]
+    yolo = [*head, Dora(dora_marker="3s"), Tsumo(actor=2, pai="?"),
+            Dahai(actor=2, pai="6p", tsumogiri=True), *OPENING[7:], *NEXT]
+    assert merge(side(template), side(yolo)) == tuple(template)
+
+
+def test_a_kan_the_template_read_late_is_not_doubled():
+    """錄影 053001 西二局三本場:樣板把暗槓晚讀一巡,YOLO 在對的位置讀到。槓只能有一個。"""
+    kan = [Tsumo(actor=2, pai="?"), Ankan(actor=2, consumed=["9p"] * 4),
+           Tsumo(actor=2, pai="?"), Dora(dora_marker="3s")]
+    tail = [*turn(3, "2s")]
+    template = [*OPENING, *NEXT, *kan, Dahai(actor=2, pai="S", tsumogiri=False), *tail]
+    yolo = [*OPENING[:5], *kan, Dahai(actor=2, pai="N", tsumogiri=False), *OPENING[7:], *NEXT,
+            *turn(2, "S"), *tail]
+    assert merge(side(template), side(yolo)) == tuple(yolo)
+
+
+def cut(events: Sequence[MjaiEvent], actor: int, pai: str) -> list[MjaiEvent]:
+    """把某家打的那張改成摸切。"""
+    return [
+        Dahai(actor=e.actor, pai=e.pai, tsumogiri=True)
+        if isinstance(e, Dahai) and e.actor == actor and e.pai == pai else e
+        for e in events
+    ]
+
+
+def test_opponent_tsumogiri_follows_yolo():
+    """樣板看手牌形狀估摸切,YOLO 看摸進來的牌還在不在,準得多。兩邊不一致時聽 YOLO 的。"""
+    template = cut([*OPENING, *NEXT], 1, "9m")
+    yolo = cut([*OPENING, *NEXT], 3, "1s")
+    assert merge(side(template), side(yolo)) == tuple(yolo)
+
+
+def test_own_and_ruled_cuts_stay_with_the_template():
+    """自己的摸切樣板清楚;鳴牌後打的一定是手切,規則定的不必聽 YOLO。"""
+    called = [*OPENING[:5], Pon(actor=2, target=1, pai="9m", consumed=["9m", "9m"]),
+              Dahai(actor=2, pai="N", tsumogiri=False), *OPENING[7:], *NEXT]
+    yolo = cut(cut(called, 2, "N"), 0, "C")
+    assert merge(side(called), side(yolo)) == tuple(called)
+
+
 def test_reach_accepted_goes_back_behind_the_declaration():
     """YOLO 把立直成立排在下家摸牌之後:排回去,兩邊就對得齊,照樣聽樣板的順序。"""
     declare = [Tsumo(actor=3, pai="?"), Reach(actor=3), Dahai(actor=3, pai="1s", tsumogiri=False)]

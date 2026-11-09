@@ -70,9 +70,42 @@ from mia.vision.tiles.classify import (
     TemplateSet,
     classify_hand,
 )
-from mia.vision.tiles.hand import read_hand
+from mia.vision.tiles.hand import Hand, read_hand
+from mia.vision.tiles.skin import is_skin
 
 __all__ = ["HAND_ROI", "VisionWorker"]
+
+#: 白(雀魂記法)。見 :func:`_palm_over_haku`。
+_HAKU = "5z"
+
+#: 看一格手牌的顏色時,四邊各裁掉幾成:牌的側面與陰影不算。
+_FACE_TRIM = 0.15
+
+
+def _palm_over_haku(
+    tall: np.ndarray,
+    hand: Hand,
+    headroom: int,
+    concealed: Sequence[Match],
+    drawn: Match | None,
+) -> bool:
+    """讀成白的那幾格是不是角色的手。
+
+    打牌時手掌蓋在摸牌那一格,讀成有信心的白:2026-11-08 真人場東二局摸切 8s,手牌記成
+    「打 8s、摸白」,手收回去又記成「摸切白」,憑空多一手。見 :mod:`mia.vision.tiles.skin`。
+    """
+    boxes = list(zip(hand.concealed, concealed, strict=False))
+    if hand.drawn is not None and drawn is not None:
+        boxes.append((hand.drawn, drawn))
+    for box, match in boxes:
+        if match.label != _HAKU:
+            continue
+        dx, dy = round(box.width * _FACE_TRIM), round(box.height * _FACE_TRIM)
+        top = headroom + box.y
+        face = tall[top + dy : top + box.height - dy, box.x + dx : box.x + box.width - dx]
+        if is_skin(face):
+            return True
+    return False
 
 #: 功能 1 只需要這一個 ROI。沒有它就沒有畫面這條路可走。
 HAND_ROI = "own_hand"
@@ -376,6 +409,8 @@ class VisionWorker(threading.Thread):
             except ValueError:
                 concealed, drawn = (), None
             matches = (*concealed, *(m for m in (drawn,) if m is not None))
+            if _palm_over_haku(tall, hand, headroom, concealed, drawn):
+                matches = ()
             if matches and all(m.is_confident for m in matches):
                 seen = (tuple(m.label for m in concealed), drawn.label if drawn else None)
         previous, self._glanced = self._glanced, seen
@@ -481,6 +516,9 @@ class VisionWorker(threading.Thread):
             # (辨識的實測下限,見 tests/unit/test_vision_classify.py 的解析度掃描),
             # 或校正鎖到一個偏小的假牌桌 —— 單幀校正實測 16% 明顯錯誤。
             self.status.say(f"手牌區太小,認不出牌面:{exc}")
+            return
+        if _palm_over_haku(tall, hand, headroom, concealed, drawn):
+            # 角色的手蓋在手牌上,這一幀不算。與張數不合法一樣,上一次的手牌仍然是最好的資訊。
             return
         matches = (*concealed, *(m for m in (drawn,) if m is not None))
         confident = all(m.is_confident for m in matches)

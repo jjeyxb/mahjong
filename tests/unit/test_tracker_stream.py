@@ -999,3 +999,41 @@ class TestResync:
 
     def test_a_drawn_tile_that_is_not_in_the_hand_is_refused(self) -> None:
         assert resynced(log(), self.TILES, "P") is None
+
+    def _two_turns(self) -> list[Step]:
+        return [Step(T, 0), Step(D, 0, "N", serial=0), Step(T, 1), Step(D, 1, "2p"),
+                Step(T, 0), Step(D, 0, "S", serial=1)]
+
+    def test_draws_the_hand_saw_are_kept(self) -> None:
+        """2026-11-08 真人場東二局:手牌記對的「摸 3p 打 6p」不能被改寫成「摸 6p 摸切」。"""
+        known = [OwnMove(Move.DRAW, ("W",)), OwnMove(Move.DISCARD, ("N",)),
+                 OwnMove(Move.DRAW, ("S",)), OwnMove(Move.DISCARD, ("S",), tsumogiri=True)]
+        stalled = log(steps=self._two_turns(), moves=known)
+        tiles = [*self.TILES[:12], "W"]
+        fresh = resynced(stalled, tiles, None)
+        assert fresh is not None
+        tehai, moves = fresh
+        assert moves == known
+        assert sorted(tehai) == sorted([*self.TILES[:12], "N"])
+
+    def test_from_the_first_mismatch_on_every_turn_is_a_tsumogiri(self) -> None:
+        known = [OwnMove(Move.DRAW, ("W",)), OwnMove(Move.DISCARD, ("E",)),
+                 OwnMove(Move.DRAW, ("S",)), OwnMove(Move.DISCARD, ("S",), tsumogiri=True)]
+        stalled = log(steps=self._two_turns(), moves=known)
+        fresh = resynced(stalled, self.TILES, None)
+        assert fresh is not None
+        _, moves = fresh
+        assert moves == [
+            OwnMove(Move.DRAW, ("N",)), OwnMove(Move.DISCARD, ("N",), tsumogiri=True),
+            OwnMove(Move.DRAW, ("S",)), OwnMove(Move.DISCARD, ("S",), tsumogiri=True),
+        ]
+
+    def test_draws_that_do_not_add_up_are_dropped(self) -> None:
+        """記下的摸牌手上與打出去的都沒有:記錯了,整局當成摸切重寫。"""
+        known = [OwnMove(Move.DRAW, ("C",)), OwnMove(Move.DISCARD, ("N",))]
+        steps = [Step(T, 0), Step(D, 0, "N", serial=0)]
+        fresh = resynced(log(steps=steps, moves=known), self.TILES, None)
+        assert fresh is not None
+        assert fresh[1] == [
+            OwnMove(Move.DRAW, ("N",)), OwnMove(Move.DISCARD, ("N",), tsumogiri=True)
+        ]

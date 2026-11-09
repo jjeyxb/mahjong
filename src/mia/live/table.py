@@ -122,6 +122,7 @@ from mia.vision.tiles.river import (
     settle_river_five,
     slot,
 )
+from mia.vision.tiles.skin import is_skin
 
 __all__ = ["TableLink", "TableWorker"]
 
@@ -744,7 +745,10 @@ class TableWorker(threading.Thread):
             return False
         if known == self._sideways[position] or known in river.clipped:
             return False
-        pai, _ = self._read_cell(position, flat, self._shifted(position, flat, river), known)
+        river = self._shifted(position, flat, river)
+        if is_skin(face_patch(flat, river.cells[known])):
+            return False
+        pai, _ = self._read_cell(position, flat, river, known)
         return pai not in (UNKNOWN, _HAKU)
 
     def _unread(self, position: int, river: River) -> list[int]:
@@ -816,6 +820,9 @@ class TableWorker(threading.Thread):
                     self._unsteady[position].add(cell)
                 known.append(UNKNOWN)
                 continue
+            if is_skin(face_patch(flat, river.cells[cell])):
+                # 角色的手蓋在這一格上。等手收回去再讀,見 mia.vision.tiles.skin。
+                break
             steady = self._steady(position, cell)
             if not steady and not urgent and not self._clear[position]:
                 break
@@ -973,6 +980,8 @@ class TableWorker(threading.Thread):
             if cell >= len(known) or cell == self._sideways[position] or cell in river.clipped:
                 self._unsteady[position].discard(cell)
                 self._uncertain_until[position].pop(cell, None)
+                continue
+            if is_skin(face_patch(flat, river.cells[cell])):
                 continue
             pai, guess = self._read_cell(position, flat, river, cell)
             if pai == UNKNOWN:
