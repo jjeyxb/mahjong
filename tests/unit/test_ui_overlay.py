@@ -18,6 +18,7 @@ import pytest
 from mia import features
 from mia.analysis import assess
 from mia.engine.base import Advice
+from mia.hybrid.merge import TileChoice
 from mia.mjai import Chi, Dahai, Pon, Reach, StartGame, StartKyoku
 from mia.mjai.table import TableTracker
 from mia.mjai.tiles import UNKNOWN
@@ -27,8 +28,10 @@ from mia.ui.viewmodel import ViewModel
 pytest.importorskip("PySide6", reason="UI 測試需要 PySide6")
 
 from PySide6.QtCore import QPoint, Qt
+from PySide6.QtWidgets import QLabel
 
 from mia.ui.overlay.window import OverlayWindow
+from mia.ui.widgets.tiles import TileLabel
 
 TENPAI = ["1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "1p", "2p", "3p"]
 
@@ -825,3 +828,72 @@ def _press(point: QPoint):
         Qt.MouseButton.LeftButton,
         Qt.KeyboardModifier.NoModifier,
     )
+
+
+class TestChoiceBar:
+    """混合辨識兩邊讀成不同牌時,Overlay 下緣外側那一條讓玩家點。"""
+
+    CHOICE = TileChoice(kyoku=3, actor=2, nth=10, template="8m", yolo="3m", chosen="8m")
+
+    @pytest.fixture
+    def picking(self, qtbot, tmp_path):
+        model = ViewModel()
+        picks: list[tuple[TileChoice, str]] = []
+        window = OverlayWindow(
+            model,
+            ui_state=UiState.load(tmp_path / "ui.json"),
+            on_pick=lambda choice, pai: picks.append((choice, pai)),
+        )
+        model.subscribe(window.apply)
+        qtbot.addWidget(window)
+        return model, window, picks
+
+    def test_without_a_pick_callback_there_is_no_bar(self, overlay) -> None:
+        _, window = overlay
+        assert window.choice_bar is None
+
+    def test_nothing_to_ask_keeps_it_hidden(self, picking) -> None:
+        _, window, _ = picking
+        window.set_shown(True)
+        assert window.choice_bar.isHidden()
+
+    def test_a_choice_shows_both_readings(self, picking) -> None:
+        model, window, _ = picking
+        window.set_shown(True)
+        model.update_choices([self.CHOICE])
+        bar = window.choice_bar
+        assert not bar.isHidden()
+        assert bar.choices == (self.CHOICE,)
+        row = bar.findChildren(QLabel)
+        assert any("對家第 11 張" in label.text() for label in row)
+
+    def test_it_hides_with_the_overlay(self, picking) -> None:
+        model, window, _ = picking
+        window.set_shown(True)
+        model.update_choices([self.CHOICE])
+        window.set_shown(False)
+        assert window.choice_bar.isHidden()
+
+    def test_clicking_a_tile_picks_it(self, picking, qtbot) -> None:
+        model, window, picks = picking
+        window.set_shown(True)
+        model.update_choices([self.CHOICE])
+        tiles = [t for t in window.choice_bar.findChildren(TileLabel) if t.tile == "3m"]
+        qtbot.mouseClick(tiles[0], Qt.MouseButton.LeftButton)
+        assert picks == [(self.CHOICE, "3m")]
+
+    def test_it_stays_clickable_while_the_overlay_is_locked(self, picking) -> None:
+        model, window, _ = picking
+        window.set_shown(True)
+        window.set_locked(True)
+        model.update_choices([self.CHOICE])
+        bar = window.choice_bar
+        assert bar.isWindow()
+        assert not (bar.windowFlags() & Qt.WindowType.WindowTransparentForInput)
+
+    def test_answered_choices_go_away(self, picking) -> None:
+        model, window, _ = picking
+        window.set_shown(True)
+        model.update_choices([self.CHOICE])
+        model.update_choices([])
+        assert window.choice_bar.isHidden()

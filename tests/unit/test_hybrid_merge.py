@@ -5,7 +5,16 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import replace
 
-from mia.hybrid.merge import LAG_OK, Side, StreamMerger, canonical, merge, plausible
+from mia.hybrid.merge import (
+    LAG_OK,
+    SETTLE,
+    Side,
+    StreamMerger,
+    TileChoice,
+    canonical,
+    merge,
+    plausible,
+)
 from mia.mjai.events import (
     Ankan,
     Dahai,
@@ -261,3 +270,79 @@ class TestStreamMerger:
         self.offer(StreamMerger.TEMPLATE, 2, [])
         self.offer(StreamMerger.YOLO, 2, [replace(start(2), dora_marker="5s"), *OPENING[1:], *NEXT])
         assert self.out[-1][1].events == ()
+
+
+class TestTileChoices:
+    """兩邊讀成不同牌的別家捨牌,穩定了才問玩家,玩家選的優先。"""
+
+    # 下家第一張:樣板讀 8m,YOLO 讀 9m。
+    MISREAD = (*OPENING[:4], Dahai(actor=1, pai="8m", tsumogiri=False), *OPENING[5:], *NEXT)
+    RIGHT = (*OPENING, *NEXT)
+
+    def setup_method(self):
+        self.now = 0.0
+        self.out: list[tuple[int, Stream]] = []
+        self.asked: list[tuple[int, tuple[TileChoice, ...]]] = []
+        self.merger = StreamMerger(
+            lambda k, s: self.out.append((k, s)),
+            on_choices=lambda k, c: self.asked.append((k, c)),
+            clock=lambda: self.now,
+        )
+
+    def offer_both(self, template: Sequence[MjaiEvent], yolo: Sequence[MjaiEvent]) -> None:
+        self.merger.offer(StreamMerger.TEMPLATE, 1, Stream(events=tuple(template)))
+        self.merger.offer(StreamMerger.YOLO, 1, Stream(events=tuple(yolo)))
+
+    def test_a_fresh_disagreement_is_not_asked_yet(self):
+        self.offer_both(self.MISREAD, self.RIGHT)
+        assert self.asked == []
+
+    def test_a_settled_disagreement_is_asked(self):
+        self.offer_both(self.MISREAD, self.RIGHT)
+        self.now = SETTLE
+        self.offer_both(self.MISREAD, self.RIGHT)
+        kyoku, choices = self.asked[-1]
+        assert choices == (TileChoice(kyoku, 1, 0, template="8m", yolo="9m", chosen="9m"),)
+
+    def test_the_player_pick_wins_and_is_not_asked_again(self):
+        self.offer_both(self.MISREAD, self.RIGHT)
+        self.now = SETTLE
+        self.offer_both(self.MISREAD, self.RIGHT)
+        kyoku, _ = self.asked[-1]
+        self.merger.pick(kyoku, 1, 0, "8m")
+        assert self.out[-1][1].events == tuple(self.MISREAD)
+        assert self.asked[-1] == (kyoku, ())
+        self.now = SETTLE * 2
+        self.offer_both(self.MISREAD, self.RIGHT)
+        assert self.out[-1][1].events == tuple(self.MISREAD)
+
+    def test_a_pick_outside_the_two_readings_is_ignored(self):
+        self.offer_both(self.MISREAD, self.RIGHT)
+        self.now = SETTLE
+        self.offer_both(self.MISREAD, self.RIGHT)
+        kyoku, _ = self.asked[-1]
+        self.merger.pick(kyoku, 1, 0, "C")
+        assert self.out[-1][1].events == tuple(self.RIGHT)
+
+    def test_agreeing_later_drops_the_question(self):
+        self.offer_both(self.MISREAD, self.RIGHT)
+        self.now = SETTLE
+        self.offer_both(self.MISREAD, self.RIGHT)
+        self.offer_both(self.RIGHT, self.RIGHT)
+        assert self.asked[-1][1] == ()
+
+    def test_a_pick_for_the_last_round_is_ignored(self):
+        self.offer_both(self.MISREAD, self.RIGHT)
+        self.now = SETTLE
+        self.offer_both(self.MISREAD, self.RIGHT)
+        kyoku, _ = self.asked[-1]
+        self.merger.pick(kyoku - 1, 1, 0, "8m")
+        assert self.out[-1][1].events == tuple(self.RIGHT)
+
+    def test_an_extra_discard_is_not_a_choice(self):
+        """多一張、少一張不是「哪張牌」的問題,不問。"""
+        extra = [*OPENING, *turn(1, "8m"), *NEXT]
+        self.offer_both([*OPENING, *NEXT], extra)
+        self.now = SETTLE
+        self.offer_both([*OPENING, *NEXT], extra)
+        assert all(choices == () for _, choices in self.asked)

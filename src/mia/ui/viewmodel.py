@@ -40,6 +40,7 @@ from mia.analysis import (
 )
 from mia.engine.actions import Candidate, action_label, action_tiles, decode_candidates
 from mia.engine.base import Advice
+from mia.hybrid.merge import TileChoice
 from mia.mjai.tiles import UNKNOWN, mjai_to_ms, ms_to_mjai
 
 __all__ = ["EngineView", "ViewModel", "ViewState", "q_fraction", "shanten_text"]
@@ -214,6 +215,7 @@ class ViewState:
         discards: 純以聽牌速度而言的打牌選項,最好的在前。
         engines: 各引擎的建議,加入順序 —— 那個順序就是 :attr:`primary` 的優先序。
         notices: 要顯示給使用者的警示(校正未鎖定、引擎掉隊、CV 沒把握…)。
+        choices: 混合辨識兩邊讀成不同牌、要玩家看畫面選的別家捨牌。
     """
 
     hand: tuple[str, ...] = ()
@@ -229,6 +231,7 @@ class ViewState:
     seen: Mapping[str, int] | None = None
     engines: tuple[EngineView, ...] = ()
     notices: tuple[str, ...] = ()
+    choices: tuple[TileChoice, ...] = ()
 
     @property
     def hand_conflict(self) -> bool:
@@ -419,6 +422,10 @@ class ViewModel:
             analysis, discards = _analyse(state.hand, seen)
         self._emit(replace(state, dangers=report, seen=seen, analysis=analysis,
                            discards=discards))
+
+    def update_choices(self, choices: Sequence[TileChoice]) -> None:
+        """混合辨識要玩家選的那幾張,整批換掉。"""
+        self._emit(replace(self._state, choices=tuple(choices)))
 
     def set_notices(self, notices: Sequence[str]) -> None:
         """整批換掉警示。校正狀態、引擎存活這些由外部持續回報。"""

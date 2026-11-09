@@ -30,9 +30,19 @@ from dataclasses import dataclass, field
 
 from mia.analysis.danger import DangerReport
 from mia.engine.base import Advice
+from mia.hybrid.merge import TileChoice
 from mia.mjai.events import MjaiEvent
 
-__all__ = ["Advices", "CvHand", "Dangers", "EventStream", "PacketHand", "Update", "UpdateBus"]
+__all__ = [
+    "Advices",
+    "CvHand",
+    "Dangers",
+    "EventStream",
+    "PacketHand",
+    "TileChoices",
+    "Update",
+    "UpdateBus",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,7 +115,17 @@ class EventStream:
     note: str = ""
 
 
-Update = CvHand | PacketHand | Advices | Dangers | EventStream
+@dataclass(frozen=True, slots=True)
+class TileChoices:
+    """混合辨識兩邊讀成不同牌、要玩家看畫面選的別家捨牌。見 :class:`~mia.hybrid.merge.TileChoice`。
+
+    是**目前全部**待選的,不是新增的:選完或兩邊讀成一樣了,下一筆就不會有它。空的代表沒有要問的。
+    """
+
+    choices: tuple[TileChoice, ...] = ()
+
+
+Update = CvHand | PacketHand | Advices | Dangers | EventStream | TileChoices
 
 
 @dataclass

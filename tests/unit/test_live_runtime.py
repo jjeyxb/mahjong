@@ -16,7 +16,16 @@ from mia.calibration.canvas import Canvas, CanvasChoice
 from mia.engine.base import Advice, EngineError
 from mia.engine.styles import StyleChoice, StyleProfile
 from mia.features import AdviceSourceChoice
-from mia.live.bus import Advices, CvHand, EventStream, PacketHand, UpdateBus, WorkerStatus
+from mia.hybrid.merge import TileChoice
+from mia.live.bus import (
+    Advices,
+    CvHand,
+    EventStream,
+    PacketHand,
+    TileChoices,
+    UpdateBus,
+    WorkerStatus,
+)
 from mia.live.control import ControlFile
 from mia.live.runtime import _SCREEN_SOURCE, Feature, LiveRuntime
 from mia.live.source import (
@@ -1166,3 +1175,46 @@ class TestTheScreenPathNeedsTheScreen:
         from mia.live.table import TableWorker
 
         assert DangerWorker.SOURCE != TableWorker.SOURCE
+
+
+class TestTileChoices:
+    """混合辨識要玩家選的牌:送到 ViewModel,玩家選的送回畫面那個 worker。"""
+
+    CHOICE = TileChoice(kyoku=1, actor=3, nth=0, template="8m", yolo="3m", chosen="8m")
+
+    def test_they_reach_the_viewmodel(self, model: ViewModel, bus: UpdateBus) -> None:
+        runtime = LiveRuntime(model, bus)
+        bus.post(TileChoices((self.CHOICE,)))
+        runtime.pump()
+        assert model.state.choices == (self.CHOICE,)
+
+    def test_a_pick_goes_to_the_vision_worker(self, model: ViewModel, bus: UpdateBus) -> None:
+        picks: list[tuple[int, int, int, str]] = []
+
+        class Picking(FakeWorker):
+            def pick(self, kyoku: int, actor: int, nth: int, pai: str) -> None:
+                picks.append((kyoku, actor, nth, pai))
+
+        vision = Feature(features.VISION, lambda: Picking("畫面"))
+        runtime = LiveRuntime(model, bus, features=[vision])
+        runtime.set_enabled(features.VISION, True)
+        runtime.pick_tile(self.CHOICE, "3m")
+        assert picks == [(1, 3, 0, "3m")]
+
+    def test_a_pick_without_a_hybrid_worker_is_ignored(
+        self, model: ViewModel, bus: UpdateBus
+    ) -> None:
+        feature, _ = _feature(features.VISION)
+        runtime = LiveRuntime(model, bus, features=[feature])
+        runtime.pick_tile(self.CHOICE, "3m")
+        runtime.set_enabled(features.VISION, True)
+        runtime.pick_tile(self.CHOICE, "3m")
+
+    def test_disabling_vision_clears_them(self, model: ViewModel, bus: UpdateBus) -> None:
+        feature, _ = _feature(features.VISION)
+        runtime = LiveRuntime(model, bus, features=[feature])
+        runtime.set_enabled(features.VISION, True)
+        bus.post(TileChoices((self.CHOICE,)))
+        runtime.pump()
+        runtime.set_enabled(features.VISION, False)
+        assert model.state.choices == ()

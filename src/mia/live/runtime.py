@@ -39,12 +39,14 @@ from mia.calibration.canvas import CanvasChoice
 from mia.engine.base import EngineError
 from mia.engine.styles import StyleChoice
 from mia.features import NAMES, AdviceSourceChoice, DangerSourceChoice, RecognitionChoice
+from mia.hybrid.merge import TileChoice
 from mia.live.bus import (
     Advices,
     CvHand,
     Dangers,
     EventStream,
     PacketHand,
+    TileChoices,
     UpdateBus,
     WorkerStatus,
 )
@@ -620,11 +622,19 @@ class LiveRuntime:
         if vision.enabled:
             logger.info("{} 要靠畫面,一併打開了{}", feature.name, vision.name)
 
+    def pick_tile(self, choice: TileChoice, pai: str) -> None:
+        """玩家看畫面選了混合辨識兩邊讀成不同的那張是哪張。不是混合辨識在跑就不管。"""
+        vision = self._features.get(features.VISION)
+        pick = getattr(vision.worker, "pick", None) if vision is not None else None
+        if pick is not None:
+            pick(choice.kyoku, choice.actor, choice.nth, pai)
+
     def _clear_output(self, key: str) -> None:
         """把某個功能在 ViewState 上留下的東西清空。"""
         with self._viewmodel.batch():
             if key == features.VISION:
                 self._viewmodel.update_cv_hand(())
+                self._viewmodel.update_choices(())
             elif key == features.ADVICE:
                 self._viewmodel.update_packet_hand(())
                 self._viewmodel.update_advices([])
@@ -669,6 +679,8 @@ class LiveRuntime:
                         self._viewmodel.update_advices(update.advices)
                     case Dangers():
                         self._viewmodel.update_dangers(update.report, update.seen)
+                    case TileChoices():
+                        self._viewmodel.update_choices(update.choices)
                     case EventStream():
                         if self._event_log is not None:
                             self._event_log.update(

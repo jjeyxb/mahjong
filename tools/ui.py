@@ -911,7 +911,13 @@ def main(argv: list[str] | None = None) -> int:
         options["skin"] = args.skin
     if runtime is not None:
         options["switchboard"] = runtime
-    overlay = OverlayWindow(model, ui_state=ui_state, **options)  # type: ignore[arg-type]
+    overlay = OverlayWindow(
+        model,
+        ui_state=ui_state,
+        # 混合辨識兩邊讀成不同牌時讓玩家點;只有 Overlay 有,側邊視窗不收。
+        on_pick=runtime.pick_tile if runtime is not None else None,
+        **options,  # type: ignore[arg-type]
+    )
     model.subscribe(overlay.apply)
     log_window = EventLogWindow(event_log, ui_state=ui_state)
 

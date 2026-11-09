@@ -68,6 +68,10 @@ _SAME_HAND = 11
 #: 而且整家錯位一格,牌面全錯。
 LAG_OK = 2.5
 
+#: 兩邊讀成不同的牌、都這麼多秒沒改,才拿去問玩家(:class:`TileChoice`)。一邊只是晚一點跟上的
+#: 不問:平常 YOLO 晚 0.2 ~ 0.6 秒,不等的話每張捨牌都會閃一下。
+SETTLE = 2.0
+
 Token = tuple[object, ...]
 
 
@@ -162,10 +166,53 @@ class Side:
         self.events, self.tokens = tuple(events), new
 
 
+@dataclass(frozen=True, slots=True)
+class TileChoice:
+    """樣板與 YOLO 讀成不同牌的一張別家捨牌。玩家看一眼畫面上的牌河就知道是哪張。
+
+    Attributes:
+        kyoku: 合併層數的第幾局,同 ``publish`` 的局數。
+        actor: 誰打的。
+        nth: 那家這一局的第幾張捨牌,從 0 算。
+        template: 樣板讀到的牌。
+        yolo: YOLO 讀到的牌。
+        chosen: 事件流現在用的那張。
+    """
+
+    kyoku: int
+    actor: int
+    nth: int
+    template: str
+    yolo: str
+    chosen: str
+
+
+@dataclass(frozen=True, slots=True)
+class Disagreement:
+    """:func:`merge` 找到的一處分歧。``index`` 是它在合併結果裡的位置。"""
+
+    index: int
+    actor: int
+    nth: int
+    template: str
+    yolo: str
+    settled: bool
+
+
 def merge(
-    template: Side, yolo: Side, *, lag_ok: float = LAG_OK, stats: Counter[str] | None = None
+    template: Side,
+    yolo: Side,
+    *,
+    lag_ok: float = LAG_OK,
+    stats: Counter[str] | None = None,
+    now: float | None = None,
+    found: list[Disagreement] | None = None,
 ) -> tuple[MjaiEvent, ...]:
-    """見模組說明。``template`` 有事件流時才呼叫。"""
+    """見模組說明。``template`` 有事件流時才呼叫。
+
+    給了 ``found`` 的話,兩邊只差別家捨牌牌面的段落記進去(:func:`_differing_discards`);
+    兩邊都已經 :data:`SETTLE` 秒沒改的才算 ``settled``。
+    """
     if not yolo.events or template.tokens[0] != yolo.tokens[0]:
         return template.events
     t, y = template, yolo
@@ -173,6 +220,8 @@ def merge(
     missed = _missed_kans(t.events, y.events)
     # 每一段:(樣板那段, YOLO 那段;不換的話是 None)。
     pieces: list[tuple[Sequence[MjaiEvent], Sequence[MjaiEvent] | None]] = []
+    #: (第幾段, 段內第幾個, 樣板那張, YOLO 那張, 兩邊都沒再改了沒有)。
+    differing: list[tuple[int, int, Dahai, Dahai, bool]] = []
     matcher = difflib.SequenceMatcher(None, t.tokens, y.tokens, autojunk=False)
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
@@ -182,6 +231,13 @@ def merge(
             pieces.append((t.events[i1:i2], None))
             continue
         mine, theirs = t.events[i1:i2], y.events[j1:j2]
+        if found is not None:
+            for offset in _differing_discards(mine, theirs):
+                a, b = mine[offset], theirs[offset]
+                assert isinstance(a, Dahai) and isinstance(b, Dahai)
+                since = max(t.seen[i1 + offset], y.seen[j1 + offset])
+                settled = now is not None and now - since >= SETTLE
+                differing.append((len(pieces), offset, a, b, settled))
         own = any(_own(event) for event in mine + theirs)
         flash = not theirs and any(isinstance(event, _CALLS) for event in mine)
         # 槓也是:YOLO 讀副露區比較會漏,樣板要讀出假的槓得同時看到四張牌與翻寶牌。
@@ -200,20 +256,66 @@ def merge(
             reason = "yolo"
         if stats is not None:
             stats[reason] += 1
-    merged = _assemble(pieces, range(len(pieces)))
-    if plausible(merged):
-        return merged
-    # 拼起來不合理:一段一段換,換了會不合理的那段退回樣板。實測 YOLO 把上家一張 8p 讀成 E,
-    # E 變 5 張;整條退回的話,同一局 YOLO 讀對、樣板讀錯的另一張也跟著丟了。
-    chosen: list[int] = []
-    for index, (_, correction) in enumerate(pieces):
-        if correction is None:
+    use: Sequence[int] = range(len(pieces))
+    merged = _assemble(pieces, use)
+    if not plausible(merged):
+        # 拼起來不合理:一段一段換,換了會不合理的那段退回樣板。實測 YOLO 把上家一張 8p 讀成 E,
+        # E 變 5 張;整條退回的話,同一局 YOLO 讀對、樣板讀錯的另一張也跟著丟了。
+        chosen: list[int] = []
+        for index, (_, correction) in enumerate(pieces):
+            if correction is None:
+                continue
+            if plausible(_assemble(pieces, [*chosen, index])):
+                chosen.append(index)
+            elif stats is not None:
+                stats["implausible"] += 1
+        use = chosen
+        merged = _assemble(pieces, use)
+    if found is not None and differing:
+        found.extend(_disagreements(pieces, use, merged, differing))
+    return merged
+
+
+def _differing_discards(mine: Sequence[MjaiEvent], theirs: Sequence[MjaiEvent]) -> list[int]:
+    """兩段一模一樣,只差別家捨牌的牌面:回傳差在段內哪幾個位置;不是這種段落回空的。
+
+    別家摸牌的代號綁著後面那張捨牌(:func:`tokens`),所以一張讀錯是「摸牌、捨牌」兩個一起
+    對不上,要逐事件看。多一張、少一張、吃碰不一樣的不算:那不是「哪張牌」的問題。
+    """
+    if len(mine) != len(theirs):
+        return []
+    out = []
+    for offset, (a, b) in enumerate(zip(mine, theirs, strict=True)):
+        if isinstance(a, Dahai) and isinstance(b, Dahai) and a.actor == b.actor != _OWN:
+            if a.pai != b.pai:
+                out.append(offset)
+        elif isinstance(a, Tsumo) and isinstance(b, Tsumo) and a.actor == b.actor != _OWN:
             continue
-        if plausible(_assemble(pieces, [*chosen, index])):
-            chosen.append(index)
-        elif stats is not None:
-            stats["implausible"] += 1
-    return _assemble(pieces, chosen)
+        elif _token(a) != _token(b):
+            return []
+    return out
+
+
+def _disagreements(
+    pieces: Sequence[tuple[Sequence[MjaiEvent], Sequence[MjaiEvent] | None]],
+    use: Sequence[int] | range,
+    merged: Sequence[MjaiEvent],
+    differing: Sequence[tuple[int, int, Dahai, Dahai, bool]],
+) -> list[Disagreement]:
+    """把 (第幾段, 段內第幾個) 換成合併結果裡的位置與那家的第幾張捨牌。
+
+    兩段長度一樣(:func:`_differing_discards`),用哪一邊位置都相同。
+    """
+    starts, at = [], 0
+    for index, (mine, theirs) in enumerate(pieces):
+        starts.append(at)
+        at += len(theirs if index in use and theirs is not None else mine)
+    out = []
+    for piece, offset, a, b, settled in differing:
+        index = starts[piece] + offset
+        nth = sum(isinstance(e, Dahai) and e.actor == a.actor for e in merged[:index])
+        out.append(Disagreement(index, a.actor, nth, a.pai, b.pai, settled))
+    return out
 
 
 def _missed_kans(template: Sequence[MjaiEvent], yolo: Sequence[MjaiEvent]) -> set[int]:
@@ -321,9 +423,14 @@ def plausible(events: Sequence[MjaiEvent]) -> bool:
 class StreamMerger:
     """兩個後端的事件流進來,合併後的事件流出去。兩條執行緒各自呼叫 :meth:`offer`。
 
+    兩邊讀成不同牌、一陣子都沒改的別家捨牌,交給 ``on_choices`` 問玩家;玩家用 :meth:`pick`
+    選了之後,那張就用玩家選的,也不再問。只在兩邊讀到的那兩張裡選:玩家選了之後兩邊又讀成
+    一樣的話,用兩邊的。
+
     Args:
         publish: 合併結果變了就呼叫 ``publish(第幾局, 事件流)``。局數是這裡自己數的:
             兩個後端的局數各數各的,而建議那一端靠局數變了才收掉上一局。
+        on_choices: 要問玩家的那幾張變了就呼叫 ``on_choices(第幾局, 那幾張)``。
         clock: 測試用。
     """
 
@@ -334,10 +441,15 @@ class StreamMerger:
         self,
         publish: Callable[[int, Stream], None],
         *,
+        on_choices: Callable[[int, tuple[TileChoice, ...]], None] | None = None,
         lag_ok: float = LAG_OK,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._publish = publish
+        self._on_choices = on_choices
+        #: 玩家選的牌:(第幾局, 誰, 第幾張) → 牌。
+        self._picked: dict[tuple[int, int, int], str] = {}
+        self._choices: tuple[TileChoice, ...] = ()
         self._lag_ok = lag_ok
         self._clock = clock
         self._lock = threading.Lock()
@@ -370,24 +482,76 @@ class StreamMerger:
                 self._kyoku[source] = kyoku
             self._sides[source].update(stream.events, wall)
             self._streams[source] = stream
-            events, base = self._merged()
-            merged = Stream(
-                events=events, stalled=base.stalled, forced=base.forced, doubt=base.doubt
-            )
-            if merged == self._out:
-                return
-            start = tokens(events[:1])[0] if events else None
-            if events and start != self._out_start:
-                self._out_kyoku += 1
-                self._out_start = start
-            self._out = merged
-            kyoku_out = self._out_kyoku
-        self._publish(kyoku_out, merged)
+            out = self._refresh(wall)
+        self._send(*out)
 
-    def _merged(self) -> tuple[tuple[MjaiEvent, ...], Stream]:
+    def pick(self, kyoku: int, actor: int, nth: int, pai: str) -> None:
+        """玩家說第 ``kyoku`` 局 ``actor`` 的第 ``nth`` 張捨牌是 ``pai``。已經換局了就不管。"""
+        with self._lock:
+            if kyoku != self._out_kyoku:
+                return
+            self._picked[(kyoku, actor, nth)] = pai
+            out = self._refresh(self._clock())
+        self._send(*out)
+
+    def _refresh(
+        self, wall: float
+    ) -> tuple[int, Stream | None, tuple[TileChoice, ...] | None]:
+        """重新合併。回傳局數、變了的事件流與變了的待選,沒變的是 ``None``。"""
+        found: list[Disagreement] = []
+        events, base = self._merged(wall, found)
+        start = tokens(events[:1])[0] if events else None
+        if events and start != self._out_start:
+            self._out_kyoku += 1
+            self._out_start = start
+            self._picked.clear()
+        kyoku = self._out_kyoku
+        events = self._apply_picks(kyoku, events, found)
+        merged = Stream(events=events, stalled=base.stalled, forced=base.forced, doubt=base.doubt)
+        asked = []
+        for d in found:
+            chosen = events[d.index]
+            if d.settled and (kyoku, d.actor, d.nth) not in self._picked:
+                assert isinstance(chosen, Dahai)
+                asked.append(TileChoice(kyoku, d.actor, d.nth, d.template, d.yolo, chosen.pai))
+        choices = tuple(asked)
+        stream_out = None if merged == self._out else merged
+        choices_out = None if choices == self._choices else choices
+        self._out, self._choices = merged, choices
+        return kyoku, stream_out, choices_out
+
+    def _apply_picks(
+        self, kyoku: int, events: tuple[MjaiEvent, ...], found: Sequence[Disagreement]
+    ) -> tuple[MjaiEvent, ...]:
+        """玩家選過的那幾張換成玩家選的。只在兩邊讀到的兩張裡換,換了引擎不收的不換。"""
+        out = list(events)
+        for d in found:
+            pai = self._picked.get((kyoku, d.actor, d.nth))
+            event = out[d.index]
+            if pai not in (d.template, d.yolo) or not isinstance(event, Dahai) or event.pai == pai:
+                continue
+            out[d.index] = replace(event, pai=pai)
+            if not plausible(out):
+                out[d.index] = event
+        return tuple(out)
+
+    def _send(
+        self, kyoku: int, stream: Stream | None, choices: tuple[TileChoice, ...] | None
+    ) -> None:
+        """鎖外面呼叫:``publish`` 會叫到別的執行緒的東西。"""
+        if stream is not None:
+            self._publish(kyoku, stream)
+        if choices is not None and self._on_choices is not None:
+            self._on_choices(kyoku, choices)
+
+    def _merged(
+        self, wall: float, found: list[Disagreement]
+    ) -> tuple[tuple[MjaiEvent, ...], Stream]:
         template, yolo = self._sides[self.TEMPLATE], self._sides[self.YOLO]
         if template.events:
-            events = merge(template, yolo, lag_ok=self._lag_ok, stats=self.stats)
+            events = merge(
+                template, yolo, lag_ok=self._lag_ok, stats=self.stats, now=wall, found=found
+            )
             return events, self._streams[self.TEMPLATE]
         if yolo.events and yolo.tokens[0] != self._template_before and not self._stale(yolo):
             return yolo.events, self._streams[self.YOLO]

@@ -36,7 +36,10 @@ Overlay 穿透的時候它照樣點得到。
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QCloseEvent, QHideEvent, QMoveEvent, QResizeEvent, QShowEvent
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -51,7 +54,9 @@ from PySide6.QtWidgets import (
 from mia import features
 from mia.analysis import DangerReport, TileDanger, Ukeire
 from mia.engine.actions import Candidate
+from mia.hybrid.merge import TileChoice
 from mia.mjai.tiles import tile_name
+from mia.ui.overlay.choice import ChoiceBar
 from mia.ui.overlay.hud import HudWindow
 from mia.ui.state import UiState
 from mia.ui.style import ACCENT
@@ -206,6 +211,8 @@ class OverlayWindow(HudWindow):
         switchboard: 三個功能的開關接到誰。``None``(重播、示範)時一律視為
             開著 —— 那些模式是命令列決定跑哪一條路,而它確實在跑。
         ui_state: 跨次啟動記住的位置與勾選。省略時讀預設路徑那一份。
+        on_pick: 混合辨識兩邊讀成不同牌時,玩家點了哪張(:mod:`mia.ui.overlay.choice`)。
+            ``None``(重播、示範)時不問。
 
     Note:
         自己**不決定要不要顯示** —— 那是側邊視窗設定頁上的勾選。這裡只提供
@@ -220,14 +227,18 @@ class OverlayWindow(HudWindow):
         skin: str = DEFAULT_SKIN,
         switchboard: Switchboard | None = None,
         ui_state: UiState | None = None,
+        on_pick: Callable[[TileChoice, str], None] | None = None,
     ) -> None:
         super().__init__()
         self._switchboard = switchboard
         self._ui_state = ui_state if ui_state is not None else UiState.load()
+        self._icons = TileIcons(skin)
+        self._choice_bar: ChoiceBar | None = (
+            ChoiceBar(self._icons, on_pick, self) if on_pick is not None else None
+        )
         self._attach_lock()
         self._apply_opacity(self.opacity)
         self._state = viewmodel.state
-        self._icons = TileIcons(skin)
         self._rows: list[_CandidateRow] = []
         self._danger_rows: list[_DangerLine] = []
 
@@ -452,8 +463,52 @@ class OverlayWindow(HudWindow):
             return
         self._render()
 
+    # ------------------------------------------------------------------ 待選的牌
+    # 那一條是獨立的視窗(理由見 mia.ui.overlay.choice),跟鎖一樣要自己跟著 Overlay
+    # 顯示、隱藏、移動、改大小、變淡。
+
+    @property
+    def choice_bar(self) -> ChoiceBar | None:
+        """下緣外側那一條。給測試用。"""
+        return self._choice_bar
+
+    def _sync_choices(self) -> None:
+        if self._choice_bar is not None:
+            self._choice_bar.show_choices(self._state.choices, self)
+
+    def _apply_opacity(self, value: float) -> None:
+        super()._apply_opacity(value)
+        if self._choice_bar is not None:
+            # 跟鎖一樣不低於一半:淡到看不見就點不到了。
+            self._choice_bar.setWindowOpacity(max(0.5, value))
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        self._sync_choices()
+
+    def hideEvent(self, event: QHideEvent) -> None:
+        if self._choice_bar is not None:
+            self._choice_bar.hide()
+        super().hideEvent(event)
+
+    def moveEvent(self, event: QMoveEvent) -> None:
+        super().moveEvent(event)
+        if self._choice_bar is not None and self._choice_bar.isVisible():
+            self._choice_bar.follow(self)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        if self._choice_bar is not None and self._choice_bar.isVisible():
+            self._choice_bar.follow(self)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self._choice_bar is not None:
+            self._choice_bar.close()
+        super().closeEvent(event)
+
     def _render(self) -> None:
         state = self._state
+        self._sync_choices()
         advice_on = is_on(self._switchboard, features.ADVICE)
         vision_on = is_on(self._switchboard, features.VISION)
         # 兩個條件都要:功能開著代表有在算,勾選代表使用者要看。

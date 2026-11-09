@@ -15,7 +15,7 @@ from mia.calibration.manual import HandRoiChoice, TableRectChoice
 from mia.calibration.table import Calibration
 from mia.config.models import AppConfig
 from mia.hybrid.merge import StreamMerger
-from mia.live.bus import CvHand, Dangers, UpdateBus, WorkerStatus
+from mia.live.bus import CvHand, Dangers, TileChoices, UpdateBus, WorkerStatus
 from mia.live.table import TableWorker
 from mia.live.vision import VisionWorker
 from mia.mjai.events import StartGame
@@ -100,7 +100,9 @@ class YoloVisionWorker(threading.Thread):
         self._merger: StreamMerger | None = None
         self._table: TableWorker | None = None
         if hybrid:
-            self._merger = StreamMerger(hub.publish)
+            self._merger = StreamMerger(
+                hub.publish, on_choices=lambda _kyoku, choices: bus.post(TileChoices(choices))
+            )
             self._table = TableWorker(
                 UpdateBus(),
                 config=config.roi,
@@ -136,6 +138,11 @@ class YoloVisionWorker(threading.Thread):
     def offer_hand(self, tiles: Sequence[str], drawn: str | None = None) -> None:
         if self._table is not None:
             self._table.offer_hand(tiles, drawn)
+
+    def pick(self, kyoku: int, actor: int, nth: int, pai: str) -> None:
+        """玩家看畫面選了兩邊讀成不同的那張是哪張。UI 執行緒呼叫。見 :meth:`StreamMerger.pick`。"""
+        if self._merger is not None:
+            self._merger.pick(kyoku, actor, nth, pai)
 
     def _offer(self, source: str, kyoku: int, stream: Stream) -> None:
         """事件流交出去:混合辨識先合併,YOLO 直接發佈。"""
@@ -214,6 +221,8 @@ class YoloVisionWorker(threading.Thread):
                 self._hub.publish(self._stream.kyoku, Stream(doubt=f"{self.label}已停止"))
                 self._bus.post(CvHand(()))
         finally:
+            # 問到一半停掉的話,那幾張不能一直留在畫面上。
+            self._bus.post(TileChoices())
             self._capture.stop()
             if self._capture.ident is not None:
                 self._capture.join(timeout=2)
