@@ -65,6 +65,24 @@ class TestAlongTheLine:
         assert after.body < before.body - 10
 
 
+def test_sharp_seams_between_tiles_do_not_split_the_hand() -> None:
+    """實打的原始畫面牌與牌之間有一條淡色的細縫,錄影的 JPEG 把它糊掉了。門檻是在錄影上調的,
+    沒先把顏色降成一半解析度的話,上家的手牌會在縫上斷開。"""
+    image = _canvas()
+    _paint(image, "kamicha", [HAND])
+    (fx0, fy0), (fx1, fy1) = _LINES["kamicha"]
+    start = np.array([fx0 * TABLE.width, fy0 * TABLE.height])
+    along = np.array([fx1 * TABLE.width, fy1 * TABLE.height]) - start
+    side = np.array([-along[1], along[0]]) / np.linalg.norm(along) * 20
+    for tile in range(1, 13):
+        seam = start + along * (HAND[0] + (HAND[1] - HAND[0]) * tile / 13)
+        a, b = (seam - side).round().astype(int), (seam + side).round().astype(int)
+        cv2.line(image, (int(a[0]), int(a[1])), (int(b[0]), int(b[1])), (150, 170, 190), 1)
+    shape = read_backs(image, TABLE, "kamicha")
+    assert shape.pieces == 1
+    assert not shape.drawn
+
+
 class TestShimochaInPieces:
     def test_one_piece_at_rest(self) -> None:
         image = _canvas()

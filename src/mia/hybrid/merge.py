@@ -59,6 +59,9 @@ _OWN = 0
 _CALLS = (Chi, Pon, Daiminkan)
 _KANS = (Ankan, Kakan, Daiminkan)
 
+#: 換局時 YOLO 的配牌跟樣板上一局至少這麼多張相同(寶牌也相同),就當成還停在上一局。
+_SAME_HAND = 11
+
 #: 一致點上 YOLO 比樣板晚超過這麼多秒,中間那段不信 YOLO。
 #:
 #: 平常 YOLO 晚 0.2 ~ 0.6 秒(離線,沒算推論時間)。卡住的那兩局晚 6 ~ 21 秒,
@@ -343,6 +346,10 @@ class StreamMerger:
         self._kyoku: dict[str, int | None] = {self.TEMPLATE: None, self.YOLO: None}
         #: 樣板上一局的開局代號。樣板換局後還沒讀到開局資訊時,YOLO 還停在上一局的話不能拿來用。
         self._template_before: Token | None = None
+        #: 樣板上一局的開局事件、YOLO 上一局開局之後的事件代號。YOLO 換局時會只改本場數或局數、
+        #: 內容還是上一局,見 :meth:`_stale`。
+        self._template_opening: StartKyoku | None = None
+        self._yolo_before: tuple[Token, ...] = ()
         self._out: Stream | None = None
         self._out_start: Token | None = None
         self._out_kyoku = 0
@@ -354,6 +361,11 @@ class StreamMerger:
             if kyoku != self._kyoku[source]:
                 if source == self.TEMPLATE and self._sides[source].tokens:
                     self._template_before = self._sides[source].tokens[0]
+                    opening = self._sides[source].events[0]
+                    if isinstance(opening, StartKyoku):
+                        self._template_opening = opening
+                if source == self.YOLO and self._sides[source].tokens:
+                    self._yolo_before = self._sides[source].tokens[1:]
                 self._sides[source] = Side()
                 self._kyoku[source] = kyoku
             self._sides[source].update(stream.events, wall)
@@ -377,6 +389,26 @@ class StreamMerger:
         if template.events:
             events = merge(template, yolo, lag_ok=self._lag_ok, stats=self.stats)
             return events, self._streams[self.TEMPLATE]
-        if yolo.events and yolo.tokens[0] != self._template_before:
+        if yolo.events and yolo.tokens[0] != self._template_before and not self._stale(yolo):
             return yolo.events, self._streams[self.YOLO]
         return (), self._streams[self.TEMPLATE]
+
+    def _stale(self, yolo: Side) -> bool:
+        """YOLO 的「新局」其實是上一局。
+
+        實測 2026-11-09 CPU 場:換局時 YOLO 先送出本場數或局數改了、其餘還是上一局整局的事件流,
+        開局代號不同所以沒被擋下,建議那一端拿上一局的 129 個事件當成新局,自己打的牌全被引擎
+        拒收,一場 50 次。兩種認法,任一成立就不用:
+
+        * 開局之後的事件跟 YOLO 自己上一局的一樣。
+        * 寶牌指示牌相同、配牌跟樣板上一局至少 :data:`_SAME_HAND` 張相同。樣板的配牌偶爾讀錯
+          一張,不能要求完全一樣;連續兩局寶牌相同、配牌又幾乎一樣不會發生。
+        """
+        body = yolo.tokens[1:]
+        if body and body[: len(self._yolo_before)] == self._yolo_before[: len(body)]:
+            return True
+        before, opening = self._template_opening, yolo.events[0]
+        if before is None or not isinstance(opening, StartKyoku):
+            return False
+        common = Counter(opening.tehais[0]) & Counter(before.tehais[0])
+        return opening.dora_marker == before.dora_marker and sum(common.values()) >= _SAME_HAND

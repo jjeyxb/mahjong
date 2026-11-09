@@ -755,6 +755,24 @@ _NO_BUST = (0.278, 0.595)
 #: 延長局的 1 位必要點數。最大值,沒有人到得了,半莊一定打進西入。
 _FIRST_PLACE_POINTS = 200000
 
+#: 大廳的公告欄右上角紅底白字的「×」。新活動開跑那天登入會先跳公告欄,蓋住整個大廳,
+#: 2026-11-09 就是在這上面點了「友人場」。量自 1280x720 的截圖:中心是白色的叉,上下左右是紅底。
+_NOTICE_CLOSE = (0.8475, 0.175)
+_NOTICE_RED = ((0.8475, 0.16), (0.8475, 0.19), (0.835, 0.175), (0.86, 0.175))
+#: 實測紅底 (84, 72, 180) 與 (75, 56, 168),白叉 (194, 210, 241)。
+_RED_LOW, _RED_HIGH = (50, 35, 140), (115, 105, 220)
+_WHITE_LOW = (170, 180, 215)
+#: 公告欄後面接著跳的活動簽到(2026-11-09 聯動紀念簽到),沒有「×」,只能按「簽到」。
+#: 認法:「簽到」鈕左右兩側橘色,彈窗左邊米白底。實測米白 (232, 246, 247)、(242, 255, 255)。
+_SIGN_IN = (0.5, 0.87)
+_SIGN_IN_ORANGE = ((0.43, 0.87), (0.57, 0.87))
+_SIGN_IN_PAPER = ((0.3, 0.53), (0.25, 0.3))
+_PAPER_LOW = (215, 230, 230)
+#: 簽完之後同一個位置變成淺藍的「確認」,按了才關。實測 (212, 183, 136)、(216, 189, 136)。
+_CONFIRM_LOW, _CONFIRM_HIGH = (180, 150, 105), (240, 215, 170)
+#: 大廳的彈窗關了還在就再關,最多這麼多次,之後照常往下走、由各步的顏色檢查擋住。
+_POPUP_TRIES = 4
+
 #: 橘色按鈕,BGR 的範圍。實測選中的選項是 (70, 175, 255),「創建」是 (58, 154, 239),
 #: 沒選中的是藍灰色 (104, 77, 51),大廳同一個位置是 (54, 31, 142) 與 (203, 204, 221)。
 _ORANGE_LOW = (30, 130, 210)
@@ -777,18 +795,51 @@ _HANCHAN_MODE = 2
 _FOUR_PLAYERS = 4
 
 
-def is_orange(image: np.ndarray, fx: float, fy: float) -> bool:
-    """畫面上那一點是不是橘色按鈕。取一小塊平均,單一像素可能剛好在花紋上。"""
+def _within(
+    image: np.ndarray, fx: float, fy: float, low: tuple[int, ...], high: tuple[int, ...]
+) -> bool:
+    """畫面上那一點的顏色在不在範圍裡。取一小塊平均,單一像素可能剛好在花紋上。"""
     height, width = image.shape[:2]
     x, y = int(width * fx), int(height * fy)
     patch = image[max(0, y - 4) : y + 4, max(0, x - 4) : x + 4].reshape(-1, 3)
     if patch.size == 0:
         return False
-    blue, green, red = patch.mean(axis=0)
-    low, high = _ORANGE_LOW, _ORANGE_HIGH
-    return bool(
-        low[0] <= blue <= high[0] and low[1] <= green <= high[1] and low[2] <= red <= high[2]
+    mean = patch.mean(axis=0)
+    return all(lo <= value <= hi for value, lo, hi in zip(mean, low, high, strict=True))
+
+
+def is_orange(image: np.ndarray, fx: float, fy: float) -> bool:
+    """畫面上那一點是不是橘色按鈕。"""
+    return _within(image, fx, fy, _ORANGE_LOW, _ORANGE_HIGH)
+
+
+def notice_open(image: np.ndarray) -> bool:
+    """大廳的公告欄開著:「×」中心白、四周紅。"""
+    return _within(image, *_NOTICE_CLOSE, _WHITE_LOW, (255, 255, 255)) and all(
+        _within(image, fx, fy, _RED_LOW, _RED_HIGH) for fx, fy in _NOTICE_RED
     )
+
+
+def sign_in_open(image: np.ndarray) -> bool:
+    """大廳蓋著活動簽到:米白底、下方橘色的「簽到」。"""
+    return all(is_orange(image, fx, fy) for fx, fy in _SIGN_IN_ORANGE) and all(
+        _within(image, fx, fy, _PAPER_LOW, (255, 255, 255)) for fx, fy in _SIGN_IN_PAPER
+    )
+
+
+def signed_in_open(image: np.ndarray) -> bool:
+    """活動簽到已經簽完,等著按「確認」。"""
+    return all(
+        _within(image, fx, fy, _CONFIRM_LOW, _CONFIRM_HIGH) for fx, fy in _SIGN_IN_ORANGE
+    ) and all(_within(image, fx, fy, _PAPER_LOW, (255, 255, 255)) for fx, fy in _SIGN_IN_PAPER)
+
+
+#: 大廳可能蓋著的彈窗:(名稱, 認得出來嗎, 按哪裡關掉)。
+_POPUPS: tuple[tuple[str, Callable[[np.ndarray], bool], tuple[float, float]], ...] = (
+    ("公告欄", notice_open, _NOTICE_CLOSE),
+    ("活動簽到", sign_in_open, _SIGN_IN),
+    ("簽到完的確認", signed_in_open, _SIGN_IN),
+)
 
 
 @dataclass(frozen=True)
@@ -876,6 +927,7 @@ class CpuRoomPilot:
     _wait_until: float | None = field(default=None, repr=False)
     _deadline: float | None = field(default=None, repr=False)
     _retry_at: float | None = field(default=None, repr=False)
+    _popup_tries: int = field(default=0, repr=False)
 
     def __post_init__(self) -> None:
         if self.schema is None:
@@ -949,6 +1001,8 @@ class CpuRoomPilot:
         if self._index >= len(self._plan):
             return
         stage = self._plan[self._index]
+        if self._index == 0 and self._close_popup(page):
+            return
         if stage.marks:
             image = _grab(page)
             if image is None or not all(is_orange(image, *mark) for mark in stage.marks):
@@ -971,6 +1025,23 @@ class CpuRoomPilot:
         if stage.done is not None:
             self._deadline = time.monotonic() + _REPLY_TIMEOUT
             self._retry_at = time.monotonic() + _RETRY_AFTER
+
+    def _close_popup(self, page: Page) -> bool:
+        """大廳蓋著認得的彈窗就先關掉。關了回 True,等動畫完再看一次。"""
+        if self._popup_tries >= _POPUP_TRIES:
+            return False
+        image = _grab(page)
+        size = viewport(page)
+        if image is None or size is None:
+            return False
+        for name, seen, (fx, fy) in _POPUPS:
+            if seen(image):
+                self._popup_tries += 1
+                logger.info("開房間:大廳蓋著{},先關掉", name)
+                _press(page, int(size[0] * fx), int(size[1] * fy))
+                self._wait_until = time.monotonic() + _STEP_DELAY
+                return True
+        return False
 
     def _press_again(self, page: Page, stage: _Stage) -> None:
         size = viewport(page)

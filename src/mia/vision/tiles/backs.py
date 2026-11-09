@@ -22,6 +22,16 @@
 
 量測一律換算成「牌桌寬 2560 像素」的單位,門檻才不跟著視窗大小變。座標與門檻見
 ``docs/cv_mjai.md``「摸切與手切」。
+
+量之前先把顏色降成一半解析度
+----------------------------
+門檻是在錄影上調的,錄影存成 JPEG,顏色只有一半解析度(4:2:0)。實打拿到的是原始畫面,牌與
+牌之間的細縫顏色清楚,上家沿線量到的接縫比門檻低,最後一張手牌被切開,當成隔開放的摸牌。
+2026-11-09 CPU 場實打:上家每一次量都是「摸牌隔開、本體短一張」,摸切與手切只對 42 ~ 57%,
+同一場的錄影重播卻是 100%。同一張原始畫面原圖與 JPEG 各量一次,上家 1726 次有 1320 次不同。
+
+所以量之前照 JPEG 的做法把顏色降成一半解析度(:func:`_like_jpeg`):原始畫面量出來與 JPEG
+一致(九張實打畫面,手牌長度差 1 點以內),本來就是 JPEG 的錄影再降一次幾乎不變。
 """
 
 from __future__ import annotations
@@ -127,8 +137,21 @@ def _reach(seat: str, melds: int) -> float:
 
 
 def _orange(image: np.ndarray) -> np.ndarray:
-    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    hsv = cv2.cvtColor(_like_jpeg(image), cv2.COLOR_BGR2HSV)
     return cv2.inRange(hsv, *_ORANGE)
+
+
+def _like_jpeg(image: np.ndarray) -> np.ndarray:
+    """顏色降成一半解析度再放大回來,亮度不動:錄影的 JPEG(4:2:0)就是這樣存的。見模組說明。"""
+    height, width = image.shape[:2]
+    if height < 2 or width < 2:
+        return image
+    ycrcb = cv2.cvtColor(image, cv2.COLOR_BGR2YCrCb)
+    half = ((width + 1) // 2, (height + 1) // 2)
+    for channel in (1, 2):
+        small = cv2.resize(ycrcb[..., channel], half, interpolation=cv2.INTER_AREA)
+        ycrcb[..., channel] = cv2.resize(small, (width, height), interpolation=cv2.INTER_LINEAR)
+    return cv2.cvtColor(ycrcb, cv2.COLOR_YCrCb2BGR)
 
 
 def _crop(image: np.ndarray, points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

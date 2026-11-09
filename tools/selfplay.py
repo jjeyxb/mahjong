@@ -334,7 +334,8 @@ class YoloTee:
         self._worker.offer_frame(image, calibration)
 
     def offer_hand(self, tiles: Sequence[str], drawn: str | None = None) -> None:
-        pass
+        # 混合辨識的樣板牌桌要手牌;純 YOLO 那邊沒有樣板牌桌,收了也不用。
+        self._worker.offer_hand(tiles, drawn)
 
 
 class ReplayBackend:
@@ -466,9 +467,9 @@ def play(args: argparse.Namespace, config: AppConfig) -> Path | None:
 
         hub = YoloHub()
         hub.subscribe(lambda kyoku, stream: log.stream(kyoku, stream))
+        hybrid = args.vision == "hybrid"
         vision = YoloVisionWorker(
-            bus, config=config, hub=hub, canvas=CanvasChoice(Canvas.parse(CANVAS)),
-            hybrid=args.vision == "hybrid",
+            bus, config=config, hub=hub, canvas=CanvasChoice(Canvas.parse(CANVAS)), hybrid=hybrid
         )
         vision._capture = VisionWorker(  # noqa: SLF001 - 擷取要換成錄影那一份,app 沒有這個需要
             bus,
@@ -477,8 +478,10 @@ def play(args: argparse.Namespace, config: AppConfig) -> Path | None:
             window=window,
             canvas=CanvasChoice(Canvas.parse(CANVAS)),
             sink=YoloTee(vision, recorder),
-            recognize_hand=False,
+            # 跟 app 一樣(mia.live.yolo):混合辨識的樣板那一邊要讀手牌。
+            recognize_hand=hybrid,
         )
+        _tap_raw(vision, log)
     vision.status = LoggedStatus("畫面", log)
     recorder.start()
     if args.vision == "template":
@@ -602,8 +605,8 @@ def _replay_yolo(
 ) -> Any:
     """``--vision yolo/hybrid`` 的重播:app 裡同一條 YOLO 執行緒,擷取換成錄影。
 
-    合併之前兩邊各自的事件流也記下來(``kind`` 是 ``raw_template`` / ``raw_yolo``),
-    合併規則改了可以拿實打的時間差離線重算,不必再播一次。建議不即時跑,報告用 --engine 重算。
+    合併之前兩邊各自的事件流也記下來(:func:`_tap_raw`),合併規則改了可以拿實打的時間差離線
+    重算,不必再播一次。建議不即時跑,報告用 --engine 重算。
     """
     from mia.live.yolo import YoloHub, YoloVisionWorker
 
@@ -622,6 +625,12 @@ def _replay_yolo(
         sink=vision,
         recognize_hand=hybrid,
     )
+    _tap_raw(vision, log)
+    return vision
+
+
+def _tap_raw(vision: Any, log: RunLog) -> None:
+    """合併之前兩邊各自的事件流也記進 log(``kind`` 是 ``raw_template`` / ``raw_yolo``)。"""
     offer = vision._offer  # noqa: SLF001
 
     def tapped(source: str, kyoku: int, stream: Stream) -> None:
@@ -633,8 +642,7 @@ def _replay_yolo(
         )
         offer(source, kyoku, stream)
 
-    vision._offer = tapped  # type: ignore[method-assign]  # noqa: SLF001
-    return vision
+    vision._offer = tapped  # noqa: SLF001
 
 
 def _span(

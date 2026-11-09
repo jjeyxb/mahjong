@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 
 from mia.hybrid.merge import LAG_OK, Side, StreamMerger, canonical, merge, plausible
 from mia.mjai.events import (
@@ -235,10 +236,28 @@ class TestStreamMerger:
         self.offer(StreamMerger.TEMPLATE, 2, [])
         # YOLO 還在上一局:不能拿來當新的一局。
         assert self.out[-1][1].events == ()
-        self.offer(StreamMerger.YOLO, 2, [start(2), *OPENING[1:3]])
+        second = replace(start(2), dora_marker="5s")
+        opening = [second, *turn(0, "S", "4m"), *turn(1, "2p")]
+        self.offer(StreamMerger.YOLO, 2, opening[:3])
         kyoku, stream = self.out[-1]
-        assert stream.events[0] == start(2)
+        assert stream.events[0] == second
         assert kyoku == first + 1
-        self.offer(StreamMerger.TEMPLATE, 2, [start(2), *OPENING[1:5]])
+        self.offer(StreamMerger.TEMPLATE, 2, opening)
         assert self.out[-1][0] == kyoku
-        assert self.out[-1][1].events == (start(2), *OPENING[1:5])
+        assert self.out[-1][1].events == tuple(opening)
+
+    def test_a_renchan_that_is_still_the_last_round_is_not_used(self):
+        """2026-11-09 CPU 場:連莊時 YOLO 只把本場數加一,配牌、寶牌與整局事件還是上一局的。"""
+        self.offer(StreamMerger.TEMPLATE, 1, [start(1), *OPENING[1:], *NEXT])
+        self.offer(StreamMerger.TEMPLATE, 2, [])
+        stale = replace(start(1), honba=1)
+        self.offer(StreamMerger.YOLO, 2, [stale, *OPENING[1:], *NEXT])
+        assert self.out[-1][1].events == ()
+
+    def test_a_new_round_that_repeats_what_yolo_saw_last_round_is_not_used(self):
+        """同一場:YOLO 連局數都改了,開局之後還是上一局的事件。樣板的配牌也跟 YOLO 差一張。"""
+        self.offer(StreamMerger.YOLO, 1, [start(1), *OPENING[1:], *NEXT])
+        self.offer(StreamMerger.TEMPLATE, 1, [replace(start(1), dora_marker="9s"), *OPENING[1:]])
+        self.offer(StreamMerger.TEMPLATE, 2, [])
+        self.offer(StreamMerger.YOLO, 2, [replace(start(2), dora_marker="5s"), *OPENING[1:], *NEXT])
+        assert self.out[-1][1].events == ()
