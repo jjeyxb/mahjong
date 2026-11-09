@@ -180,7 +180,11 @@ class HandWatcher:
             # 還沒動過手:上一局留在畫面上的手牌,或發牌動畫中途的牌面。
             self.reset()
             return self._deal(tiles, drawn)
-        fresh = self._explain(change, lost, gained, drawn, self._swap(tiles, thrown, called))
+        discards = sum(move.move is Move.DISCARD for move in self.moves)
+        quiet = thrown is not None and thrown <= discards
+        fresh = self._explain(
+            change, lost, gained, drawn, self._swap(tiles, thrown, called), quiet=quiet
+        )
         if fresh is None:
             if lost or gained:
                 self.rejected += 1
@@ -297,9 +301,19 @@ class HandWatcher:
         return _Swap.CALLED if called > self._called else _Swap.STUBBORN
 
     def _explain(
-        self, change: int, lost: list[str], gained: list[str], drawn: str | None, swap: _Swap
+        self,
+        change: int,
+        lost: list[str],
+        gained: list[str],
+        drawn: str | None,
+        swap: _Swap,
+        *,
+        quiet: bool = False,
     ) -> list[OwnMove] | None:
-        """這兩副手牌的差是哪個動作。解釋不了回 ``None``。"""
+        """這兩副手牌的差是哪個動作。解釋不了回 ``None``。
+
+        ``quiet`` 是河讀得到、卻沒有多一張。
+        """
         waiting = len(self.hand) % 3 == 1
         if change == 1 and waiting:
             if len(gained) == 1 and not lost:
@@ -335,6 +349,11 @@ class HandWatcher:
             # 三張一樣是大明槓,嶺上摸切了。理由同下。
             if _is_kan(lost):
                 return [OwnMove(Move.CALL, tuple(lost))]
+            # 碰牌動畫中途,手上剩下的牌會滑過摸牌的位置,那一瞬間沒讀到就少三張。河裡沒多一張的話
+            # 先不收:實測碰發之後讀成「碰、打中」,中滑回來又變成摸中,之後每一手都晚一輪,14 手建議
+            # 跟著錯。真的鳴完就打的話,河會跟上,或下一次摸牌時從少三張多一張那條補回來。
+            if quiet:
+                return None
             return self._call_and_discard(lost)
         if change == -4 and not waiting and len(lost) == 4 and not gained and _is_kan(lost):
             # 立直之後嶺上是自動摸切,一秒不到,手牌從 14 張直接變 10 張。沒有這一條的話,這之後每一
