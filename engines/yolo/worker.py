@@ -131,6 +131,15 @@ def main():
     # Ultralytics 會 import matplotlib,而它在沒有字型快取時會寫進 ~/.matplotlib。
     # 跟上一行同一個理由:整個 YOLO 環境要能靠刪掉 engines/yolo/ 底下的東西清乾淨。
     os.environ.setdefault("MPLCONFIGDIR",str(BASE/".cache"/"matplotlib"))
+    # AMD 顯示卡(ROCm 版 torch)第一次跑模型會現場編譯 GPU 核心,並快取在使用者目錄:
+    # comgr 寫進 %LOCALAPPDATA%\comgr(實測一次 40 MB)、MIOpen 寫它自己的資料庫。
+    # 快取要留著(第二次啟動第一幀 9.8 秒 → 4.3 秒),只是換個地方放。
+    # 必須在 import torch 之前設 —— 下面的 Detector() 才會載入它。
+    for name, sub in (("AMD_COMGR_CACHE_DIR","comgr"),("MIOPEN_USER_DB_PATH","miopen"),
+                      ("MIOPEN_CUSTOM_CACHE_DIR","miopen")):
+        if name not in os.environ:
+            (BASE/".cache"/sub).mkdir(parents=True,exist_ok=True)
+            os.environ[name] = str(BASE/".cache"/sub)
     os.environ["YOLO_AUTOINSTALL"] = "false"
     import numpy as np
     output = sys.stdout
