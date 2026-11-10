@@ -106,6 +106,28 @@ class TestMeldPictureRetry:
         assert look.pick(shapes) == MeldPick(0, (False, False, False))
         assert pool.submit.call_count == 2
 
+    def test_a_recheck_after_abstaining_does_not_retract_the_meld(
+        self, templates: TemplateSet
+    ) -> None:
+        """棄權之後重拍再比,事件流已經照推法送出這組。再比的期間不能又算「比對中」,
+        否則事件流退回鳴牌之前、比完又長回來(Steam 對家一局 45 次)。"""
+        pool = Mock(spec=ThreadPoolExecutor)
+        first: Future[Pick | None] = Future()
+        second: Future[Pick | None] = Future()
+        pool.submit.side_effect = [first, second]
+        look = _MeldLook(pool, self._picture(140), templates)
+        shapes = (MeldShape(("4s", "5s", "6s"), 0),)
+        assert look.pick(shapes) is None
+        assert look.pending
+        first.set_result(None)
+        assert not look.pending
+        look.refresh(self._picture(200))
+        assert look.pick(shapes) is None
+        assert pool.submit.call_count == 2
+        assert not look.pending
+        second.set_result(Pick(0, (False,) * 3, 0.3, quality=0.8))
+        assert look.pick(shapes) == MeldPick(0, (False,) * 3)
+
     def test_a_failed_picture_is_not_still_pending(self, templates: TemplateSet) -> None:
         pool = Mock(spec=ThreadPoolExecutor)
         future: Future[Pick | None] = Future()
@@ -1351,3 +1373,4 @@ class TestHoldBehindALeaningTile:
     def test_no_leaning_tile_no_wait(self, worker: TableWorker) -> None:
         worker._leaning[3].clear()  # noqa: SLF001
         assert not self._held(worker)
+

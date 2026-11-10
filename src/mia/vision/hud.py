@@ -33,7 +33,7 @@ import numpy as np
 from mia.utils.geometry import Rect
 from mia.utils.paths import ASSETS_DIR
 
-__all__ = ["DEALER_SEATS", "Hud", "HudDigits", "read_hud", "read_turn", "read_wall"]
+__all__ = ["CORNER_PANEL", "DEALER_SEATS", "Hud", "HudDigits", "read_hud", "read_turn", "read_wall"]
 
 #: 中央面板在牌桌矩形裡的位置。下面的欄位都用「面板座標」量,較好對照截圖。
 _PANEL = (0.4142, 0.2948, 0.175, 0.2)
@@ -118,7 +118,7 @@ _DARK = 0.08
 
 #: 左上角面板下緣,緊貼著 ``x`` 後面的那一位數。
 #: 左上角面板在牌桌矩形裡的位置。與 ROI 設定的 ``dora_indicators`` 同一塊。
-_CORNER_PANEL = (0.0133, 0.0385, 0.1475, 0.1319)
+CORNER_PANEL = (0.0133, 0.0385, 0.1475, 0.1319)
 _KYOTAKU = (0.058, 0.128, 0.040, 0.038)
 _HONBA = (0.128, 0.128, 0.024, 0.038)
 
@@ -385,7 +385,7 @@ def _on_corner_panel(table: Rect, panel: Rect | None) -> Rect:
     """
     if panel is None:
         return table
-    x, y, width, height = _CORNER_PANEL
+    x, y, width, height = CORNER_PANEL
     wide = panel.width / width
     tall = panel.height / height
     return Rect(round(panel.x - x * wide), round(panel.y - y * tall), round(wide), round(tall))

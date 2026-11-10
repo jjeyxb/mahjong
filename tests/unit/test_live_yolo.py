@@ -228,3 +228,43 @@ def test_abort_wakes_a_waiting_receive_without_closing_the_process():
     client.abort()
     with pytest.raises(EngineError, match="已停止"):
         client._receive()  # noqa: SLF001
+
+
+def test_a_table_wider_than_the_screen_is_padded_not_wrapped_around():
+    """Steam 全螢幕的牌桌矩形左右超出畫面。以前負的 x 讓切片從右邊數,只切到幾像素寬。"""
+    import numpy as np
+
+    from mia.live.yolo import table_frame
+    from mia.utils.geometry import Rect
+
+    image = np.full((1184, 1888, 3), 200, np.uint8)
+    frame = table_frame(image, Rect(-5, 64, 1898, 1067))
+    assert frame is not None
+    assert frame.shape == (1080, 1920, 3)
+    assert frame[540, 0].tolist() == [0, 0, 0], "超出畫面的那幾像素補黑"
+    assert frame[540, 960].tolist() == [200, 200, 200]
+    assert frame[540, 1919].tolist() == [0, 0, 0]
+    assert table_frame(image, Rect(0, 0, 1888, 1062)) is not None
+    assert table_frame(image, Rect(2000, 0, 100, 100)) is None
+
+
+def test_the_steam_corner_panel_is_moved_to_where_yolo_expects_it():
+    """Steam 的寶牌面板貼著視窗角落,一半在牌桌矩形上面。YOLO 要在網頁版的位置看到它。"""
+    import numpy as np
+
+    from mia.live.yolo import table_frame
+    from mia.utils.geometry import Rect
+    from mia.vision.hud import CORNER_PANEL
+
+    image = np.full((1898, 3024, 3), 100, np.uint8)
+    panel = Rect(30, 65, 470, 215)
+    image[panel.as_slice()] = 250
+    frame = table_frame(image, Rect(-8, 102, 3040, 1710), panel)
+    assert frame is not None
+    x, y, w, h = CORNER_PANEL
+    middle = (round((y + h / 2) * 1080), round((x + w / 2) * 1920))
+    assert frame[middle].tolist() == [250, 250, 250]
+    assert frame[540, 960].tolist() == [100, 100, 100]
+    plain = table_frame(image, Rect(-8, 102, 3040, 1710))
+    assert plain is not None
+    assert plain[middle].tolist() != [250, 250, 250]

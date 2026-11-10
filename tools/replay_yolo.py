@@ -23,6 +23,8 @@ import cv2
 
 from mia.engine.multiplex import EngineGroup
 from mia.live.advice import StreamFeeder
+from mia.live.yolo import table_frame
+from mia.utils.geometry import Rect
 from mia.yolo.client import YoloClient
 from mia.yolo.stream import LedgerStream
 
@@ -73,10 +75,9 @@ def main() -> None:
                 else:
                     assert client is not None
                     image = cv2.imread(str(args.session / "frames" / record["image"]))
-                    x, y, w, h = manifest["table_rect"]
-                    frame = cv2.resize(
-                        image[y : y + h, x : x + w], (1920, 1080), interpolation=cv2.INTER_AREA
-                    )
+                    frame = table_frame(image, Rect(*manifest["table_rect"]))
+                    if frame is None:
+                        continue
                     wall = first + record["timestamp"]
                     payload = client.feed(frame, wall)
                 stream = adapter.update(payload)

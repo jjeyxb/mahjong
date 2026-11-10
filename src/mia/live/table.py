@@ -306,6 +306,8 @@ class _MeldLook:
         self._best: dict[tuple[MeldShape, ...], Pick] = {}
         self._active: tuple[MeldShape, ...] | None = None
         self._rechecks = 0
+        #: 比完過至少一次的候選(棄權也算)。重拍再比的期間,事件流照上次的結果走。
+        self._settled: set[tuple[MeldShape, ...]] = set()
         self._on_ready = on_ready
         self._faces_pending = wait_faces
 
@@ -328,8 +330,10 @@ class _MeldLook:
         if float(cv2.absdiff(old, new).mean()) < _STILL:
             return
         # 收好各組候選的答案再換快照。新的比對尚未完成或被遮住時,仍可用舊答案。
-        for shapes in self._jobs:
+        for shapes, job in self._jobs.items():
             self._answer(shapes)
+            if job.done() and not job.cancelled() and not self._faces_pending:
+                self._settled.add(shapes)
         if self._best:
             self._rechecks += 1
         self._picture = picture
@@ -343,9 +347,17 @@ class _MeldLook:
 
     @property
     def pending(self) -> bool:
-        """目前候選仍在比對,尚不能把無答案當成棄權。"""
-        job = self._jobs.get(self._active) if self._active is not None else None
-        return job is not None and (not job.done() or self._faces_pending)
+        """目前候選第一次比對還沒完成,尚不能把無答案當成棄權。
+
+        重拍之後的再比不算:那時事件流已經照上次的結果(答案或棄權後的推法)送出這組吃碰,
+        這裡回 ``True`` 的話事件流會退回鳴牌之前,比完又長回來。實測 Steam 的對家認不出牌面,
+        棄權的吃碰畫面一動就重比,一局退回 45 次。
+        """
+        active = self._active
+        job = self._jobs.get(active) if active is not None else None
+        if job is None or active in self._settled:
+            return False
+        return not job.done() or self._faces_pending
 
     def finish_faces(self) -> None:
         """牌面掃描已採入桌面狀態,棄權時可以使用它的牌面與赤五資訊。"""
@@ -374,7 +386,7 @@ class _MeldLook:
         except Exception as exc:  # noqa: BLE001 - 比不出來就照舊的推法
             if shapes not in self._failed:
                 self._failed.add(shapes)
-                logger.warning("副露候選比不成:%s", exc)
+                logger.warning("副露候選比不成:{!r}", exc)
             return best
         if found is not None and (best is None or found.quality >= best.quality + _MELD_GAIN):
             self._best[shapes] = found
@@ -566,7 +578,7 @@ class TableWorker(threading.Thread):
                 try:
                     self.tick()
                 except Exception as exc:  # noqa: BLE001 - 執行緒裡漏出來的例外只會被吞掉
-                    logger.warning("牌桌辨識這一輪失敗:%s", exc)
+                    logger.warning("牌桌辨識這一輪失敗:{!r}", exc)
                     self.status.say(f"這一輪讀不成:{exc}")
                 poll = min(self._interval, _POLL)
                 self._wake.wait(max(0.0, poll - (time.monotonic() - started)))
@@ -674,7 +686,12 @@ class TableWorker(threading.Thread):
     def _round_due(
         self, flats: Sequence[np.ndarray], rivers: Sequence[River], urgent: bool
     ) -> bool:
-        """這次要不要整輪走完。手牌變了、有牌停穩了,或離上一輪夠久了才要。"""
+        """這次要不要整輪走完。手牌變了、有牌停穩了,或離上一輪夠久了才要。
+
+        有人吃碰時**不**提早走。試過看到誰的河少一張就照 :data:`_MELD_GAP` 的間隔走,Steam 一場別家
+        副露只快零點幾秒,三次讀數卻都落在鳴牌動畫裡,吃被當成大明槓(human-steam-20261110 東4局)。
+        確認槓要多讀的那一次,靠的就是一秒的間隔等動畫演完。
+        """
         landed = self._watch_landing(flats, rivers)
         now = time.monotonic()
         held = self._turns is not None and self._turns.held(self._turn_clock())
@@ -1317,7 +1334,7 @@ class TableWorker(threading.Thread):
             try:
                 faces = job.future.result()
             except Exception as exc:  # noqa: BLE001 - 認不出來就是未知,不要讓整輪失敗
-                logger.warning("副露牌面認不成:%s", exc)
+                logger.warning("副露牌面認不成:{!r}", exc)
                 if look is not None:
                     look.finish_faces()
                 continue

@@ -25,11 +25,64 @@ from mia.mjai.table import TableTracker
 from mia.mjai.tiles import mjai_to_ms
 from mia.platforms import WEB
 from mia.tracker import Stream
+from mia.utils.geometry import Rect
 from mia.utils.logging import logger
+from mia.vision.hud import CORNER_PANEL
 from mia.yolo.client import YoloClient
 from mia.yolo.stream import LedgerStream
 
 Listener = Callable[[int, Stream], None]
+
+#: YOLO 模型吃的畫面尺寸,16:9 的牌桌。
+_YOLO_SIZE = (1920, 1080)
+
+
+def table_frame(
+    image: np.ndarray, table: Rect, panel: Rect | None = None
+) -> np.ndarray | None:
+    """切出牌桌、縮成 YOLO 吃的尺寸。矩形超出畫面的部分補黑邊,整塊落在畫面外回 ``None``。
+
+    Steam 全螢幕的牌桌矩形左右會超出畫面幾像素(見 :mod:`mia.calibration.unity`)。以前直接
+    切片,負的 x 被當成從右邊數,切出來只剩幾像素寬,YOLO 整場等不到開局。補黑邊而不是夾掉,
+    是要保持 16:9,縮放之後的座標才跟網頁版一樣。
+
+    ``panel``:左上角寶牌面板在畫面上的位置(Steam 才有,見 :class:`Calibration`)。它貼著視窗
+    角落、不跟著牌桌,有一半在牌桌矩形上面,YOLO 看不到,整場缺寶牌、本場、供託。這裡把它縮放後
+    貼到網頁版的位置(:data:`~mia.vision.hud.CORNER_PANEL`),樣板讀 Steam 也是這樣對應的。
+    """
+    frame = _table_only(image, table)
+    if frame is None or panel is None:
+        return frame
+    height, width = image.shape[:2]
+    inside = panel.intersect(Rect(0, 0, width, height))
+    if inside is None or inside.width == 0 or inside.height == 0:
+        return frame
+    x, y, w, h = CORNER_PANEL
+    size = _YOLO_SIZE
+    box = Rect(round(x * size[0]), round(y * size[1]), round(w * size[0]), round(h * size[1]))
+    frame[box.as_slice()] = cv2.resize(
+        image[inside.as_slice()], (box.width, box.height), interpolation=cv2.INTER_AREA
+    )
+    return frame
+
+
+def _table_only(image: np.ndarray, table: Rect) -> np.ndarray | None:
+    height, width = image.shape[:2]
+    inside = table.intersect(Rect(0, 0, width, height))
+    if inside is None or inside.width == 0 or inside.height == 0:
+        return None
+    cropped = image[inside.as_slice()]
+    if inside != table:
+        cropped = cv2.copyMakeBorder(
+            cropped,
+            inside.y - table.y,
+            table.y + table.height - inside.y - inside.height,
+            inside.x - table.x,
+            table.x + table.width - inside.x - inside.width,
+            cv2.BORDER_CONSTANT,
+            value=(0, 0, 0),
+        )
+    return cv2.resize(cropped, _YOLO_SIZE, interpolation=cv2.INTER_AREA)
 
 #: YOLO 等開局等這麼久就記一筆它卡在哪,之後原因變了再記(同樣隔這麼久才記一次,原因來回跳
 #: 也不會洗版)。換局之間的結算畫面本來就要等幾秒,所以不能太短。
@@ -261,12 +314,10 @@ class YoloVisionWorker(threading.Thread):
                     self.status.say(self._capture.status.read() or f"{self.label}等待遊戲畫面")
                     continue
                 image, calibration, wall = latest
-                r = calibration.table_rect
-                cropped = image[r.y : r.y + r.height, r.x : r.x + r.width]
-                if cropped.size == 0:
+                frame = table_frame(image, calibration.table_rect, calibration.panel)
+                if frame is None:
                     self.status.say(f"{self.label}找不到牌桌，請重新框選遊戲畫面")
                     continue
-                frame = cv2.resize(cropped, (1920, 1080), interpolation=cv2.INTER_AREA)
                 try:
                     payload = self._client.feed(frame, wall)
                 except EngineError as exc:
