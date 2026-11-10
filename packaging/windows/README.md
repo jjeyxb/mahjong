@@ -24,22 +24,13 @@ git clone https://github.com/Equim-chan/Mortal.git engines/mortal/Mortal
 git -C engines/mortal/Mortal checkout 0cff2b52982be5b1163aa9a62fb01f03ce91e0d2
 ```
 
-模型權重不在 git 裡。從 Mac 的專案目錄把 `models/` 整個資料夾複製到這裡的 `models/`,至少要有:
+模型權重不在 git 裡,用下載工具抓(約 700 MB,大小與 SHA-256 會逐一核對):
 
-```text
-models/mortal_298k.pth
-models/style_call_high.pth
-models/style_call_low.pth
-models/style_reach_high.pth
-models/style_reach_low.pth
-models/yolo/region_model_best.pt
-models/yolo/river_model_best.pt
-models/yolo/hand_model_best.pt
-models/yolo/meld_model_v32_1280.pt
-models/yolo/river_model_best.infer.json
-models/yolo/meld_model_v32_1280.infer.json
-models/yolo/meld_model_v32_1280.crop_meta.json
+```powershell
+py -3.14 tools/fetch_models.py
 ```
+
+權重放到 `models/` 與 `models/yolo/`。來源與授權見 `NOTICE`。
 
 ## 3. 編 libriichi
 

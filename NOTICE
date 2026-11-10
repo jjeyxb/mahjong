@@ -80,8 +80,10 @@ https://huggingface.co/jjeyxb/mia-mortal-style ,一併以 AGPL-3.0 標示。
 
 該處的 mortal_298k.pth 是 https://huggingface.co/VoidShine/mortal-298k
 的轉載,非本專案產出,放置目的僅為一個連結取齊所有權重;
-要取得原始檔請以該上游為準。
-安裝包隨附 mortal_298k.pth 與四份風格權重,來源同上。
+要取得原始檔請以該上游為準。那份權重由 VoidShine 以天鳳牌譜自行訓練,
+以 AGPL-3.0 發布(該處附有 LICENSE),所以可依 AGPL-3.0 重新散布;
+`tools/fetch_models.py` 直接從該上游下載,並核對與轉載的是同一個檔案。
+安裝包隨附 mortal_298k.pth 與四份風格權重,依 AGPL-3.0 散布。
 
 
 3. 雀魂協定定義 liqi.json
@@ -114,6 +116,7 @@ GitHub Releases 的安裝包把執行環境一起打包,使用者不必另外安
 還包含下列元件,各依其授權散布:
 
 * YOLO 辨識(`engines/yolo/agent/`)與其四份權重 —— 隊友開發,經作者同意隨安裝包散布。
+  權重公開於 https://huggingface.co/jjeyxb/mia-yolo (以 Ultralytics 訓練,AGPL-3.0)。
 * Ultralytics (AGPL-3.0) —— YOLO 推論。
 * PyTorch、torchvision (BSD-3-Clause) —— Mortal 與 YOLO 的推論。
 * Qt for Python / PySide6 (LGPL-3.0) —— 介面。以動態函式庫形式附在安裝目錄裡,

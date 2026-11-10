@@ -314,3 +314,32 @@ def test_failed_gpu_worker_starts_base_worker(tmp_path, monkeypatch):
         assert gpu_environment.read_text() == "cuda"
     finally:
         client.close()
+
+
+def test_the_weight_download_list_matches_what_the_package_bundles() -> None:
+    """新電腦用 tools/fetch_models.py 抓權重;漏一個的話打包到一半才發現缺檔。"""
+    import ast
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location("_fetch_models", root / "tools/fetch_models.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["_fetch_models"] = module
+    spec.loader.exec_module(module)
+    fetched = {weight.local for weight in module.WEIGHTS}
+
+    bundled: set[str] = set()
+    tree = ast.parse((root / "tools/package.py").read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.For) and isinstance(node.iter, ast.Tuple):
+            names = [e.value for e in node.iter.elts if isinstance(e, ast.Constant)]
+            if names and all(isinstance(n, str) for n in names):
+                if names[0].endswith(".pth"):
+                    bundled |= set(names)
+                elif names[0].endswith((".pt", ".json")):
+                    bundled |= {f"yolo/{n}" for n in names}
+    assert bundled
+    assert fetched == bundled
