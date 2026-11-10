@@ -185,24 +185,53 @@ tests/fixtures/    靜態截圖 + 期望輸出
 
 ## 安裝
 
+> 🪟 **macOS 與 Windows 的 venv 路徑不同。** 這份 README 的指令一律寫成 macOS 的
+> 形式,在 Windows 上照抄 `.venv/bin/python` 會直接失敗 —— 那個資料夾在 Windows 上
+> 不存在。對照表:
+>
+> | | macOS | Windows(PowerShell) |
+> |---|---|---|
+> | Python | `.venv/bin/python` | `.venv\Scripts\python.exe` |
+> | pip | `.venv/bin/pip` | `.venv\Scripts\pip.exe` |
+> | 啟用 venv | `source .venv/bin/activate` | `.venv\Scripts\Activate.ps1` |
+>
+> 啟用過 venv 之後兩邊都可以直接打 `python`。Windows 若出現「已停用指令碼執行」
+> 而啟用不了,就直接打上表 Windows 那一欄的完整路徑,效果一樣。
+
 ### 1. 主程式環境（Python 3.14）
 
 ```bash
+# macOS
 git clone <repo> && cd mahjong
 python3.14 -m venv .venv
 .venv/bin/pip install -r requirements.txt          # 或 requirements-dev.txt
+```
+
+```powershell
+# Windows
+git clone <repo>; cd mahjong
+py -3.14 -m venv .venv
+.venv\Scripts\pip.exe install -r requirements.txt   # 或 requirements-dev.txt
 ```
 
 ### 2. AI 引擎環境（Python 3.12，獨立）
 
 完整步驟見 [`engines/mortal/requirements.txt`](engines/mortal/requirements.txt)。
 需要 Rust 與 Python 3.12，自行從 [Mortal repo](https://github.com/Equim-chan/Mortal)
-編譯 `libriichi`（`cargo build -p libriichi --lib --release`，**不需要 maturin**），
-權重 `.pth` 放到 `models/`（已 gitignore）。
+編譯 `libriichi`（`cargo build -p libriichi --lib --release`，**不需要 maturin**）。
+Windows 的產物名稱與步驟不同（`riichi.dll` 要改名成 `libriichi.pyd`），見
+[docs/handoff.md](docs/handoff.md) 的「在 Windows 上重建」。
 
 > **macOS 注意**：官方文件只寫了 Linux 與 Windows。在 macOS 上產物是
 > `libriichi.dylib`，但 CPython 只認 `.so` —— 要改名複製成 `mortal/libriichi.so`，
 > 否則 ImportError。已在 Apple Silicon 實測通過（編譯 32.5 秒，推論 14 ms/決策）。
+
+權重一行抓齊（Mortal 的基準與四份風格權重，加上選用的 YOLO 辨識權重），逐檔核對
+SHA-256，直接寫進 `models/`（已 gitignore），不經過使用者目錄下的快取：
+
+```bash
+.venv/bin/python tools/fetch_models.py
+```
 
 ### 3. 平台權限
 
@@ -228,7 +257,8 @@ python3.14 -m venv .venv
 ### 5. 啟動
 
 ```bash
-.venv/bin/python tools/ui.py --live
+.venv/bin/python tools/ui.py --live                # macOS
+.venv\Scripts\python.exe tools\ui.py --live        # Windows(PowerShell)
 ```
 
 就這一行，**不用帶 `--mortal`**。要載哪份權重由 [`config/default.yaml`](config/default.yaml)
@@ -252,14 +282,12 @@ python3.14 -m venv .venv
 沒有任何權重檔時（例如剛 clone 完）程式照常起得來——風格選單是停用的，
 AI 建議那一欄只剩規則式基準，另外兩個功能完全不受影響。
 
-> ⚠ **一定要用 `.venv/bin/python`,不是裸的 `python`。** 相依都裝在專案的
-> venv 裡，系統的 python 沒有 PySide6，會直接 `ModuleNotFoundError`。
-> 習慣先 `source .venv/bin/activate` 的話當然也可以，但指名路徑不必記得啟用。
-> Windows 上對應的是 `.venv\Scripts\python.exe`。
+> ⚠ **一定要用 venv 裡的 python,不是裸的 `python`**(除非已經啟用 venv)。
+> 相依都裝在專案的 venv 裡,系統的 python 沒有 PySide6,會直接
+> `ModuleNotFoundError`。路徑兩個平台不同,見[安裝](#安裝)開頭那張表。
 >
-> 各工具 `--help` 印出來的範例寫的是**裸 `python`** —— 那是平台中立的寫法，
-> 代表「已經啟用 venv」。`.venv/bin/` 在 Windows 上是錯的路徑，所以那種會同時
-> 印給兩個平台看的地方不寫死它。
+> 各工具 `--help` 印出來的範例寫的是**裸 `python`** —— 那是平台中立的寫法,
+> 代表「已經啟用 venv」。那段文字會同時印給兩個平台看,所以不寫死任何一邊的路徑。
 
 ### 6. 驗證安裝
 
@@ -493,12 +521,13 @@ Mortal。對照組：一次已知失敗的微調量到的順位差是 0.057，�
 
 > ⚠ **權重不進版控,但都放在 HuggingFace。** `models/` 在 `.gitignore` 裡
 > （125 MB 一份，超過 GitHub 的單檔上限）。四份風格權重、自訓的 `grp.pth`
-> 與基準權重都在 **[jjeyxb/mia-mortal-style](https://huggingface.co/jjeyxb/mia-mortal-style)**，
-> 下載後放進 `models/` 即可。
+> 與基準權重都在 **[jjeyxb/mia-mortal-style](https://huggingface.co/jjeyxb/mia-mortal-style)**。
+> 執行要用的那幾份用 `tools/fetch_models.py` 抓(見[安裝](#安裝)第 2 步),
+> 基準權重它直接從原作者那裡拿。`grp.pth` 只有重新訓練才用得到,所以不在那支
+> 工具裡,要的話:
 >
 > ```
-> pip install huggingface_hub
-> hf download jjeyxb/mia-mortal-style --local-dir models
+> .venv/bin/hf download jjeyxb/mia-mortal-style grp.pth --local-dir models
 > ```
 >
 > 基準權重的原始出處是 [VoidShine/mortal-298k](https://huggingface.co/VoidShine/mortal-298k)
@@ -635,6 +664,7 @@ JSONL。liqi 解析全在離線階段。這樣解析程式有 bug 或協定改�
 
 ```bash
 # 按左下角「開始遊戲」開瀏覽器，登入後撥開關就開始給建議
+# (Windows 把 .venv/bin/python 換成 .venv\Scripts\python.exe,見「安裝」開頭的對照表)
 .venv/bin/python tools/ui.py --live
 
 # 已經有另一個 gt.py 在錄了（或用 MITM 錄 Steam 版），只跟著那個檔案走
