@@ -29,6 +29,7 @@ from PySide6.QtCore import QPoint, QRect, Qt, Signal
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QButtonGroup, QComboBox, QHBoxLayout, QPushButton, QWidget
 
+from mia.distribution.layout import LAYOUT
 from mia.ui.style import ACCENT, ACCENT_HOVER, ACCENT_PRESSED, mix
 
 __all__ = [
@@ -59,7 +60,7 @@ POPUP_GAP = 4
 #: 「樣板比對」兩個選單上下排在一起,右緣差一截,看起來像沒對齊。
 COMBO_WIDTH = 200
 
-_ICON_DIR = Path(tempfile.gettempdir()) / "mia-ui-icons"
+_ICON_DIR = (LAYOUT.cache if LAYOUT.packaged else Path(tempfile.gettempdir())) / "mia-ui-icons"
 
 _CHEVRON = (
     '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12">'

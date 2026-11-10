@@ -17,12 +17,13 @@ from typing import Any
 import yaml
 
 from mia.config.models import AppConfig
+from mia.distribution.layout import LAYOUT
 from mia.utils.paths import CONFIG_DIR
 
 __all__ = ["DEFAULT_CONFIG_PATH", "LOCAL_CONFIG_PATH", "load_config", "save_config"]
 
 DEFAULT_CONFIG_PATH: Path = CONFIG_DIR / "default.yaml"
-LOCAL_CONFIG_PATH: Path = CONFIG_DIR / "default.local.yaml"
+LOCAL_CONFIG_PATH: Path = LAYOUT.config / "default.local.yaml"
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

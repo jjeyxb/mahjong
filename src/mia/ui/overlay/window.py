@@ -55,6 +55,7 @@ from mia import features
 from mia.analysis import DangerReport, TileDanger, Ukeire
 from mia.engine.actions import Candidate
 from mia.hybrid.merge import TileChoice
+from mia.i18n import tr, translate
 from mia.mjai.tiles import tile_name
 from mia.ui.overlay.choice import ChoiceBar
 from mia.ui.overlay.hud import HudWindow
@@ -258,7 +259,7 @@ class OverlayWindow(HudWindow):
         layout.addWidget(self._candidates)
         layout.addWidget(self._build_dangers())
 
-        self._hint = QLabel("拖曳移動 —— 擺好之後按右上角的鎖", self)
+        self._hint = QLabel(tr("拖曳移動 —— 擺好之後按右上角的鎖"), self)
         self._hint.setStyleSheet(f"color: {_ACCENT}; font-size: 11px;")
         layout.addWidget(self._hint)
 
@@ -299,7 +300,7 @@ class OverlayWindow(HudWindow):
         # 次選。擺在右半邊 —— 那裡原本是進張,而這個比進張值錢:進張講的是
         # 「摸到什麼會前進」(手牌本來就看得到),這個講的是「模型第二喜歡
         # 什麼、差多少」,是遊戲裡沒有的資訊。
-        self._second_label = QLabel("次選", row)
+        self._second_label = QLabel(tr("次選"), row)
         self._second_label.setStyleSheet(f"color: {_MUTED}; font-size: 11px;")
         self._second: list[tuple[TileLabel, QLabel]] = []
         for _ in range(_MAX_SECOND_TILES):
@@ -530,14 +531,14 @@ class OverlayWindow(HudWindow):
                 # —— 使用者會去撥一個已經開著的開關,然後以為程式壞了。
                 # 實機第一次開起來就是踩到這個。
                 self._show_advice(
-                    None, muted=True, verb="放銃分析中",
-                    mark="到設定頁勾「Overlay 顯示放銃危險度」",
+                    None, muted=True, verb=tr("放銃分析中"),
+                    mark=tr("到設定頁勾「Overlay 顯示放銃危險度」"),
                 )
             else:
                 # 全部關著時要**主動說**,不然畫面上是一個空的黑框蓋在牌桌上,
                 # 看起來像程式壞了。
                 self._show_advice(
-                    None, muted=True, verb="未開啟", mark="用側邊視窗的開關打開"
+                    None, muted=True, verb=tr("未開啟"), mark=tr("用側邊視窗的開關打開")
                 )
             return
 
@@ -545,7 +546,7 @@ class OverlayWindow(HudWindow):
         if advice_on:
             self._show_advice(engine, stale=state.advice_is_stale)
         elif state.analysis is None:
-            self._show_advice(None, muted=True, verb="等待手牌…")
+            self._show_advice(None, muted=True, verb=tr("等待手牌…"))
         else:
             # 只有畫面辨識在跑:整段建議收起來,把位置讓給向聽
             self._show_advice(None, verb="")
@@ -569,7 +570,7 @@ class OverlayWindow(HudWindow):
         mark: str = "",
     ) -> None:
         if engine is None:
-            text = "等待引擎…" if verb is None else verb
+            text = tr("等待引擎…") if verb is None else verb
             self._verb.setText(text)
             self._verb.setVisible(bool(text))
             self._verb.setStyleSheet(_VERB_MUTED if muted or not text else _VERB_STYLE)
@@ -585,7 +586,7 @@ class OverlayWindow(HudWindow):
         quiet = stale or (engine.action is None and not engine.declined)
         self._verb.setStyleSheet(_VERB_MUTED if quiet else _VERB_STYLE)
         self._show_tiles(engine.subject, joiner=engine.joiner, own=engine.own_tiles)
-        self._mark.setText("·已打出" if stale else "")
+        self._mark.setText(tr("·已打出") if stale else "")
         self._mark.setVisible(stale)
 
     def _show_tiles(
@@ -657,12 +658,12 @@ class OverlayWindow(HudWindow):
             self._other_rows.append((row, name, value))
 
         for (row, name, value), engine in zip(self._other_rows, others, strict=False):
-            name.setText(engine.name)
+            name.setText(translate(engine.name))
             # 跳過的引擎也要標。這一手的分歧可能正是「它鳴、我不鳴」,而不標的話
             # 畫面上只有鳴的那一邊被標成分歧,看起來像它自己跟自己不一致。
             answered = engine.action is not None or engine.declined
             split = state is not None and not state.is_unanimous and answered
-            value.setText(engine.headline + ("　⚠ 分歧" if split else ""))
+            value.setText(engine.headline + (tr("　⚠ 分歧") if split else ""))
             value.setStyleSheet(
                 f"color: {_ACCENT if split else _TEXT}; font-size: 12px;"
                 f" font-weight: {'600' if split else '400'};"
@@ -698,7 +699,7 @@ class OverlayWindow(HudWindow):
         for (tile, gap), candidate in zip(self._second, rest, strict=False):
             tile.set_tile(candidate.label)
             gap.setText(f"{candidate.q - best:+.2f}")
-            gap.setToolTip(f"比最好的那張差 {best - candidate.q:.2f}")
+            gap.setToolTip(tr("比最好的那張差 {value:.2f}", value=best - candidate.q))
             tile.setVisible(True)
             gap.setVisible(True)
         for tile, gap in self._second[len(rest) :]:
@@ -743,8 +744,8 @@ def _danger_headline(report: DangerReport) -> str:
     """
     if report.threats:
         who = "、".join(f"{seat_name(report.seat, t.seat)}{t.label}" for t in report.threats)
-        return f"放銃危險度 —— {who},安全的在上"
-    return "放銃危險度 —— 沒人立直也不代表安全,安全的在上"
+        return tr("放銃危險度 —— {who},安全的在上", who=who)
+    return tr("放銃危險度 —— 沒人立直也不代表安全,安全的在上")
 
 
 def _effective_ukeire(state: ViewState) -> tuple[Ukeire, ...]:
@@ -795,7 +796,7 @@ def _shanten_line(state: ViewState) -> str:
     # 空的**,少了那道判斷會顯示「和了(切1m)」。進張的數字不畫了,這個判斷
     # 還是得留著。
     if _effective_ukeire(state) and not analysis.ukeire and best is not None:
-        text += f"(切{tile_name(best.tile)})"
+        text += tr("(切{tile_name})", tile_name=tile_name(best.tile))
     if state.hand_conflict:
         # 兩個來源對不上本身就是使用者該知道的事,而 Overlay 沒有狀態列
         text += "　⚠"

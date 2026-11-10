@@ -39,7 +39,10 @@ class WebSocketDump:
 
     def __init__(self, output: Path | str | None = None, url_filter: str | None = None) -> None:
         target = output or os.environ.get(ENV_OUTPUT) or "ws_dump.jsonl"
-        self.writer = DumpWriter(target)
+        # mitmproxy needs a module-level addon, but merely importing it (including
+        # CDP's CLI imports) must not create files in Finder's read-only cwd.
+        self._path = Path(target)
+        self._writer: DumpWriter | None = None
 
         patterns = url_filter or os.environ.get(ENV_URL_FILTER) or DEFAULT_URL_FILTER
         self.url_patterns = [p.strip().lower() for p in patterns.split(",") if p.strip()]
@@ -48,17 +51,24 @@ class WebSocketDump:
         self._ignored_urls: set[str] = set()
 
     @property
+    def writer(self) -> DumpWriter:
+        if self._writer is None:
+            self._writer = DumpWriter(self._path)
+        return self._writer
+
+    @property
     def path(self) -> Path:
-        return self.writer.path
+        return self._path
 
     @property
     def frames(self) -> int:
-        return self.writer.frames
+        return self._writer.frames if self._writer is not None else 0
 
     # --- mitmproxy hooks ---
 
     def running(self) -> None:
-        print(f"[majsoul] WebSocket 錄製中 → {self.path}")
+        # Open only when mitmproxy actually starts this addon.
+        print(f"[majsoul] WebSocket 錄製中 → {self.writer.path}")
         print(f"[majsoul] 網址過濾: {self.url_patterns}")
 
     def websocket_start(self, flow: Any) -> None:
@@ -87,7 +97,8 @@ class WebSocketDump:
 
     def done(self) -> None:
         frames = self.frames
-        self.writer.close()
+        if self._writer is not None:
+            self._writer.close()
         print(f"[majsoul] 錄製結束:{frames} 個封包 → {self.path}")
 
     # --- internals ---

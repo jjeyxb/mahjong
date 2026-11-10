@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import base64
+import importlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,29 @@ from pathlib import Path
 import pytest
 
 from mia.groundtruth.capture_addon import WebSocketDump
+
+
+def test_import_never_opens_a_recording_in_the_working_directory(monkeypatch) -> None:
+    """Finder starts at /; importing CDP's CLI must work without cwd write access."""
+    from mia.groundtruth import capture_addon
+
+    def readonly(*_args, **_kwargs):
+        raise OSError("read-only working directory")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "open", readonly)
+        module = importlib.reload(capture_addon)
+        assert module.addons[0].frames == 0
+        module.addons[0].done()
+
+
+def test_addon_opens_output_when_mitmproxy_starts(tmp_path) -> None:
+    target = tmp_path / "recordings/ws.jsonl"
+    addon = WebSocketDump(output=target)
+    assert not target.exists()
+    addon.running()
+    assert target.is_file()
+    addon.done()
 
 
 @dataclass

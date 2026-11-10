@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
 from mia.calibration.canvas import Canvas
+from mia.distribution.layout import LAYOUT
 from mia.groundtruth.dump import DumpWriter
 from mia.live.control import ControlFile
 from mia.utils.logging import logger
@@ -161,6 +162,10 @@ class CdpCapture:
         self._autoplay = autoplay
         sync_playwright = _import_playwright()
         with sync_playwright() as playwright:
+            # Offline bundles contain full Chromium, not a second headless shell.
+            launch_options: dict[str, Any] = {"headless": headless}
+            if LAYOUT.packaged:
+                launch_options["channel"] = "chromium"
             # no_viewport=True:Playwright 預設會把分頁 viewport 鎖定在固定的
             # 1280x720,之後不管使用者怎麼拖動視窗邊框都不會變 —— 這正是
             # 「Chromium 視窗縮放時雀魂不會重新排版」那個問題的成因,不是雀魂
@@ -168,11 +173,11 @@ class CdpCapture:
             # 加這個參數後分頁 viewport 才會跟著真正的視窗尺寸走。
             if user_data_dir:
                 context = playwright.chromium.launch_persistent_context(
-                    user_data_dir, headless=headless, no_viewport=True
+                    user_data_dir, **launch_options, no_viewport=True
                 )
                 page = context.pages[0] if context.pages else context.new_page()
             else:
-                browser = playwright.chromium.launch(headless=headless)
+                browser = playwright.chromium.launch(**launch_options)
                 context = browser.new_context(no_viewport=True)
                 page = context.new_page()
 

@@ -26,6 +26,7 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
+from mia.i18n import DEFAULT_LANGUAGE
 from mia.platforms import WEB
 from mia.utils.logging import logger
 from mia.utils.paths import DATA_DIR
@@ -85,12 +86,15 @@ class UiState:
         hud_opacity: 所有懸浮視窗(Overlay、事件流 Log)的不透明度,
             :data:`MIN_HUD_OPACITY` ~ 1.0。**只有一個值**:兩個視窗疊在同一個
             遊戲畫面上,一個淡一個濃看起來像其中一個壞了。
+        language: 介面語言(``zh-TW`` / ``en``)。:mod:`mia.i18n` 啟動時直接讀這個檔案的這個鍵,
+            認不得的退回繁體中文;換了要重新啟動才生效。
         compare_style: 上次選的並排比較對象,``None`` 代表不比較。
             與 :attr:`style` 撞在一起或名字不存在時一律當成不比較 ——
             開著比較要多載一份 130MB 的權重,**所以對不上的時候寧可不開**。
     """
 
     platform: str = WEB
+    language: str = DEFAULT_LANGUAGE
     recognition_backend: str = "template"
     hand_roi: tuple[float, float, float, float] | None = None
     table_rect: tuple[float, float, float, float] | None = None
@@ -163,7 +167,7 @@ class UiState:
 #: 依型別分的欄位。其餘都是開關。
 _POINTS = ("overlay_pos", "log_pos", "log_size")
 _RECTS = ("hand_roi", "table_rect")
-_TEXTS = ("platform", "recognition_backend", "canvas", "style", "compare_style")
+_TEXTS = ("platform", "language", "recognition_backend", "canvas", "style", "compare_style")
 _FRACTIONS = ("hud_opacity",)
 
 

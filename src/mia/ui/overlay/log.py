@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from mia.i18n import tr, translate
 from mia.mjai.describe import tile_text
 from mia.ui.eventlog import TILE_MARK, EventLog, LogLine
 from mia.ui.overlay.hud import HudWindow
@@ -62,7 +63,7 @@ _BODY_STYLE = (
     "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }"
 )
 
-_EMPTY = "還沒有事件。AI 建議要開著,對局開始後才有事件流。"
+_EMPTY = tr("還沒有事件。AI 建議要開著,對局開始後才有事件流。")
 
 #: 牌面圖的高度,邏輯像素。說明文字是 13px,圖比字高一點才認得出牌。
 _TILE_HEIGHT = 26
@@ -132,7 +133,7 @@ class EventLogWindow(HudWindow):
 
         foot = QHBoxLayout()
         foot.setContentsMargins(0, 0, 0, 0)
-        self._hint = QLabel("拖曳上緣移動,右下角改大小 —— 擺好之後按右上角的鎖", self)
+        self._hint = QLabel(tr("拖曳上緣移動,右下角改大小 —— 擺好之後按右上角的鎖"), self)
         self._hint.setStyleSheet(f"color: {ACCENT}; font-size: 11px;")
         self._grip = QSizeGrip(self)
         foot.addWidget(self._hint, 1)
@@ -157,7 +158,7 @@ class EventLogWindow(HudWindow):
         """標題列。label 不收滑鼠事件,所以這一條就是拖曳的把手。"""
         head = QHBoxLayout()
         head.setContentsMargins(0, 0, 0, 0)
-        title = QLabel("事件流 Log", self)
+        title = QLabel(tr("事件流 Log"), self)
         title.setStyleSheet(f"color: {_TEXT}; font-size: 13px; font-weight: 600;")
         self._source = QLabel("", self)
         self._source.setStyleSheet(f"color: {_MUTED}; font-size: 11px;")
@@ -240,8 +241,12 @@ class EventLogWindow(HudWindow):
         following = self.locked or self._following
         position = bar.value()
         lines = self._log.lines
-        self._source.setText(f"{self._log.source} · {len(lines)} 則" if lines else "")
-        self._note.setText(self._log.note)
+        self._source.setText(
+            tr("{source} · {len} 則", source=translate(self._log.source), len=len(lines))
+            if lines
+            else ""
+        )
+        self._note.setText(translate(self._log.note))
         self._note.setVisible(bool(self._log.note))
         pictures = self._icons is not None
         self._updating_scroll = True

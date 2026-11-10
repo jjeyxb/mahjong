@@ -16,6 +16,7 @@ from typing import Any, BinaryIO
 
 import numpy as np
 
+from mia.distribution.layout import LAYOUT
 from mia.engine.base import EngineError
 from mia.utils.geometry import Rect
 from mia.utils.paths import LOG_DIR, PROJECT_ROOT
@@ -28,7 +29,15 @@ class YoloClient:
     def __init__(self, *, python: Path | None = None, timeout: float = 45.0) -> None:
         base = PROJECT_ROOT / "engines/yolo"
         executable = "Scripts/python.exe" if sys.platform == "win32" else "bin/python"
-        self.python = python or Path(os.environ.get("MIA_YOLO_PYTHON", base / ".venv" / executable))
+        self._packaged = LAYOUT.packaged and python is None
+        if self._packaged:
+            from mia.distribution.components import yolo_worker
+
+            self.python = yolo_worker(LAYOUT)
+        else:
+            self.python = python or Path(
+                os.environ.get("MIA_YOLO_PYTHON", base / ".venv" / executable)
+            )
         if not self.python.is_file():
             raise EngineError("YOLO 尚未安裝，請執行 .venv/bin/python tools/setup_yolo.py")
         self._base = base
@@ -37,37 +46,61 @@ class YoloClient:
         self._log: BinaryIO | None = None
         self._lines: queue.Queue[bytes | None] = queue.Queue()
         self._closed = threading.Event()
+        self._shutdown = threading.Event()
         self._lock = threading.Lock()
         self.device = ""
         self.supports_observations = False
         self._digits: HudDigits | None = None
 
     def start(self) -> None:
+        try:
+            self._start_process()
+        except EngineError:
+            base = LAYOUT.worker("yolo")
+            if not self._packaged or self.python == base or self._shutdown.is_set():
+                raise
+            self._dispose_process()
+            self._lines = queue.Queue()
+            self.python = base
+            self._start_process()
+
+    def _start_process(self) -> None:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         with self._lock:
-            if self._closed.is_set():
+            if self._closed.is_set() or self._shutdown.is_set():
                 raise EngineError("YOLO 已停止")
             self._log = (LOG_DIR / "yolo-worker.log").open("ab")
+            child_env = {**os.environ, "PYINSTALLER_RESET_ENVIRONMENT": "1"}
+            if self._packaged and self.python != LAYOUT.worker("yolo"):
+                # ROCm also uses PyTorch's cuda device API. Preserve an explicit CPU override.
+                child_env.setdefault("MJ_DEVICE", "cuda")
             try:
                 self._process = subprocess.Popen(
-                    [str(self.python), "-u", str(self._base / "worker.py")],
+                    (
+                        [str(self.python)]
+                        if self._packaged
+                        else [str(self.python), "-u", str(self._base / "worker.py")]
+                    ),
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=self._log,
                     cwd=PROJECT_ROOT,
+                    env=child_env,
+                    creationflags=vars(subprocess).get("CREATE_NO_WINDOW", 0),
                 )
             except OSError as exc:
                 self._log.close()
                 raise EngineError(f"YOLO 無法啟動:{exc}") from exc
         assert self._process.stdout is not None
         reader = self._process.stdout
+        lines = self._lines
 
         def read() -> None:
             try:
                 for line in iter(reader.readline, b""):
-                    self._lines.put(line)
+                    lines.put(line)
             finally:
-                self._lines.put(None)
+                lines.put(None)
 
         threading.Thread(target=read, name="yolo-output", daemon=True).start()
         ready = self._receive()
@@ -153,9 +186,14 @@ class YoloClient:
         工作執行緒的 finally。
         """
         self._closed.set()
+        vars(self).setdefault("_shutdown", threading.Event()).set()
 
     def close(self) -> None:
         self._closed.set()
+        self._shutdown.set()
+        self._dispose_process()
+
+    def _dispose_process(self) -> None:
         with self._lock:
             process, self._process = self._process, None
             if process is not None:

@@ -175,6 +175,7 @@ class MacOSCaptureBackend(CaptureBackend):
         if not _QUARTZ_AVAILABLE:
             raise RuntimeError("pyobjc-framework-Quartz 未安裝,無法使用 macOS 擷取後端")
         self.retina = retina
+        self._permission_requested = False
         self._resolution_flag = (
             Quartz.kCGWindowImageBestResolution
             if retina
@@ -210,21 +211,32 @@ class MacOSCaptureBackend(CaptureBackend):
         """確認權限,沒有就跳出授權對話框並拋出說明清楚的例外。"""
         if self.has_permission():
             return
-        self.request_permission()
+        if not self._permission_requested:
+            self._permission_requested = True
+            self.request_permission()
         if not self.has_permission():
+            application = (
+                "MIA（安裝資料夾內的 MIA.app）"
+                if getattr(sys, "frozen", False)
+                else "執行本程式的應用程式（終端機或 VS Code）"
+            )
             raise PermissionDeniedError(
                 "缺少螢幕錄製權限。\n"
-                "  請到「系統設定 → 隱私權與安全性 → 螢幕與系統錄製」勾選執行本程式的應用程式\n"
-                "  (從終端機執行就是終端機 App;從 VS Code 執行就是 VS Code)。\n"
+                "  請到「系統設定 → 隱私權與安全性 → 螢幕錄製」\n"
+                f"  開啟 {application} 的權限；未列出時按 + 加入。\n"
                 "  授權後必須完全結束並重新啟動該應用程式,權限才會生效。"
             )
 
     # --- 擷取 ---
 
     def list_windows(self, *, include_all: bool = False) -> list[WindowInfo]:
+        # Without permission macOS hides titles, so window selection otherwise
+        # fails before capture() ever gets a chance to request authorization.
+        self.ensure_permission()
         return list_windows(include_all=include_all)
 
     def list_windows_everywhere(self) -> list[WindowInfo]:
+        self.ensure_permission()
         return list_windows(everywhere=True)
 
     def capture(self, window: WindowInfo) -> Frame:

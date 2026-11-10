@@ -34,6 +34,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QWidget
 
+from mia.i18n import tr
 from mia.ui.spaces import follow_into_fullscreen
 from mia.ui.style import ACCENT
 
@@ -49,8 +50,8 @@ _BG = QColor(24, 26, 32, 214)
 _BG_HOVER = QColor(44, 47, 56, 230)
 _LOCKED = QColor(235, 235, 240)
 
-_TIP_LOCKED = "已鎖定:點擊會穿到遊戲,這個視窗拖不動。\n按這裡解鎖"
-_TIP_UNLOCKED = "沒鎖定:可以直接拖曳這個視窗。\n擺好之後按這裡鎖定"
+_TIP_LOCKED = tr("已鎖定:點擊會穿到遊戲,這個視窗拖不動。\n按這裡解鎖")
+_TIP_UNLOCKED = tr("沒鎖定:可以直接拖曳這個視窗。\n擺好之後按這裡鎖定")
 
 
 class LockButton(QWidget):

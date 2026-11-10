@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from mia.analysis import DangerLevel, DangerReport, SeatDanger, TileDanger
+from mia.i18n import tr, translate
 from mia.ui.style import ACCENT, CAPTION, MUTED
 from mia.ui.viewmodel import ViewState
 from mia.ui.widgets.tiles import TileIcons, TileLabel
@@ -57,13 +58,13 @@ LEVEL_COLORS = {
 }
 
 #: 相對座位。索引是 ``(對方 - 自己) % 4``。
-_RELATIVE = ("自己", "下家", "對家", "上家")
+_RELATIVE = (tr("自己"), tr("下家"), tr("對家"), tr("上家"))
 
 
 def seat_name(mine: int | None, theirs: int) -> str:
     """把絕對座位換成相對稱呼。不知道自己坐哪就退回絕對座位。"""
     if mine is None:
-        return f"{theirs} 家"
+        return tr("{theirs} 家", theirs=theirs)
     return _RELATIVE[(theirs - mine) % 4]
 
 
@@ -111,9 +112,9 @@ def _detail(danger: TileDanger, seat: int | None) -> str:
         這裡加的是**描述**,不是等級。
     """
     if all(s.furiten for s in danger.seats):
-        return "三家都是現物"
+        return tr("三家都是現物")
     worst = _worst(danger)
-    line = f"對{_named(worst, seat)}:{worst.reason}"
+    line = tr("對{named}:{reason}", named=_named(worst, seat), reason=worst.reason)
     note = _furiten_note(danger, seat, exclude=worst)
     return f"{line} · {note}" if note else line
 
@@ -130,15 +131,15 @@ def danger_note(danger: TileDanger, seat: int | None) -> str:
     也還是同一個坑。所以砍掉的是型的清單,不是對象。
     """
     if not danger.seats:
-        return "沒有人需要防"
+        return tr("沒有人需要防")
     if all(s.furiten for s in danger.seats):
-        return "三家都是現物"
+        return tr("三家都是現物")
     if danger.level is DangerLevel.SAFE:
-        return "對三家都排除了"
+        return tr("對三家都排除了")
     worst = _worst(danger)
     note = _furiten_note(danger, seat, exclude=worst, verb=False)
-    tail = f"・{note}現物" if note else ""
-    return f"對{_who(danger, seat)}・還 {len(worst.waits)} 型{tail}"
+    tail = tr("・{note}現物", note=note) if note else ""
+    return tr("對{who}・還 {len} 型{tail}", who=_who(danger, seat), len=len(worst.waits), tail=tail)
 
 
 def _who(danger: TileDanger, seat: int | None) -> str:
@@ -177,7 +178,7 @@ def _furiten_note(
     if not others:
         return ""
     who = "、".join(_named(s, seat) for s in others)
-    return f"{who}是現物" if verb else who
+    return tr("{who}是現物", who=who) if verb else who
 
 
 def _worst(danger: TileDanger) -> SeatDanger:
@@ -199,13 +200,15 @@ def _waiting_note(source: str | None) -> str:
     清楚現在跑的是哪一條,不然他改了設定也看不出有沒有生效。
     """
     if source is None:
-        return "開始一局之後就會算出每張牌切出去的危險度"
+        return tr("開始一局之後就會算出每張牌切出去的危險度")
     if source == "圖像辨識":
         return (
-            "正在用圖像辨識看牌河 —— 不讀封包。"
-            "讀不出來的牌一律當成危險(方向是保守的),所以會比封包那條路悲觀。"
+            tr("正在用圖像辨識看牌河 —— 不讀封包。"
+            "讀不出來的牌一律當成危險(方向是保守的),所以會比封包那條路悲觀。")
         )
-    return f"正在用{source}追蹤別家打了什麼 —— 開始一局之後就會算出危險度"
+    return tr(
+        "正在用{source}追蹤別家打了什麼 —— 開始一局之後就會算出危險度", source=translate(source)
+    )
 
 
 class AnalysisDangerTab(QWidget):
@@ -220,7 +223,7 @@ class AnalysisDangerTab(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
-        self._headline = QLabel("等待對局…", self)
+        self._headline = QLabel(tr("等待對局…"), self)
         self._headline.setStyleSheet("font-size: 20px; font-weight: 600;")
         layout.addWidget(self._headline)
 
@@ -231,7 +234,7 @@ class AnalysisDangerTab(QWidget):
 
         self._rule = _rule(self)
         layout.addWidget(self._rule)
-        self._caption = QLabel("每張牌切出去(安全的在前)", self)
+        self._caption = QLabel(tr("每張牌切出去(安全的在前)"), self)
         self._caption.setStyleSheet(CAPTION)
         layout.addWidget(self._caption)
 
@@ -261,10 +264,10 @@ class AnalysisDangerTab(QWidget):
         """
         report = state.dangers if enabled else None
         if not enabled:
-            self._blank("未開啟", "用右上角的開關打開")
+            self._blank(tr("未開啟"), tr("用右上角的開關打開"))
             return
         if report is None:
-            self._blank("等待對局…", _waiting_note(source))
+            self._blank(tr("等待對局…"), _waiting_note(source))
             return
         self._show(report)
 
@@ -284,18 +287,18 @@ class AnalysisDangerTab(QWidget):
                 f"{seat_name(report.seat, t.seat)}{t.label}" for t in report.threats
             )
             self._headline.setText(who)
-            note = "以下是排除法的結果:還剩幾種待牌型沒被排除。"
+            note = tr("以下是排除法的結果:還剩幾種待牌型沒被排除。")
         else:
             # 不寫死「立直或三副露」—— 門檻現在還包含「兩副露帶役牌」
             # (見 mia.mjai.table.MELD_THREAT_WITH_YAKUHAI),把條件抄在這裡
             # 只會在下次改門檻時變成一句安靜的謊話。
-            self._headline.setText("沒有人露出馬腳")
+            self._headline.setText(tr("沒有人露出馬腳"))
             # 這句話很重要。沒人露出馬腳**不等於安全** —— 實測那場三次榮和,
             # 有兩次是沒立直的人和的;而其中一次到現在仍然讀不出來。
             note = (
-                "沒有人立直、也沒有人副露到要防的程度 —— 但那不代表安全,"
+                tr("沒有人立直、也沒有人副露到要防的程度 —— 但那不代表安全,"
                 "一樣會有人榮和,只是我們無法確定他聽不聽牌。"
-                "以下仍然是排除法的結果。"
+                "以下仍然是排除法的結果。")
             )
         self._source.setText(note)
 

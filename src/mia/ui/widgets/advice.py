@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from mia.engine.actions import Candidate
+from mia.i18n import tr, translate
 from mia.ui.style import ACCENT, CAPTION, MUTED, SMALL, Hairline, mix
 from mia.ui.viewmodel import EngineView, ViewState, q_fraction
 from mia.ui.widgets.tiles import TileIcons, TileLabel
@@ -118,13 +119,13 @@ class _Headline(QWidget):
         if not enabled:
             # 「等待引擎…」在功能關著的時候是錯的:那句話讓人以為它正在載入,
             # 於是使用者就一直等下去。關著就要說關著,並指出開關在哪。
-            self._verb.setText("未開啟")
+            self._verb.setText(tr("未開啟"))
             self._show_tiles()
-            self._detail.setText("用右上角的開關打開")
+            self._detail.setText(tr("用右上角的開關打開"))
             self._verb.setStyleSheet(_VERB + MUTED)
             return
         if engine is None:
-            self._verb.setText("等待引擎…")
+            self._verb.setText(tr("等待引擎…"))
             self._show_tiles()
             self._detail.setText("")
             return
@@ -134,7 +135,7 @@ class _Headline(QWidget):
             # 真的沒人在問。這是九成的事件,保持安靜。
             self._verb.setText(engine.verb)
             self._show_tiles()
-            self._detail.setText(f"{engine.name}")
+            self._detail.setText(translate(engine.name))
             self._verb.setStyleSheet(_VERB + MUTED)
             return
 
@@ -147,7 +148,7 @@ class _Headline(QWidget):
         self._verb.setText(engine.verb)
         self._show_tiles(engine.subject, joiner=engine.joiner, own=engine.own_tiles)
 
-        parts = [engine.name]
+        parts = [translate(engine.name)]
         if top is not None:
             parts.append(f"Q {top.q:+.2f}")
         parts.append(f"{engine.latency_ms:.0f} ms")
@@ -155,7 +156,7 @@ class _Headline(QWidget):
         if stale:
             # 建議的牌已經不在手上。標出來而不是藏起來 —— 使用者看到「切 3s」
             # 而手上沒有 3s 時,要知道那是剛剛打掉了,不是程式算錯。
-            detail += " · 已打出"
+            detail += tr(" · 已打出")
         self._detail.setText(detail)
         self._verb.setStyleSheet(_VERB + (MUTED if stale else ""))
 
@@ -278,19 +279,19 @@ class AdviceTab(QWidget):
         header = QHBoxLayout(self._candidates_header)
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(6)
-        self._candidates_label = QLabel("其他候選", self._candidates_header)
+        self._candidates_label = QLabel(tr("其他候選"), self._candidates_header)
         self._candidates_label.setStyleSheet(CAPTION)
         self._candidate_count = QSpinBox(self._candidates_header)
         self._candidate_count.setRange(1, 20)
         self._candidate_count.setValue(self.max_candidates)
-        self._candidate_count.setToolTip("這份清單最多列幾個")
+        self._candidate_count.setToolTip(tr("這份清單最多列幾個"))
         self._candidate_count.setFixedWidth(58)
         self._candidate_count.valueChanged.connect(self.candidate_count_changed)
         header.addWidget(self._candidates_label)
         header.addStretch(1)
-        header.addWidget(_caption("列", self._candidates_header))
+        header.addWidget(_caption(tr("列"), self._candidates_header))
         header.addWidget(self._candidate_count)
-        header.addWidget(_caption("個", self._candidates_header))
+        header.addWidget(_caption(tr("個"), self._candidates_header))
         layout.addWidget(self._candidates_header)
 
         self._candidates = QWidget(self)
@@ -303,7 +304,7 @@ class AdviceTab(QWidget):
         layout.addWidget(self._others_rule)
         # 這一區原本直接列引擎名字,沒有任何標題 —— 於是畫面上憑空冒出
         # 「baseline 切 3s」,而使用者不知道那是誰、為什麼要告訴他。
-        self._others_label = QLabel("同一個局面,別的引擎會怎麼打", self)
+        self._others_label = QLabel(tr("同一個局面,別的引擎會怎麼打"), self)
         self._others_label.setStyleSheet(CAPTION)
         layout.addWidget(self._others_label)
         self._others = QWidget(self)
@@ -357,14 +358,14 @@ class AdviceTab(QWidget):
             self._other_labels.append((name, value))
 
         for (name, value), engine in zip(self._other_labels, others, strict=False):
-            name.setText(engine.name)
+            name.setText(translate(engine.name))
             text = engine.headline
             # 跳過的引擎也要標。這一手的分歧可能正是「它鳴、我不鳴」,
             # 而不標的話畫面上只有鳴的那一邊被標成分歧,看起來像它自己跟
             # 自己不一致。
             split = not state.is_unanimous and (engine.action is not None or engine.declined)
             if split:
-                text += "   ⚠ 分歧"
+                text += tr("   ⚠ 分歧")
             # 分歧那幾手才是「兩份權重差在哪」的實際內容,顏色讓它掃得出來
             # —— 與 Overlay 的同一個標記用同一個色。
             value.setStyleSheet(f"color: {ACCENT};" if split else "")

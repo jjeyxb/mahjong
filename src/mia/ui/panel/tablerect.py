@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 from mia.calibration.table import Calibration
 from mia.capture.base import Frame
 from mia.config.models import RoiConfig
+from mia.i18n import tr
 from mia.mjai.tiles import ms_to_mjai
 from mia.ui.panel.picker import DragPicker
 from mia.ui.style import CAPTION, MUTED
@@ -77,7 +78,12 @@ _ASPECT_HINT = 0.03
 #: 四家的中文稱呼。用字典而不是跟著 :data:`~mia.vision.tiles.river.SEATS`
 #: 的順序排一個 tuple —— 順序一旦改掉,tuple 會安靜地對應錯,而症狀是
 #: 訊息說「對家」但其實是上家。
-SEAT_NAMES = {"own": "自己", "shimocha": "下家", "toimen": "對家", "kamicha": "上家"}
+SEAT_NAMES = {
+    "own": tr("自己"),
+    "shimocha": tr("下家"),
+    "toimen": tr("對家"),
+    "kamicha": tr("上家"),
+}
 
 #: 牌河至少要有這麼多張才拿來評分。
 #:
@@ -146,7 +152,7 @@ class TableRectDialog(QDialog):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("框選整個遊戲畫面")
+        self.setWindowTitle(tr("框選整個遊戲畫面"))
         self._image = frame.image
         self._roi = roi
         self._templates: TemplateSet | None = None
@@ -160,10 +166,10 @@ class TableRectDialog(QDialog):
         # **QLabel 不吃 markdown。** 寫 `**粗體**` 的話畫面上就是兩個星號
         # —— 使用者回報過。要粗體只能用 rich text,而那就得自己寫 <br>。
         hint = QLabel(
-            "框出<b>整個遊戲畫面</b> —— 藍色牌桌連同左右兩側的 UI,"
+            tr("框出<b>整個遊戲畫面</b> —— 藍色牌桌連同左右兩側的 UI,"
             "<b>不要</b>含瀏覽器的分頁列與網址列。<br>"
             "拖完會把從這個框算出來的手牌範圍與四家牌河畫回畫面上,"
-            "線沒落在牌上就是框歪了。",
+            "線沒落在牌上就是框歪了。"),
             self,
         )
         hint.setTextFormat(Qt.TextFormat.RichText)
@@ -174,7 +180,7 @@ class TableRectDialog(QDialog):
         self._picker.on_release = self._check
         layout.addWidget(self._picker, alignment=Qt.AlignmentFlag.AlignHCenter)
 
-        self._message = QLabel("還沒框 —— 在上面的畫面裡拖一個框", self)
+        self._message = QLabel(tr("還沒框 —— 在上面的畫面裡拖一個框"), self)
         self._message.setStyleSheet(MUTED)
         # 判斷結果有兩行,而 QLabel 預設不換行 —— 長的那行會把對話框撐寬,
         # 撐過螢幕就看不到了。使用者回報過「0.97 看得到,牌河那行沒看到」,
@@ -202,8 +208,8 @@ class TableRectDialog(QDialog):
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self
         )
         for standard, text in (
-            (QDialogButtonBox.StandardButton.Ok, "確定"),
-            (QDialogButtonBox.StandardButton.Cancel, "取消"),
+            (QDialogButtonBox.StandardButton.Ok, tr("確定")),
+            (QDialogButtonBox.StandardButton.Cancel, tr("取消")),
         ):
             button = self._buttons.button(standard)
             if button is not None:
@@ -234,7 +240,7 @@ class TableRectDialog(QDialog):
 
         box = self._picker.box
         if box is None:
-            self._message.setText("還沒框 —— 在上面的畫面裡拖一個框")
+            self._message.setText(tr("還沒框 —— 在上面的畫面裡拖一個框"))
             self._picker.update()
             return
 
@@ -243,7 +249,7 @@ class TableRectDialog(QDialog):
 
         # 微調要二十幾秒,而那段時間視窗是凍住的。先把話說出來並讓 Qt 把它畫上去,
         # 不然使用者看到的是一個按了沒反應的程式 —— 而他剛拖完框,正等著回應。
-        self._message.setText("正在微調框的位置(約二十五秒)…")
+        self._message.setText(tr("正在微調框的位置(約二十五秒)…"))
         QApplication.processEvents()
         if self._templates is None:
             self._templates = TemplateSet.load()
@@ -259,8 +265,8 @@ class TableRectDialog(QDialog):
         hand_roi = _hand_roi(self._roi, table, Size(width, height))
         if hand_roi is None:
             self._message.setText(
-                "設定檔裡沒有 own_hand 這個 ROI —— 框還是存得下去,"
-                "但這裡沒辦法當場驗給你看(見 config/default.yaml)"
+                tr("設定檔裡沒有 own_hand 這個 ROI —— 框還是存得下去,"
+                "但這裡沒辦法當場驗給你看(見 config/default.yaml)")
             )
             self._picker.update()
             return
@@ -272,8 +278,12 @@ class TableRectDialog(QDialog):
         if hand is None or not hand.is_plausible:
             found = 0 if hand is None else len(hand)
             self._message.setText(
-                f"算出來的手牌範圍裡讀到 {found} 張,不是合法手牌 —— "
-                f"框歪了的話重拖一次;手上有副露的話先打到沒有再框。{aspect_note}"
+                tr(
+                    "算出來的手牌範圍裡讀到 {found} 張,不是合法手牌 —— 框歪了的話重拖一次;手上有"
+                    "副露的話先打到沒有再框。{aspect_note}",
+                    found=found,
+                    aspect_note=aspect_note,
+                )
             )
             self._picker.update()
             return
@@ -281,7 +291,7 @@ class TableRectDialog(QDialog):
         try:
             concealed, drawn = classify_hand(crop, hand, self._templates, headroom=0)
         except ValueError as exc:
-            self._message.setText(f"牌太小認不出來:{exc}")
+            self._message.setText(tr("牌太小認不出來:{exc}", exc=exc))
             self._picker.update()
             return
 
@@ -292,9 +302,9 @@ class TableRectDialog(QDialog):
         # —— 實測白板畫成了「5z」三個字。
         self._show_tiles([ms_to_mjai(m.label) for m in matches])
         verdict = (
-            f"認出 {len(concealed)} 張暗手牌"
-            + (f" + 摸的 {ms_to_mjai(drawn.label)}" if drawn else "")
-            + f",平均把握 {score:.2f}。{_nudge_note(nudged)}"
+            tr("認出 {len} 張暗手牌", len=len(concealed))
+            + (tr(" + 摸的 {ms_to_mjai}", ms_to_mjai=ms_to_mjai(drawn.label)) if drawn else "")
+            + tr(",平均把握 {score:.2f}。{nudge_note}", score=score, nudge_note=_nudge_note(nudged))
             + f"\n{self._river_note(table)}"
             + aspect_note
         )
@@ -345,20 +355,27 @@ class TableRectDialog(QDialog):
             # 立繪動畫蓋住了牌河,角色的皮膚色「亮、不飽和」,跟牌面的判斷條件
             # 一模一樣,於是動畫被讀成一排牌,真正的牌反而被蓋掉。
             # 叫人家重拖是錯的建議:等動畫播完再框就好。
-            return (
-                f"{'、'.join(holes)}的牌河中間有洞(讀到 {read} 張)—— "
-                f"畫面上有動畫(立直/和了的立繪)蓋住牌河的話,等它播完再框一次。"
-                f"沒有動畫的話才是框歪了。"
+            return tr(
+                "{join}的牌河中間有洞(讀到 {read} 張)—— 畫面上有動畫(立直/和了的立繪)蓋住牌河的話"
+                ",等它播完再框一次。沒有動畫的話才是框歪了。",
+                join="、".join(holes),
+                read=read,
             )
         if total < _MIN_RIVER_TILES:
-            return f"牌河現在只有 {read} 張,太空了看不準 —— 這一局打久一點再框會比較有把握。"
+            return tr(
+                "牌河現在只有 {read} 張,太空了看不準 —— 這一局打久一點再框會比較有把握。", read=read
+            )
         ratio = confident / total
         if ratio < _MIN_RIVER_CONFIDENT:
-            return (
-                f"⚠ 四家牌河讀到 {read} 張,但只有 {ratio:.0%} 有把握"
-                f"(正常是八成以上)—— 框歪了,重拖一次。"
+            return tr(
+                "⚠ 四家牌河讀到 {read} 張,但只有 {ratio:.0%} 有把握(正常是八成以上)—— 框歪了,重拖"
+                "一次。",
+                read=read,
+                ratio=ratio,
             )
-        return f"四家牌河讀到 {read} 張,{ratio:.0%} 有把握 —— 可以按「確定」。"
+        return tr(
+            "四家牌河讀到 {read} 張,{ratio:.0%} 有把握 —— 可以按「確定」。", read=read, ratio=ratio
+        )
 
     def _show_tiles(self, labels: list[str] | tuple[str, ...]) -> None:
         for label, tile in zip(self._tiles, labels, strict=False):
@@ -431,10 +448,10 @@ def _nudge_note(nudged: tuple[int, int, int, int]) -> str:
         return ""
     parts = []
     if dx or dy:
-        parts.append(f"位置 ({dx:+d}, {dy:+d})")
+        parts.append(tr("位置 ({dx:+d}, {dy:+d})", dx=dx, dy=dy))
     if dw or dh:
-        parts.append(f"大小 ({dw:+d}, {dh:+d})")
-    return "微調了 " + "、".join(parts) + " px。"
+        parts.append(tr("大小 ({dw:+d}, {dh:+d})", dw=dw, dh=dh))
+    return tr("微調了 ") + "、".join(parts) + " px。"
 
 
 def _coverage(image: np.ndarray, table: Rect, wanted: dict[str, list[int]]) -> float:
@@ -575,9 +592,11 @@ def _aspect_note(table: Rect) -> str:
     deviation = abs(table.aspect - _EXPECTED_ASPECT) / _EXPECTED_ASPECT
     if deviation <= _ASPECT_HINT:
         return ""
-    return (
-        f"\n⚠ 長寬比 {table.aspect:.3f},離 16:9 差 {deviation:.0%} ——"
-        "最常見的原因是把瀏覽器工具列也框進去了。"
+    return tr(
+        "\n⚠ 長寬比 {aspect:.3f},離 16:9 差 {deviation:.0%} ——最常見的原因是把瀏覽器工具列也框進"
+        "去了。",
+        aspect=table.aspect,
+        deviation=deviation,
     )
 
 

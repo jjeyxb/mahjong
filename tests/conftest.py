@@ -8,6 +8,8 @@ import os
 # 建 QApplication 時讀這個變數,之後改就沒用了。設在 conftest 是因為它必然
 # 比測試模組早載入。
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# 介面語言固定繁體中文:測試比對的是原文,不能跟著這台機器的介面設定變。見 mia.i18n。
+os.environ["MIA_LANGUAGE"] = "zh-TW"
 
 import numpy as np
 import pytest

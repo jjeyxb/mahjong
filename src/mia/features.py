@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import ClassVar
 
+from mia.i18n import tr
+
 __all__ = [
     "ADVICE",
     "DANGER",
@@ -38,7 +40,7 @@ ADVICE = "advice"
 DANGER = "danger"
 
 #: 給人看的名字。狀態列與開關的標籤都取這裡,兩處不會寫得不一樣。
-NAMES = {VISION: "畫面辨識", ADVICE: "AI 建議", DANGER: "放銃分析"}
+NAMES = {VISION: tr("畫面辨識"), ADVICE: tr("AI 建議"), DANGER: tr("放銃分析")}
 
 
 class DangerSourceChoice:
@@ -93,9 +95,9 @@ class RecognitionChoice:
     """Selected screen-recognition backend; packet sources are independent."""
 
     NAMES: ClassVar[dict[str, str]] = {
-        "template": "樣板比對",
+        "template": tr("樣板比對"),
         "yolo": "YOLO",
-        "hybrid": "混合辨識",
+        "hybrid": tr("混合辨識"),
     }
 
     def __init__(self, value: str = "template") -> None:

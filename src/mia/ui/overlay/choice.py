@@ -26,6 +26,7 @@ from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPainterPath, QPaintEve
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from mia.hybrid.merge import TileChoice
+from mia.i18n import tr
 from mia.ui.spaces import follow_into_fullscreen
 from mia.ui.style import ACCENT
 from mia.ui.widgets.danger import seat_name
@@ -95,7 +96,13 @@ class _Row(QWidget):
 
     def show_choice(self, choice: TileChoice) -> None:
         self._choice = choice
-        self._question.setText(f"{seat_name(0, choice.actor)}第 {choice.nth + 1} 張是?")
+        self._question.setText(
+            tr(
+                "{seat_name}第 {value} 張是?",
+                seat_name=seat_name(0, choice.actor),
+                value=choice.nth + 1,
+            )
+        )
         for tile, pai in zip(self._tiles, (choice.template, choice.yolo), strict=True):
             tile.set_tile(pai)
             tile.mark(pai == choice.chosen)

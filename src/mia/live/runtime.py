@@ -40,6 +40,7 @@ from mia.engine.base import EngineError
 from mia.engine.styles import StyleChoice
 from mia.features import NAMES, AdviceSourceChoice, DangerSourceChoice, RecognitionChoice
 from mia.hybrid.merge import TileChoice
+from mia.i18n import translate
 from mia.live.bus import (
     Advices,
     CvHand,
@@ -103,13 +104,16 @@ class Feature:
     def enabled(self) -> bool:
         return self.worker is not None
 
-    def enable(self) -> None:
+    def enable(self, *, before_start: Callable[[Worker], bool] | None = None) -> bool:
         if self.worker is not None:
-            return
+            return True
         worker = self._factory()
+        if before_start is not None and not before_start(worker):
+            return False
         self.worker = worker
         worker.start()
         logger.info("功能已開啟:{}", self.name)
+        return True
 
     def disable(self, *, timeout: float = 3.0) -> None:
         worker = self.worker
@@ -190,6 +194,7 @@ class LiveRuntime:
         self._event_log = event_log
         self._recognition = recognition
         self._running = False
+        self._screen_permission_check: Callable[[], bool] | None = None
         #: 最近一次「功能起不來」的理由。見 :meth:`_enable`。
         self._failure: str | None = None
 
@@ -505,13 +510,29 @@ class LiveRuntime:
         :meth:`_sync_notices` 每一輪都會整批換掉狀態列,直接塞的話下一次
         pump 就被洗掉,使用者只看到它閃一下。
         """
+        def permitted(worker: Worker) -> bool:
+            needs_screen = feature.key == features.VISION or (
+                getattr(worker, "SOURCE", None) == _SCREEN_SOURCE
+            )
+            return (
+                not needs_screen
+                or self._screen_permission_check is None
+                or self._screen_permission_check()
+            )
+
         try:
-            feature.enable()
+            if not feature.enable(before_start=permitted):
+                self._failure = "缺少螢幕錄製權限，請在系統設定授權後完整退出並重新開啟 MIA。"
+                return
         except EngineError as exc:
             self._failure = f"{feature.name}:起不來 — {exc}"
             logger.error(self._failure)
         else:
             self._failure = None
+
+    def set_screen_capture_permission_check(self, check: Callable[[], bool]) -> None:
+        """UI installs a synchronous authorization check, called before workers start."""
+        self._screen_permission_check = check
 
     def stop(self, *, timeout: float = 3.0) -> None:
         """停掉所有東西。可重複呼叫。
@@ -714,12 +735,13 @@ class LiveRuntime:
         parts: list[str] = []
         # 起不來的那個排最前面 —— 它沒有 worker,所以下面那個迴圈看不到它,
         # 而「開關明明是開的卻什麼都沒發生」是最需要解釋的一種狀態。
+        # 各執行緒的訊息是組好的中文句子,在這裡依介面語言翻一次(見 mia.i18n.translate)。
         if self._failure is not None:
-            parts.append(self._failure)
+            parts.append(translate(self._failure))
         for source in self._sources():
             message = source.read()
             if message:
-                parts.append(f"{source.name}:{message}")
+                parts.append(f"{translate(source.name)}:{translate(message)}")
         notices = tuple(parts)
         if notices != self._viewmodel.state.notices:
             self._viewmodel.set_notices(notices)

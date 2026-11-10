@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from mia.i18n import tr
 from mia.mjai.tiles import ms_to_mjai, sort_key, tile_name
 from mia.ui.style import CAPTION
 from mia.ui.viewmodel import ViewState, shanten_text
@@ -40,8 +41,8 @@ __all__ = ["AnalysisTab"]
 MAX_UKEIRE = 10
 
 #: 進張那一列的標題。兩個版本,依 ``ViewState.seen`` 在不在切換 —— 見模組說明。
-_UKEIRE_EXACT = "進張"
-_UKEIRE_ESTIMATE = "進張(估計值,未扣牌河與副露)"
+_UKEIRE_EXACT = tr("進張")
+_UKEIRE_ESTIMATE = tr("進張(估計值,未扣牌河與副露)")
 MAX_DISCARDS = 5
 
 
@@ -77,7 +78,7 @@ class AnalysisTab(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
-        self._shanten = QLabel("等待手牌…", self)
+        self._shanten = QLabel(tr("等待手牌…"), self)
         self._shanten.setStyleSheet("font-size: 20px; font-weight: 600;")
         layout.addWidget(self._shanten)
 
@@ -88,7 +89,7 @@ class AnalysisTab(QWidget):
         # 分隔線要**留住參照**,才能跟著它底下那一區一起隱藏。寫死加進版面
         # 的話,功能關著時會剩下三條橫線橫在一片空白上,看起來像東西沒載出來。
         self._hand_rule = _rule(self)
-        self._hand_caption = _caption("手牌", self)
+        self._hand_caption = _caption(tr("手牌"), self)
         layout.addWidget(self._hand_rule)
         layout.addWidget(self._hand_caption)
         self._hand = HandStrip(icons, height=44, parent=self)
@@ -107,7 +108,7 @@ class AnalysisTab(QWidget):
 
         self._discard_rule = _rule(self)
         layout.addWidget(self._discard_rule)
-        self._discard_caption = _caption("打牌選項(只看聽牌速度)", self)
+        self._discard_caption = _caption(tr("打牌選項(只看聽牌速度)"), self)
         layout.addWidget(self._discard_caption)
         self._discards = QWidget(self)
         self._discards_layout = QVBoxLayout(self._discards)
@@ -135,13 +136,13 @@ class AnalysisTab(QWidget):
     def _update_headline(self, state: ViewState, *, enabled: bool = True) -> None:
         if not enabled:
             # 「等待手牌…」在功能關著的時候會讓人一直等下去
-            self._shanten.setText("未開啟")
-            self._source.setText("用右上角的開關打開")
+            self._shanten.setText(tr("未開啟"))
+            self._source.setText(tr("用右上角的開關打開"))
             return
 
         analysis = state.analysis
         if analysis is None:
-            self._shanten.setText("手牌讀不出來" if state.hand else "等待手牌…")
+            self._shanten.setText(tr("手牌讀不出來") if state.hand else tr("等待手牌…"))
             self._source.setText("")
             return
 
@@ -149,9 +150,9 @@ class AnalysisTab(QWidget):
 
         parts = [_SOURCE_NAMES.get(state.hand_source, state.hand_source)]
         if analysis.melds:
-            parts.append(f"副露 {analysis.melds} 組")
+            parts.append(tr("副露 {melds} 組", melds=analysis.melds))
         if state.hand_conflict:
-            parts.append("⚠ CV 與封包不一致")
+            parts.append(tr("⚠ CV 與封包不一致"))
         self._source.setText("   ".join(p for p in parts if p))
 
     def _update_ukeire(self, state: ViewState) -> None:
@@ -168,7 +169,7 @@ class AnalysisTab(QWidget):
         self._ukeire.set_tiles(tuple(_to_mjai(u.tile) for u in ukeire))
         total = analysis.total_ukeire if analysis else 0
         detail = "  ".join(f"{tile_name(u.tile)}×{u.count}" for u in ukeire)
-        self._ukeire_text.setText(f"共 {total} 枚　{detail}")
+        self._ukeire_text.setText(tr("共 {total} 枚　{detail}", total=total, detail=detail))
 
     def _update_discards(self, state: ViewState) -> None:
         options = state.discards[:MAX_DISCARDS]
@@ -183,7 +184,11 @@ class AnalysisTab(QWidget):
         for index, (row, option) in enumerate(zip(self._discard_rows, options, strict=False)):
             row.update_from(
                 _to_mjai(option.tile),
-                f"{shanten_text(option.shanten)}　進張 {option.total_ukeire} 枚",
+                tr(
+                    "{shanten_text}　進張 {total_ukeire} 枚",
+                    shanten_text=shanten_text(option.shanten),
+                    total_ukeire=option.total_ukeire,
+                ),
                 best=index == 0,
             )
             row.setVisible(True)
@@ -191,7 +196,11 @@ class AnalysisTab(QWidget):
             row.setVisible(False)
 
 
-_SOURCE_NAMES = {"cv": "來源:畫面辨識", "packet": "來源:封包", "both": "來源:畫面 + 封包"}
+_SOURCE_NAMES = {
+    "cv": tr("來源:畫面辨識"),
+    "packet": tr("來源:封包"),
+    "both": tr("來源:畫面 + 封包"),
+}
 
 
 def _to_mjai(tile: str) -> str:

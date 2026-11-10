@@ -17,6 +17,9 @@ PySide6>=6.11               # abi3 wheel,支援 3.14
 pydantic>=2.13
 PyYAML>=6.0.3
 loguru>=0.7.3
+cryptography>=46.0         # 發布更新的 Ed25519 簽章驗證
+packaging>=25.0            # 發布版本排序，不使用字串比較
+certifi>=2025.1            # 包內 HTTPS 憑證，不依賴建置機的 Homebrew 路徑
 
 # --- 麻將規則 ---
 # 向聽數 / 點數計算。同時用於 tracker 的合法性校驗與規則式 baseline engine。

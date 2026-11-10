@@ -57,7 +57,8 @@ def setup_logging(
         return
 
     logger.remove()
-    logger.add(sys.stderr, level=level.upper(), format=_CONSOLE_FORMAT, colorize=True)
+    if sys.stderr is not None:  # Windows GUI distributions have no console streams.
+        logger.add(sys.stderr, level=level.upper(), format=_CONSOLE_FORMAT, colorize=True)
 
     if log_dir is not None:
         log_dir.mkdir(parents=True, exist_ok=True)

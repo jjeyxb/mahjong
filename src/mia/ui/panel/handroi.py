@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from mia.capture.base import Frame
+from mia.i18n import tr
 from mia.mjai.tiles import ms_to_mjai
 from mia.ui.panel.picker import DragPicker
 from mia.ui.style import CAPTION, MUTED
@@ -65,7 +66,7 @@ class HandRoiDialog(QDialog):
         self, frame: Frame, *, skin: str = DEFAULT_SKIN, parent: QWidget | None = None
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("框選手牌範圍")
+        self.setWindowTitle(tr("框選手牌範圍"))
         self._image = frame.image
         self._templates: TemplateSet | None = None
         #: 還原並驗過的 ROI,正規化成影像的比例。``None`` 代表還沒有結果。
@@ -76,8 +77,8 @@ class HandRoiDialog(QDialog):
         layout.setSpacing(10)
 
         hint = QLabel(
-            "在自己的手牌上拖一個框,大致框住就好 —— 程式會自己對齊到牌上。\n"
-            "框選時手牌要是完整的暗手牌(不要有副露),拖完下面會當場認一次給你看。",
+            tr("在自己的手牌上拖一個框,大致框住就好 —— 程式會自己對齊到牌上。\n"
+            "框選時手牌要是完整的暗手牌(不要有副露),拖完下面會當場認一次給你看。"),
             self,
         )
         hint.setStyleSheet(CAPTION)
@@ -87,7 +88,7 @@ class HandRoiDialog(QDialog):
         self._picker.on_release = self._recognise
         layout.addWidget(self._picker, alignment=Qt.AlignmentFlag.AlignHCenter)
 
-        self._message = QLabel("還沒框 —— 在上面的畫面裡拖一個框", self)
+        self._message = QLabel(tr("還沒框 —— 在上面的畫面裡拖一個框"), self)
         self._message.setStyleSheet(MUTED)
         # 判斷結果有兩行,而 QLabel 預設不換行 —— 長的那行會把對話框撐寬,
         # 撐過螢幕就看不到了。使用者回報過「0.97 看得到,牌河那行沒看到」,
@@ -115,8 +116,8 @@ class HandRoiDialog(QDialog):
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self
         )
         for standard, text in (
-            (QDialogButtonBox.StandardButton.Ok, "確定"),
-            (QDialogButtonBox.StandardButton.Cancel, "取消"),
+            (QDialogButtonBox.StandardButton.Ok, tr("確定")),
+            (QDialogButtonBox.StandardButton.Cancel, tr("取消")),
         ):
             button = self._buttons.button(standard)
             if button is not None:
@@ -147,14 +148,14 @@ class HandRoiDialog(QDialog):
 
         box = self._picker.box
         if box is None:
-            self._message.setText("還沒框 —— 在上面的畫面裡拖一個框")
+            self._message.setText(tr("還沒框 —— 在上面的畫面裡拖一個框"))
             self._picker.update()
             return
 
         crop = self._image[box.y() : box.y() + box.height(), box.x() : box.x() + box.width()]
         roi = find_hand_roi(crop) if crop.size else None
         if roi is None:
-            self._message.setText("框裡看不出一排牌 —— 框大一點,把整排手牌包進去")
+            self._message.setText(tr("框裡看不出一排牌 —— 框大一點,把整排手牌包進去"))
             self._picker.update()
             return
 
@@ -164,8 +165,11 @@ class HandRoiDialog(QDialog):
         hand = read_hand(tall)
         if not hand.is_plausible:
             self._message.setText(
-                f"對齊到的範圍裡讀到 {len(hand)} 張,不是合法手牌 —— "
-                "手上有副露的話先打到沒有再框,或是框歪了,重拖一次"
+                tr(
+                    "對齊到的範圍裡讀到 {len} 張,不是合法手牌 —— 手上有副露的話先打到沒有再框,或"
+                    "是框歪了,重拖一次",
+                    len=len(hand),
+                )
             )
             self._picker.update()
             return
@@ -175,7 +179,7 @@ class HandRoiDialog(QDialog):
         try:
             concealed, drawn = classify_hand(tall, hand, self._templates, headroom=0)
         except ValueError as exc:
-            self._message.setText(f"牌太小認不出來:{exc}")
+            self._message.setText(tr("牌太小認不出來:{exc}", exc=exc))
             self._picker.update()
             return
 
@@ -185,9 +189,9 @@ class HandRoiDialog(QDialog):
         # 兩種剛好一樣,所以漏掉這一步只有字牌畫不出來 —— 白板會變成「5z」。
         self._show_tiles([ms_to_mjai(m.label) for m in matches])
         self._message.setText(
-            f"認出 {len(concealed)} 張暗手牌"
-            + (f" + 摸的 {ms_to_mjai(drawn.label)}" if drawn else "")
-            + f",平均把握 {score:.2f} —— 對的話按「確定」"
+            tr("認出 {len} 張暗手牌", len=len(concealed))
+            + (tr(" + 摸的 {ms_to_mjai}", ms_to_mjai=ms_to_mjai(drawn.label)) if drawn else "")
+            + tr(",平均把握 {score:.2f} —— 對的話按「確定」", score=score)
         )
         height, width = self._image.shape[:2]
         self.result_rect = NormRect(x / width, y / height, roi.width / width, roi.height / height)

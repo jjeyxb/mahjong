@@ -58,8 +58,13 @@ Apache License 2.0 全文:https://www.apache.org/licenses/LICENSE-2.0
 授權:GNU Affero General Public License v3.0 (AGPL-3.0)
 使用方式:**以獨立子程序執行,透過 MJAI 的 stdio 協定通訊。**
 
-本專案不連結、不匯入、不包含任何 Mortal 或 libriichi 的原始碼。
-兩者以明確定義的行程間通訊介面互動,詳見 README 的「三進程模型」一節。
+git repo 不包含任何 Mortal 或 libriichi 的原始碼。兩者以明確定義的行程間通訊介面
+互動,詳見 README 的「三進程模型」一節。
+
+**安裝包(GitHub Releases 的發布版)例外:** 為了讓使用者不必自己裝 Python 與 Rust,
+Mortal 推論子程序隨附 Mortal 的 `engine.py`、`model.py` 與預先編譯的 libriichi。
+這些檔案未經修改,依 AGPL-3.0 散布,對應原始碼見上游
+https://github.com/Equim-chan/Mortal 。
 子程序化的成因是技術限制(libriichi 不在 PyPI、mjai 只有 cp312 wheel,
 兩者都裝不進主程式的 Python 3.14 環境),不是為了規避授權。
 
@@ -76,6 +81,7 @@ https://huggingface.co/jjeyxb/mia-mortal-style ,一併以 AGPL-3.0 標示。
 該處的 mortal_298k.pth 是 https://huggingface.co/VoidShine/mortal-298k
 的轉載,非本專案產出,放置目的僅為一個連結取齊所有權重;
 要取得原始檔請以該上游為準。
+安裝包隨附 mortal_298k.pth 與四份風格權重,來源同上。
 
 
 3. 雀魂協定定義 liqi.json
@@ -100,3 +106,22 @@ https://huggingface.co/jjeyxb/mia-mortal-style ,一併以 AGPL-3.0 標示。
 * mitmproxy (MIT) —— MITM 攔截後端,用於錄製 Steam 桌面版的流量。一般相依套件。
 
 兩者皆僅用於離線產生標註資料與量化辨識準確率,不參與線上決策。
+
+
+6. 安裝包隨附的第三方元件
+--------------------------
+GitHub Releases 的安裝包把執行環境一起打包,使用者不必另外安裝。除了上面列的,
+還包含下列元件,各依其授權散布:
+
+* YOLO 辨識(`engines/yolo/agent/`)與其四份權重 —— 隊友開發,經作者同意隨安裝包散布。
+* Ultralytics (AGPL-3.0) —— YOLO 推論。
+* PyTorch、torchvision (BSD-3-Clause) —— Mortal 與 YOLO 的推論。
+* Qt for Python / PySide6 (LGPL-3.0) —— 介面。以動態函式庫形式附在安裝目錄裡,
+  可自行替換。
+* OpenCV (Apache-2.0)、NumPy (BSD-3-Clause) —— 影像處理與數值計算。
+* Playwright (Apache-2.0) 與 Chromium (BSD-3-Clause 等) —— 網頁版的瀏覽器與封包擷取。
+  發布版用它取得對局封包,也就是第 5 節「不參與線上決策」的例外。
+* cryptography (Apache-2.0 / BSD-3-Clause) —— 驗證更新的發布簽章。
+
+發布版**不含** mitmproxy 與自動打牌工具,見 `packaging/README.md`。
+各元件的完整授權條文以各專案官方發布的為準。

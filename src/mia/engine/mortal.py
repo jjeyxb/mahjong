@@ -22,6 +22,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from mia.distribution.layout import LAYOUT
 from mia.engine.base import EngineError
 from mia.engine.subprocess_engine import SubprocessEngine, SubprocessSpec
 from mia.utils.paths import PROJECT_ROOT
@@ -79,6 +80,17 @@ def mortal_engine(
     weights_path = Path(weights).expanduser()
     if not weights_path.is_absolute():
         weights_path = base_root / weights_path
+
+    if LAYOUT.packaged and root is None:
+        worker = LAYOUT.worker("mortal")
+        _require(worker, "安裝包缺少 Mortal 推論程序")
+        _require(weights_path, "安裝包缺少 Mortal 模型")
+        return SubprocessEngine(SubprocessSpec(
+            name=name,
+            argv=[str(worker), "--seat", str(seat), "--weights", str(weights_path)],
+            env={"PYINSTALLER_RESET_ENVIRONMENT": "1"},
+            react_timeout=react_timeout,
+        ))
 
     python = base / _VENV_PYTHON
     if not python.exists():

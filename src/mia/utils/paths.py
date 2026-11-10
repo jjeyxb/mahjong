@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from mia.distribution.layout import LAYOUT
+
 __all__ = [
     "ASSETS_DIR",
     "CONFIG_DIR",
@@ -17,10 +19,10 @@ __all__ = [
     "PROJECT_ROOT",
 ]
 
-PROJECT_ROOT: Path = Path(__file__).resolve().parents[3]
+PROJECT_ROOT: Path = LAYOUT.resources
 
 CONFIG_DIR: Path = PROJECT_ROOT / "config"
 ASSETS_DIR: Path = PROJECT_ROOT / "assets"
-DATA_DIR: Path = PROJECT_ROOT / "data"
+DATA_DIR: Path = LAYOUT.data
 MODELS_DIR: Path = PROJECT_ROOT / "models"
-LOG_DIR: Path = PROJECT_ROOT / "logs"
+LOG_DIR: Path = LAYOUT.logs

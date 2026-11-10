@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSlider,
@@ -58,6 +59,7 @@ from PySide6.QtWidgets import (
 from mia import APP_ABBR, APP_TITLE, features, platforms
 from mia.calibration.canvas import PRESETS as CANVAS_PRESETS
 from mia.calibration.canvas import Canvas
+from mia.i18n import LANGUAGES, tr, translate
 from mia.ui.icon import app_icon
 from mia.ui.state import MIN_HUD_OPACITY
 from mia.ui.style import (
@@ -68,6 +70,7 @@ from mia.ui.style import (
 )
 from mia.ui.switchboard import (
     AdviceSourcePicker,
+    AppPreferences,
     CanvasPicker,
     DangerSourcePicker,
     GameLauncher,
@@ -108,7 +111,7 @@ __all__ = ["PanelWindow", "Switchboard", "present"]
 #:
 #: 寫成「不比較」而不是留白或「(無)」:這個選單控制的是**要不要多載一份
 #: 130MB 的權重**,而留白看起來像還沒載入完。
-NO_COMPARE = "不比較"
+NO_COMPARE = tr("不比較")
 
 #: 放得下 14 張 44px 高的牌、加上左側功能列。
 MIN_WIDTH = 500
@@ -118,7 +121,7 @@ MIN_HEIGHT = 540
 NAV_WIDTH = 96
 
 #: 「開始遊戲」按鈕的字。兩處(按鈕與狀態列提示)都取這裡,不會寫得不一樣。
-START_GAME = "開始遊戲"
+START_GAME = tr("開始遊戲")
 
 
 def _scrollable(content: QWidget) -> QScrollArea:
@@ -131,7 +134,7 @@ def _scrollable(content: QWidget) -> QScrollArea:
 
 
 #: 功能頁頂端的兩個子頁。
-SUBPAGES = ("主頁", "設定")
+SUBPAGES = (tr("主頁"), tr("設定"))
 
 
 class _Segmented(QWidget):
@@ -261,18 +264,18 @@ class _Page(QWidget):
 #: 各開一頁會變成兩頁長得一模一樣。頁是依「看到什麼」分的,開關依「哪條路」。
 #:
 #: 「一般設定」不在這裡 —— 它不是功能頁(沒有開關,也沒有主頁)。
-PAGES = ("AI 建議", "向聽分析", "放銃分析")
+PAGES = (tr("AI 建議"), tr("向聽分析"), tr("放銃分析"))
 
 #: 功能列最後一項:不屬於任何一個功能的設定。叫「一般設定」而不是「設定」,
 #: 免得跟每一頁頂端那顆「設定」搞混。
-GENERAL = "一般設定"
+GENERAL = tr("一般設定")
 
 #: 設定頁 AI 建議「使用圖像辨識」的說明。
 _ADVICE_SOURCE_TIP = (
-    "不勾:讀封包,最準。\n"
+    tr("不勾:讀封包,最準。\n"
     "勾起來:只看畫面,不讀封包,但比較慢,偶爾會認錯。\n"
     "會重啟 AI 建議,並一併打開畫面辨識。\n"
-    "遊戲還是 MIA 開的瀏覽器,封包照樣會錄,只是建議不看。"
+    "遊戲還是 MIA 開的瀏覽器,封包照樣會錄,只是建議不看。")
 )
 
 
@@ -300,6 +303,7 @@ class PanelWindow(QMainWindow):
         event_log: Log 視窗。``None`` 時勾選框畫成停用。
         overlay: 要控制的 Overlay。設定頁上的四個勾選都作用在它身上;
             ``None`` 時那四個畫成停用。
+        preferences: 「語言與更新」那一區要接到誰。``None`` 時整區畫成停用。
 
     Note:
         :meth:`apply` 是唯一的資料入口。ViewModel 的通知可能來自別的執行緒,
@@ -325,6 +329,7 @@ class PanelWindow(QMainWindow):
         recognition: RecognitionPicker | None = None,
         event_log: EventLogWindow | None = None,
         overlay: OverlayWindow | None = None,
+        preferences: AppPreferences | None = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle(APP_TITLE)
@@ -349,6 +354,7 @@ class PanelWindow(QMainWindow):
         self._recognition = recognition
         self._event_log = event_log
         self._overlay = overlay
+        self._preferences = preferences
         self._switches: dict[str, ToggleSwitch] = {}
         self._skin = skin
         icons = TileIcons(skin)
@@ -357,7 +363,8 @@ class PanelWindow(QMainWindow):
         self._danger = AnalysisDangerTab(icons, self)
 
         self._nav = QListWidget(self)
-        self._nav.setFixedWidth(NAV_WIDTH)
+        self._nav_width = self._nav_width_for((*PAGES, GENERAL, START_GAME))
+        self._nav.setFixedWidth(self._nav_width)
         self._nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._nav.setFrameShape(QFrame.Shape.NoFrame)
         # 選中的那一項是一顆**圓角藥丸**,不是整條貫穿的色塊。色塊的兩端
@@ -478,7 +485,7 @@ class PanelWindow(QMainWindow):
         layout.addWidget(_wordmark(column))
         layout.addWidget(self._nav, 1)
         layout.addWidget(self._build_start_button(column))
-        column.setFixedWidth(NAV_WIDTH)
+        column.setFixedWidth(self._nav_width)
         return column
 
     def _build_start_button(self, parent: QWidget) -> QWidget:
@@ -512,13 +519,13 @@ class PanelWindow(QMainWindow):
         「只有這個不一樣」好解釋。
         """
         switch = ToggleSwitch(page)
-        switch.setToolTip(f"{features.NAMES[key]} —— 開啟後才會開始運作")
+        switch.setToolTip(tr("{value} —— 開啟後才會開始運作", value=features.NAMES[key]))
         if self._switchboard is None:
             # 錄影重播沒有可開關的東西:命令列已經決定了跑哪一條路。
             # 顯示為開啟(那條路真的在跑)但停用,免得使用者以為按了有效。
             switch.set_initial(True)
             switch.setEnabled(False)
-            switch.setToolTip("重播與示範模式由命令列決定,開關不適用")
+            switch.setToolTip(tr("重播與示範模式由命令列決定,開關不適用"))
         elif not self._switchboard.available(key):
             # 兩種原因:這條路沒有建起來(--no-vision / --no-packets),或者
             # 這一版沒有資料來源(Steam 版沒有封包)。做成可按的話使用者撥了
@@ -549,7 +556,7 @@ class PanelWindow(QMainWindow):
             why = platforms.why_unsupported(self._platform.platform(), key)
             if why:
                 return why
-        return f"{features.NAMES[key]} 已在啟動參數中停用"
+        return tr("{value} 已在啟動參數中停用", value=features.NAMES[key])
 
     def _build_advice_settings(self) -> None:
         """AI 建議的設定子頁:風格、比較對象、資料來源。
@@ -567,26 +574,26 @@ class PanelWindow(QMainWindow):
         self._style_picker = AlignedComboBox(page.settings)
         self._style_picker.setFixedWidth(COMBO_WIDTH)
         page.add_group(
-            "打法風格",
+            tr("打法風格"),
             _row(page.settings, self._style_picker),
-            info="換風格會重啟引擎、重載權重,中間約半秒沒有建議。",
+            info=tr("換風格會重啟引擎、重載權重,中間約半秒沒有建議。"),
         )
         self._compare_picker = AlignedComboBox(page.settings)
         self._compare_picker.setFixedWidth(COMBO_WIDTH)
         page.add_group(
-            "比較對象",
+            tr("比較對象"),
             _row(page.settings, self._compare_picker),
-            info="多載一份風格並排比較,推論成本與記憶體都是兩倍。",
+            info=tr("多載一份風格並排比較,推論成本與記憶體都是兩倍。"),
         )
         self._build_advice_source_settings(page)
         if self._style is None or not self._style.can_pick_style():
-            self._style_picker.addItem("(命令列指定)")
+            self._style_picker.addItem(tr("(命令列指定)"))
             self._style_picker.setEnabled(False)
             self._compare_picker.addItem(NO_COMPARE)
             self._compare_picker.setEnabled(False)
         else:
             for name in self._style.styles():
-                self._style_picker.addItem(name, name)
+                self._style_picker.addItem(translate(name), name)
             _select_data(self._style_picker, self._style.style())
             self._style_picker.currentIndexChanged.connect(self._on_style_picked)
             self._sync_compare_picker()
@@ -599,13 +606,13 @@ class PanelWindow(QMainWindow):
 
     def _build_advice_source_settings(self, page: _Page) -> None:
         """AI 建議要不要走圖像辨識。"""
-        self._advice_vision_only = QCheckBox("使用圖像辨識", page.settings)
+        self._advice_vision_only = QCheckBox(tr("使用圖像辨識"), page.settings)
         self._sync_advice_source()
         self._advice_vision_only.toggled.connect(self._on_advice_source)
         page.add_group(
-            "資料來源",
+            tr("資料來源"),
             self._advice_vision_only,
-            info="不勾是讀封包(最準)。Steam 版沒有封包,一律走圖像辨識。",
+            info=tr("不勾是讀封包(最準)。Steam 版沒有封包,一律走圖像辨識。"),
         )
 
     def _sync_advice_source(self) -> None:
@@ -624,9 +631,9 @@ class PanelWindow(QMainWindow):
         if can_pick:
             box.setToolTip(_ADVICE_SOURCE_TIP)
         elif on_screen:
-            box.setToolTip("Steam 版沒有封包,AI 建議只能靠圖像辨識")
+            box.setToolTip(tr("Steam 版沒有封包,AI 建議只能靠圖像辨識"))
         else:
-            box.setToolTip("這個模式只有一條路,沒有得選")
+            box.setToolTip(tr("這個模式只有一條路,沒有得選"))
 
     def _on_advice_source(self, on: bool) -> None:
         """換來源。走畫面時畫面辨識會一併打開,所以開關要跟著重畫。"""
@@ -646,24 +653,24 @@ class PanelWindow(QMainWindow):
         靠它最深的是牌河與寶牌,見 :meth:`_build_danger_settings`。
         """
         page = self._analysis_page
-        self._hand_roi_button = QPushButton("框選手牌範圍", page.settings)
+        self._hand_roi_button = QPushButton(tr("框選手牌範圍"), page.settings)
         self._hand_roi_button.clicked.connect(self._on_pick_hand_roi)
-        self._hand_roi_clear = QPushButton("改回自動", page.settings)
+        self._hand_roi_clear = QPushButton(tr("改回自動"), page.settings)
         self._hand_roi_clear.clicked.connect(self._on_clear_hand_roi)
         if self._hand_roi is None or not self._hand_roi.can_pick_hand_roi():
             for button in (self._hand_roi_button, self._hand_roi_clear):
                 button.setEnabled(False)
-                button.setToolTip("這個模式沒有畫面可以框(重播、示範、--no-vision)")
+                button.setToolTip(tr("這個模式沒有畫面可以框(重播、示範、--no-vision)"))
         else:
             self._hand_roi_button.setToolTip(
-                "在遊戲畫面上框出自己的手牌。Steam 版的畫布不是 16:9,\n"
-                "選單裡的尺寸沒有一個對得上,框一次最直接。"
+                tr("在遊戲畫面上框出自己的手牌。Steam 版的畫布不是 16:9,\n"
+                "選單裡的尺寸沒有一個對得上,框一次最直接。")
             )
-            self._hand_roi_clear.setToolTip("不用框的,回去用牌桌自動校正")
+            self._hand_roi_clear.setToolTip(tr("不用框的,回去用牌桌自動校正"))
         page.add_group(
-            "手牌範圍",
+            tr("手牌範圍"),
             _row(page.settings, self._hand_roi_button, self._hand_roi_clear),
-            info="手牌一直認錯、或 Steam 版畫布不是 16:9 時,直接框一次最穩。",
+            info=tr("手牌一直認錯、或 Steam 版畫布不是 16:9 時,直接框一次最穩。"),
         )
         self._sync_hand_roi_buttons()
 
@@ -682,29 +689,29 @@ class PanelWindow(QMainWindow):
 
         曾經放在放銃分析頁(靠它最深的是牌河),但使用者去那裡找不到它。
         """
-        self._table_rect_button = QPushButton("框選整個遊戲畫面", page)
+        self._table_rect_button = QPushButton(tr("框選整個遊戲畫面"), page)
         self._table_rect_button.clicked.connect(self._on_pick_table_rect)
-        self._table_rect_clear = QPushButton("改回自動", page)
+        self._table_rect_clear = QPushButton(tr("改回自動"), page)
         self._table_rect_clear.clicked.connect(self._on_clear_table_rect)
         if self._table_rect is None or not self._table_rect.can_pick_table_rect():
             for button in (self._table_rect_button, self._table_rect_clear):
                 button.setEnabled(False)
-                button.setToolTip("這個模式沒有畫面可以框(重播、示範、--no-vision)")
+                button.setToolTip(tr("這個模式沒有畫面可以框(重播、示範、--no-vision)"))
         else:
             self._table_rect_button.setToolTip(
-                "框出整個遊戲畫面 —— 藍色牌桌連同左右兩側的 UI。\n"
+                tr("框出整個遊戲畫面 —— 藍色牌桌連同左右兩側的 UI。\n"
                 "四家牌河與寶牌面板的位置都是相對它算的,所以純畫面的\n"
                 "放銃分析最吃這個框。\n"
                 "自動校正是從四邊剝除邊框,而它錯的時候很安靜 —— 實測鎖在\n"
-                "載入畫面上之後,整場的手牌辨識從 97% 掉到 26%,沒有任何錯誤訊息。"
+                "載入畫面上之後,整場的手牌辨識從 97% 掉到 26%,沒有任何錯誤訊息。")
             )
-            self._table_rect_clear.setToolTip("不用框的,回去讓程式自己剝邊框")
+            self._table_rect_clear.setToolTip(tr("不用框的,回去讓程式自己剝邊框"))
         layout.addWidget(
             _section(
-                "遊戲畫面範圍",
+                tr("遊戲畫面範圍"),
                 page,
-                info="四家牌河、寶牌與手牌的位置都相對這個框推導。\n"
-                "牌河或手牌一直讀不到時,框一次最直接。",
+                info=tr("四家牌河、寶牌與手牌的位置都相對這個框推導。\n"
+                "牌河或手牌一直讀不到時,框一次最直接。"),
             )
         )
         layout.addWidget(_row(page, self._table_rect_button, self._table_rect_clear))
@@ -717,7 +724,7 @@ class PanelWindow(QMainWindow):
             return
         framed = picker.hand_roi() is not None
         self._hand_roi_clear.setEnabled(framed)
-        self._hand_roi_button.setText("重新框選" if framed else "框選手牌範圍")
+        self._hand_roi_button.setText(tr("重新框選") if framed else tr("框選手牌範圍"))
 
     def _on_pick_hand_roi(self) -> None:
         """抓一張畫面,開框選對話框。
@@ -736,24 +743,24 @@ class PanelWindow(QMainWindow):
         try:
             frame = picker.grab_frame()
         except WindowNotFoundError:
-            self._notice.setText("找不到遊戲視窗 —— 雀魂開著嗎?版本選對了嗎?")
+            self._notice.setText(tr("找不到遊戲視窗 —— 雀魂開著嗎?版本選對了嗎?"))
             return
         except CaptureError as exc:
-            self._notice.setText(f"抓不到畫面:{exc}")
+            self._notice.setText(tr("抓不到畫面:{exc}", exc=exc))
             return
 
         dialog = HandRoiDialog(frame, skin=self._skin, parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted and dialog.result_rect is not None:
             picker.set_hand_roi(dialog.result_rect)
             self._sync_hand_roi_buttons()
-            self._notice.setText("手牌範圍已更新 —— 下一幀就會用新的框")
+            self._notice.setText(tr("手牌範圍已更新 —— 下一幀就會用新的框"))
 
     def _on_clear_hand_roi(self) -> None:
         if self._hand_roi is None:
             return
         self._hand_roi.set_hand_roi(None)
         self._sync_hand_roi_buttons()
-        self._notice.setText("手牌範圍改回自動校正")
+        self._notice.setText(tr("手牌範圍改回自動校正"))
 
     def _sync_table_rect_buttons(self) -> None:
         """「改回自動」只有在真的框過的時候才有意義。"""
@@ -762,7 +769,7 @@ class PanelWindow(QMainWindow):
             return
         framed = picker.table_rect() is not None
         self._table_rect_clear.setEnabled(framed)
-        self._table_rect_button.setText("重新框選" if framed else "框選整個遊戲畫面")
+        self._table_rect_button.setText(tr("重新框選") if framed else tr("框選整個遊戲畫面"))
 
     def _on_pick_table_rect(self) -> None:
         """抓一張畫面,開框選對話框。
@@ -781,24 +788,24 @@ class PanelWindow(QMainWindow):
         try:
             frame = picker.grab_frame()
         except WindowNotFoundError:
-            self._notice.setText("找不到遊戲視窗 —— 雀魂開著嗎?版本選對了嗎?")
+            self._notice.setText(tr("找不到遊戲視窗 —— 雀魂開著嗎?版本選對了嗎?"))
             return
         except CaptureError as exc:
-            self._notice.setText(f"抓不到畫面:{exc}")
+            self._notice.setText(tr("抓不到畫面:{exc}", exc=exc))
             return
 
         dialog = TableRectDialog(frame, roi=load_config().roi, skin=self._skin, parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted and dialog.result_rect is not None:
             picker.set_table_rect(dialog.result_rect)
             self._sync_table_rect_buttons()
-            self._notice.setText("遊戲畫面範圍已更新 —— 下一幀就會重新校正")
+            self._notice.setText(tr("遊戲畫面範圍已更新 —— 下一幀就會重新校正"))
 
     def _on_clear_table_rect(self) -> None:
         if self._table_rect is None:
             return
         self._table_rect.set_table_rect(None)
         self._sync_table_rect_buttons()
-        self._notice.setText("遊戲畫面範圍改回自動剝除邊框")
+        self._notice.setText(tr("遊戲畫面範圍改回自動剝除邊框"))
 
     def _build_canvas_settings(self, page: QWidget, layout: QVBoxLayout) -> None:
         """遊戲視窗尺寸。
@@ -832,16 +839,16 @@ class PanelWindow(QMainWindow):
         if self._canvas is None or not self._canvas.can_pick_canvas():
             picker.setEnabled(False)
             picker.setToolTip(
-                "這個模式下視窗尺寸不是 MIA 決定的(重播、--no-vision、或連到別人的瀏覽器)"
+                tr("這個模式下視窗尺寸不是 MIA 決定的(重播、--no-vision、或連到別人的瀏覽器)")
             )
         else:
             self._show_canvas(self._canvas.canvas())
             picker.setToolTip(
-                "這是「遊戲畫布」的大小,瀏覽器視窗會再高一點(多出工具列那一截)。\n"
+                tr("這是「遊戲畫布」的大小,瀏覽器視窗會再高一點(多出工具列那一截)。\n"
                 "選了之後瀏覽器立刻跟著調整,牌桌校正也直接用這個尺寸算,不再猜邊界\n"
                 "—— 猜錯過一次就是整手牌都認錯。\n"
                 "第一次啟動時程式會自己挑螢幕放得下的最大值,你動過之後就照你選的。\n"
-                "可以直接輸入,格式是 1440x810。"
+                "可以直接輸入,格式是 1440x810。")
             )
             picker.currentIndexChanged.connect(self._on_canvas_picked)
             # 打字要等**輸入結束**才套用,不能用 currentTextChanged ——
@@ -868,23 +875,23 @@ class PanelWindow(QMainWindow):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
 
-        layout.addWidget(_section("遊戲版本", page))
+        layout.addWidget(_section(tr("遊戲版本"), page))
         self._build_platform_settings(page, layout)
         layout.addWidget(_rule(page))
 
-        layout.addWidget(_section("遊戲視窗尺寸", page))
+        layout.addWidget(_section(tr("遊戲視窗尺寸"), page))
         self._build_canvas_settings(page, layout)
 
         layout.addWidget(_rule(page))
         self._build_table_rect_settings(page, layout)
 
         layout.addWidget(_rule(page))
-        layout.addWidget(_section("MIA 視窗", page))
-        self._on_top = QCheckBox("視窗置頂", page)
+        layout.addWidget(_section(tr("MIA 視窗"), page))
+        self._on_top = QCheckBox(tr("視窗置頂"), page)
         self._on_top.setChecked(bool(self.windowFlags() & Qt.WindowType.WindowStaysOnTopHint))
         self._on_top.setToolTip(
-            "關掉之後視窗會退到遊戲後面。macOS 上遊戲視窗被遮住仍然擷取得到,\n"
-            "所以擋住畫面不影響辨識。"
+            tr("關掉之後視窗會退到遊戲後面。macOS 上遊戲視窗被遮住仍然擷取得到,\n"
+            "所以擋住畫面不影響辨識。")
         )
         self._on_top.toggled.connect(self._on_always_on_top)
         layout.addWidget(self._on_top)
@@ -895,11 +902,88 @@ class PanelWindow(QMainWindow):
         self._build_opacity_settings(page, layout)
 
         layout.addWidget(_rule(page))
-        layout.addWidget(_section("事件流 Log", page))
+        layout.addWidget(_section(tr("事件流 Log"), page))
         self._build_log_settings(page, layout)
+
+        layout.addWidget(_rule(page))
+        layout.addWidget(_section(tr("語言與更新"), page))
+        self._build_preferences(page, layout)
 
         layout.addStretch(1)
         return page
+
+    def _nav_width_for(self, labels: tuple[str, ...]) -> int:
+        """功能列要多寬。中文四個全形字放得下 :data:`NAV_WIDTH`;英文的頁名長得多
+        (「Shanten analysis」),固定寬度會被截成「Shanten ...」,所以照字寬加大。"""
+        metrics = self.fontMetrics()
+        widest = max(metrics.horizontalAdvance(label) for label in labels)
+        # 左右各留藥丸的內距與外距,與中文版的比例相同(96 放四個約 14px 的字)。
+        return max(NAV_WIDTH, widest + 40)
+
+    def _build_preferences(self, page: QWidget, layout: QVBoxLayout) -> None:
+        """介面語言、目前版本、檢查更新。
+
+        語言**重新啟動才生效**(見 :mod:`mia.i18n`),所以選了之後在下面說一句,並給一顆
+        「重新啟動」:不給的話,使用者會以為選單壞了。選單裡每個語言用它自己的名字寫,
+        選錯語言看不懂的時候還找得回來。
+        """
+        prefs = self._preferences
+        picker = AlignedComboBox(page)
+        picker.setFixedWidth(COMBO_WIDTH)
+        for code, name in LANGUAGES.items():
+            picker.addItem(name, code)
+        self._language_picker = picker
+        self._language_note = QLabel("", page)
+        self._language_note.setStyleSheet(CAPTION)
+        self._language_note.setWordWrap(True)
+        self._language_note.hide()
+        self._restart_button = QPushButton(tr("重新啟動 MIA"), page)
+        self._version_label = QLabel("", page)
+        self._version_label.setStyleSheet(CAPTION)
+        self._update_button = QPushButton(tr("檢查更新…"), page)
+        if prefs is None:
+            for widget in (picker, self._update_button):
+                widget.setEnabled(False)
+            picker.setToolTip(tr("這個模式沒有可以儲存的設定"))
+        else:
+            self._chosen_language = prefs.language()
+            _select_data(picker, self._chosen_language)
+            picker.currentIndexChanged.connect(self._on_language_picked)
+            self._version_label.setText(tr("目前版本 {value}", value=prefs.version()))
+            self._update_button.clicked.connect(prefs.check_updates)
+            self._restart_button.clicked.connect(self._on_restart)
+        layout.addWidget(_row(page, _caption(tr("語言"), page), picker))
+        layout.addWidget(self._language_note)
+        # 整列一起藏:只藏按鈕的話,空的那一列仍佔著版面的間距。
+        self._restart_row = _row(page, self._restart_button)
+        self._restart_row.hide()
+        layout.addWidget(self._restart_row)
+        layout.addWidget(_row(page, self._update_button, self._version_label))
+
+    def _on_language_picked(self, index: int) -> None:
+        if self._preferences is None:
+            return
+        code = str(self._language_picker.itemData(index))
+        self._preferences.set_language(code)
+        changed = code != self._chosen_language
+        self._language_note.setText(tr("重新啟動 MIA 之後換成新的語言。") if changed else "")
+        self._language_note.setVisible(changed)
+        self._restart_row.setVisible(changed)
+
+    def _on_restart(self) -> None:
+        """重新啟動。遊戲或辨識還在跑的話先問:瀏覽器會跟著關,這一場就結束了。"""
+        prefs = self._preferences
+        if prefs is None:
+            return
+        if prefs.busy():
+            answer = QMessageBox.question(
+                self,
+                tr("重新啟動 MIA"),
+                tr("遊戲或辨識功能還在執行，重新啟動會一起關閉。繼續嗎？"),
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        prefs.restart()
 
     def _add_recognition_picker(self, page: _Page) -> None:
         """在一個功能頁的設定子頁放「畫面辨識方式」。
@@ -911,13 +995,13 @@ class PanelWindow(QMainWindow):
         """
         picker = AlignedComboBox(page.settings)
         picker.setFixedWidth(COMBO_WIDTH)
-        picker.addItem("樣板比對", "template")
+        picker.addItem(tr("樣板比對"), "template")
         picker.addItem("YOLO", "yolo")
-        picker.addItem("混合辨識（樣板＋YOLO）", "hybrid")
+        picker.addItem(tr("混合辨識（樣板＋YOLO）"), "hybrid")
         picker.setToolTip(
-            "用於畫面辨識、圖像 AI 建議與圖像放銃分析。\n"
+            tr("用於畫面辨識、圖像 AI 建議與圖像放銃分析。\n"
             "切換會重新建立畫面追蹤，建議在新一局開始前切換。\n"
-            "網頁版 AI 建議要走畫面,另外到「AI 建議 → 設定」勾「使用圖像辨識」。"
+            "網頁版 AI 建議要走畫面,另外到「AI 建議 → 設定」勾「使用圖像辨識」。")
         )
         if self._recognition is None or not self._recognition.can_pick_recognition():
             picker.setEnabled(False)
@@ -928,9 +1012,9 @@ class PanelWindow(QMainWindow):
             )
         self._recognition_pickers.append(picker)
         page.add_group(
-            "畫面辨識方式",
+            tr("畫面辨識方式"),
             _row(page.settings, picker),
-            info="三個功能共用這一個設定,改了這裡,另外兩頁跟著變。",
+            info=tr("三個功能共用這一個設定,改了這裡,另外兩頁跟著變。"),
         )
 
     def _on_recognition_picked(self, source: QComboBox, index: int) -> None:
@@ -971,13 +1055,13 @@ class PanelWindow(QMainWindow):
 
         if self._platform is None or not self._platform.can_pick_platform():
             picker.setEnabled(False)
-            picker.setToolTip("這個模式下版本不是現在決定的(重播、示範、--no-vision)")
+            picker.setToolTip(tr("這個模式下版本不是現在決定的(重播、示範、--no-vision)"))
         else:
             picker.select(self._platform.platform())
             picker.setToolTip(
-                "網頁版:MIA 自己開瀏覽器,資料來自封包。\n"
+                tr("網頁版:MIA 自己開瀏覽器,資料來自封包。\n"
                 "Steam 版:遊戲自己開,MIA 找到視窗,全部靠畫面辨識;\n"
-                "看不到的牌只能猜,AI 建議的準確度比網頁版低。"
+                "看不到的牌只能猜,AI 建議的準確度比網頁版低。")
             )
             picker.chosen.connect(self._on_platform_picked)
 
@@ -1014,7 +1098,7 @@ class PanelWindow(QMainWindow):
             usable = self._switchboard.available(key)
             switch.setEnabled(usable)
             switch.setToolTip(
-                f"{features.NAMES[key]} —— 開啟後才會開始運作"
+                tr("{value} —— 開啟後才會開始運作", value=features.NAMES[key])
                 if usable
                 else self._unavailable_reason(key)
             )
@@ -1034,25 +1118,25 @@ class PanelWindow(QMainWindow):
         留著它是為了**比較**:同一個局面兩條路的答案擺在一起,差別一眼就
         看得到 —— 寫論文與抓問題都用得上。
         """
-        self._danger_vision_only = QCheckBox("強制使用圖像辨識", page.settings)
+        self._danger_vision_only = QCheckBox(tr("強制使用圖像辨識"), page.settings)
         self._danger_vision_only.setToolTip(
-            "平常不必勾 —— 有封包就自動用封包(準),沒有才用圖像辨識。\n"
+            tr("平常不必勾 —— 有封包就自動用封包(準),沒有才用圖像辨識。\n"
             "Steam 版本來就只有圖像辨識那條。\n"
-            "勾起來會重啟放銃分析,因為走哪條路是建構時決定的。"
+            "勾起來會重啟放銃分析,因為走哪條路是建構時決定的。")
         )
         picker = self._danger_source
         if picker is None or not picker.can_pick_danger_source():
             self._danger_vision_only.setEnabled(False)
-            self._danger_vision_only.setToolTip("這個模式只有一條路,沒有得選")
+            self._danger_vision_only.setToolTip(tr("這個模式只有一條路,沒有得選"))
         else:
             # 先設初始值再接訊號 —— 反過來會把「上次記住的狀態」當成使用者
             # 剛剛的操作,而那會白白重啟一次放銃分析。
             self._danger_vision_only.setChecked(picker.danger_vision_only())
             self._danger_vision_only.toggled.connect(picker.set_danger_vision_only)
         page.add_group(
-            "資料來源",
+            tr("資料來源"),
             self._danger_vision_only,
-            info="平常不必勾:有封包就用封包,沒有才用畫面。勾了是給比較兩條路用的。",
+            info=tr("平常不必勾:有封包就用封包,沒有才用畫面。勾了是給比較兩條路用的。"),
         )
 
     def _build_overlay_settings(self, page: QWidget, layout: QVBoxLayout) -> None:
@@ -1071,16 +1155,16 @@ class PanelWindow(QMainWindow):
         畫法。混在一起會讓「開了但沒東西跑」變得難解釋。
         """
         overlay = self._overlay
-        self._overlay_shown = QCheckBox("在遊戲上顯示 Overlay", page)
-        self._overlay_expanded = QCheckBox("Overlay 顯示候選 Q 值", page)
+        self._overlay_shown = QCheckBox(tr("在遊戲上顯示 Overlay"), page)
+        self._overlay_expanded = QCheckBox(tr("Overlay 顯示候選 Q 值"), page)
         # 放銃分析**要不要跟著上 HUD 是分開問的**:那是一手 14 列,會把
         # Overlay 往下拉長一大段。想一直看著的人與只想要一行建議的人是
         # 兩種用法,而後者不該被迫接受前者的高度。
-        self._overlay_danger = QCheckBox("Overlay 顯示放銃危險度(會往下變長)", page)
-        self._overlay_danger.setToolTip("還要「放銃分析」那一頁的開關也打開才會有資料")
+        self._overlay_danger = QCheckBox(tr("Overlay 顯示放銃危險度(會往下變長)"), page)
+        self._overlay_danger.setToolTip(tr("還要「放銃分析」那一頁的開關也打開才會有資料"))
         self._overlay_shown.setToolTip(
-            "位置會記住,下次啟動回到同一個地方。\n"
-            "要鎖定位置(讓點擊穿到遊戲),按 Overlay 右上角的鎖。"
+            tr("位置會記住,下次啟動回到同一個地方。\n"
+            "要鎖定位置(讓點擊穿到遊戲),按 Overlay 右上角的鎖。")
         )
         boxes = (
             self._overlay_shown,
@@ -1091,7 +1175,7 @@ class PanelWindow(QMainWindow):
         if overlay is None:
             for box in boxes:
                 box.setEnabled(False)
-                box.setToolTip("這個模式沒有 Overlay")
+                box.setToolTip(tr("這個模式沒有 Overlay"))
                 layout.addWidget(box)
             return
 
@@ -1132,15 +1216,15 @@ class PanelWindow(QMainWindow):
 
         if not targets:
             slider.setEnabled(False)
-            slider.setToolTip("這個模式沒有懸浮視窗")
+            slider.setToolTip(tr("這個模式沒有懸浮視窗"))
         else:
             slider.setValue(round((1 - targets[0].opacity) * 100))
             slider.valueChanged.connect(self._on_opacity)
         self._show_opacity(slider.value())
 
-        caption = _caption("透明度", page)
+        caption = _caption(tr("透明度"), page)
         info = InfoDot(
-            "同時套用到所有懸浮視窗:Overlay 與事件流 Log。\n0% 是原本的樣子,往右越透明。", page
+            tr("同時套用到所有懸浮視窗:Overlay 與事件流 Log。\n0% 是原本的樣子,往右越透明。"), page
         )
         layout.addWidget(_row(page, caption, info, slider, self._opacity_value))
 
@@ -1160,15 +1244,15 @@ class PanelWindow(QMainWindow):
         見 :meth:`_build_overlay_settings`。
         """
         log = self._event_log
-        self._log_shown = QCheckBox("開啟 Log 視窗", page)
+        self._log_shown = QCheckBox(tr("開啟 Log 視窗"), page)
         self._log_shown.setToolTip(
-            "獨立的浮動視窗,顯示 AI 建議吃到的事件流:中文說明加 MJAI 格式。\n"
+            tr("獨立的浮動視窗,顯示 AI 建議吃到的事件流:中文說明加 MJAI 格式。\n"
             "要開著 AI 建議才有內容。位置與大小會記住。\n"
-            "要鎖定位置(讓點擊穿到遊戲),按 Log 視窗右上角的鎖。"
+            "要鎖定位置(讓點擊穿到遊戲),按 Log 視窗右上角的鎖。")
         )
         if log is None:
             self._log_shown.setEnabled(False)
-            self._log_shown.setToolTip("這個模式沒有 Log 視窗")
+            self._log_shown.setToolTip(tr("這個模式沒有 Log 視窗"))
         else:
             # 先設初始值再接訊號,理由見 _build_overlay_settings。
             self._log_shown.setChecked(log.shown)
@@ -1238,13 +1322,13 @@ class PanelWindow(QMainWindow):
         才退回自己講。
         """
         if launcher is None:
-            return "重播與示範模式不需要開遊戲"
+            return tr("重播與示範模式不需要開遊戲")
         ask = getattr(launcher, "why_cannot_start_game", None)
         if ask is not None:
             reason = ask()
             if reason:
                 return str(reason)
-        return "啟動參數裡沒有要 MIA 開遊戲(--tail / --no-packets)"
+        return tr("啟動參數裡沒有要 MIA 開遊戲(--tail / --no-packets)")
 
     def _sync_start_button(self) -> None:
         """按鈕要說現在的實情。
@@ -1265,12 +1349,12 @@ class PanelWindow(QMainWindow):
             self._start_button.setToolTip(self._cannot_start_reason(launcher))
             return
         running = launcher.game_running()
-        self._start_button.setText("遊戲進行中" if running else START_GAME)
+        self._start_button.setText(tr("遊戲進行中") if running else START_GAME)
         self._start_button.setEnabled(not running)
         self._start_button.setToolTip(
-            "瀏覽器已經開著 —— 關掉它就會結束這一場"
+            tr("瀏覽器已經開著 —— 關掉它就會結束這一場")
             if running
-            else "開一個受控的瀏覽器並開始錄封包"
+            else tr("開一個受控的瀏覽器並開始錄封包")
         )
 
     def _show_canvas(self, key: str | None) -> None:
@@ -1297,7 +1381,7 @@ class PanelWindow(QMainWindow):
         canvas = Canvas.parse(text)
         if canvas is None:
             self._show_canvas(self._canvas.canvas())
-            self._notice.setText(f"看不懂的尺寸「{text}」—— 格式是 1440x810")
+            self._notice.setText(tr("看不懂的尺寸「{text}」—— 格式是 1440x810", text=text))
             return
         self._canvas.set_canvas(canvas.key)
         self._show_canvas(canvas.key)  # 正規化成 1440×810
@@ -1364,7 +1448,7 @@ class PanelWindow(QMainWindow):
             self._compare_picker.addItem(NO_COMPARE, None)
             for name in self._style.styles():
                 if name != primary:
-                    self._compare_picker.addItem(name, name)
+                    self._compare_picker.addItem(translate(name), name)
             _select_data(self._compare_picker, current)
 
     def _on_candidate_count(self, value: int) -> None:
@@ -1431,24 +1515,24 @@ class PanelWindow(QMainWindow):
             and self._launcher.can_start_game()
             and not self._launcher.game_running()
         ):
-            return f"還沒開始 —— 按左下角的「{START_GAME}」開啟遊戲"
+            return tr("還沒開始 —— 按左下角的「{START_GAME}」開啟遊戲", START_GAME=START_GAME)
         # 問**每一個**功能,不是寫死其中兩個。加了放銃分析之後,原本那句
         # 會在它開著的時候照樣說「兩個功能都關著」—— 畫面上明明有東西在跑。
         if self._switchboard is not None and not any(
             self._switchboard.is_enabled(k) for k in features.NAMES
         ):
-            return "功能都關著 —— 用各頁右上角的開關打開"
+            return tr("功能都關著 —— 用各頁右上角的開關打開")
         return _status_text(state)
 
 
 def _status_text(state: ViewState) -> str:
     parts: list[str] = []
     if state.hand_conflict:
-        parts.append("⚠ 畫面與封包的手牌不一致")
+        parts.append(tr("⚠ 畫面與封包的手牌不一致"))
     parts.extend(state.notices)
     if not parts:
-        engines = "、".join(e.name for e in state.engines)
-        return f"引擎:{engines}" if engines else "等待資料…"
+        engines = tr("、").join(translate(e.name) for e in state.engines)
+        return tr("引擎:{engines}", engines=engines) if engines else tr("等待資料…")
     return "　|　".join(parts)
 
 

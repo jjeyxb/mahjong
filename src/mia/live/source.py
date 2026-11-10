@@ -12,12 +12,15 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
 from collections.abc import Callable
+from contextlib import ExitStack
 from pathlib import Path
 
+from mia.distribution.layout import LAYOUT
 from mia.live.bus import WorkerStatus
 from mia.live.control import ControlFile
 from mia.utils.logging import logger
@@ -71,7 +74,13 @@ def capture_command(
     if mode not in ("cdp", "proxy", "local"):
         raise ValueError(f"未知的擷取模式 {mode!r},可用 cdp / proxy / local")
 
-    command = [sys.executable, str(GT_TOOL), mode, "--out", str(dump)]
+    command = [
+        sys.executable,
+        "--capture" if LAYOUT.packaged else str(GT_TOOL),
+        mode,
+        "--out",
+        str(dump),
+    ]
     if url_filter:
         command += ["--filter", url_filter]
     if mode == "cdp":
@@ -108,11 +117,25 @@ class CaptureProcess:
         self.status = status if status is not None else WorkerStatus(name)
         self._process: subprocess.Popen[bytes] | None = None
         self._started_at = 0.0
+        self.log_path: Path | None = None
 
     def start(self) -> None:
         logger.info("啟動擷取子程序: {}", " ".join(self.command))
         try:
-            self._process = subprocess.Popen(self.command)
+            with ExitStack() as stack:
+                output = None
+                if LAYOUT.packaged:
+                    LAYOUT.logs.mkdir(parents=True, exist_ok=True)
+                    self.log_path = LAYOUT.logs / "capture.log"
+                    output = stack.enter_context(self.log_path.open("ab"))
+                self._process = subprocess.Popen(
+                    self.command,
+                    env={**os.environ, "PYINSTALLER_RESET_ENVIRONMENT": "1"},
+                    creationflags=vars(subprocess).get("CREATE_NO_WINDOW", 0),
+                    stdout=output,
+                    stderr=subprocess.STDOUT if output is not None else None,
+                    stdin=subprocess.DEVNULL if output is not None else None,
+                )
         except OSError as exc:
             self.status.say(f"啟動擷取子程序失敗:{exc}")
             return
@@ -150,6 +173,10 @@ class CaptureProcess:
 
         self.status.alive = False
         elapsed = time.monotonic() - self._started_at
+        if self.log_path is not None and code != 0:
+            self.status.say(f"瀏覽器／封包擷取啟動失敗(exit {code})，詳見 {self.log_path}")
+            logger.error("擷取子程序結束(exit {})，詳見 {}", code, self.log_path)
+            return
         if elapsed < _STARTUP_GRACE:
             self.status.say(
                 f"擷取子程序啟動 {elapsed:.1f} 秒就結束了(exit {code})—— "

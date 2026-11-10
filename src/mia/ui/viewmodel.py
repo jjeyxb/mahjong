@@ -41,6 +41,7 @@ from mia.analysis import (
 from mia.engine.actions import Candidate, action_label, action_tiles, decode_candidates
 from mia.engine.base import Advice
 from mia.hybrid.merge import TileChoice
+from mia.i18n import tr
 from mia.mjai.tiles import UNKNOWN, mjai_to_ms, ms_to_mjai
 
 __all__ = ["EngineView", "ViewModel", "ViewState", "q_fraction", "shanten_text"]
@@ -48,7 +49,7 @@ __all__ = ["EngineView", "ViewModel", "ViewState", "q_fraction", "shanten_text"]
 #: 「跳過」在比對答案時的代表。:attr:`EngineView.action` 是人看的字串
 #: (``action_label`` 保證不同動作給不同字串),所以這裡用一個不可能撞名的值
 #: 讓「跳過」也能參與比較 —— 見 :attr:`ViewState.is_unanimous`。
-_DECLINED = "<跳過>"
+_DECLINED = tr("<跳過>")
 
 
 def q_fraction(q: float, *, low: float, high: float) -> float:
@@ -72,10 +73,10 @@ def shanten_text(shanten: int) -> str:
     —— 只是數字差一。
     """
     if shanten == AGARI:
-        return "和了"
+        return tr("和了")
     if shanten == TENPAI:
-        return "聽牌"
-    return f"{shanten} 向聽"
+        return tr("聽牌")
+    return tr("{shanten} 向聽", shanten=shanten)
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,7 +135,7 @@ class EngineView:
         """
         if self.action is not None:
             return self.action
-        return "跳過" if self.declined else "不需要動作"
+        return tr("跳過") if self.declined else tr("不需要動作")
 
     # 底下四個屬性合起來就是「大字 + 一排牌」那一行。側邊視窗與 Overlay 都用
     # 它們,而不是各自去拆 :attr:`action` 的字串 —— 「吃要寫出 consumed」與
@@ -151,7 +152,7 @@ class EngineView:
         if self.action is None:
             return self.headline
         if self.is_discard:
-            return "切"
+            return tr("切")
         if self.follow_up_tile:
             # 立直:動詞就是「立直」,重點的牌是後續要切的那張(在 own_tiles)
             return self.action
@@ -177,8 +178,8 @@ class EngineView:
         if self.action is None:
             return ""
         if self.follow_up_tile:
-            return "切"
-        return "用" if self.consumed else ""
+            return tr("切")
+        return tr("用") if self.consumed else ""
 
     @property
     def own_tiles(self) -> tuple[str, ...]:
@@ -378,9 +379,9 @@ class ViewModel:
             mjai = tuple(ms_to_mjai(t) for t in tiles)
             drawn_mjai = ms_to_mjai(drawn) if drawn else None
         except ValueError:
-            self._notice("CV 讀到認不得的牌,這一幀跳過")
+            self._notice(tr("CV 讀到認不得的牌,這一幀跳過"))
             return
-        notice = "CV 對部分牌沒有把握,建議僅供參考" if not confident else None
+        notice = tr("CV 對部分牌沒有把握,建議僅供參考") if not confident else None
         # 內部一律存完整手牌(含摸的那張),兩個來源才比較得起來
         full = (*mjai, drawn_mjai) if drawn_mjai else mjai
         self._recompute(cv_hand=full, cv_drawn=drawn_mjai, notice=notice)

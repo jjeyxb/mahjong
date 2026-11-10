@@ -216,6 +216,7 @@ class SubprocessEngine:
                 encoding="utf-8",
                 errors="replace",
                 bufsize=1,
+                creationflags=vars(subprocess).get("CREATE_NO_WINDOW", 0),
             )
         except OSError as exc:
             raise EngineError(f"{self.name}: 啟動失敗 —— {exc}") from exc

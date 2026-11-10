@@ -47,6 +47,7 @@ from collections.abc import Callable
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
+from mia import i18n
 from mia.calibration.canvas import Canvas, CanvasChoice, best_fit
 from mia.calibration.manual import HandRoiChoice, TableRectChoice
 from mia.capture.base import Frame
@@ -54,6 +55,7 @@ from mia.config.models import AppConfig
 from mia.engine import AIEngine, DummyEngine, EngineGroup
 from mia.engine.styles import StyleChoice, StyleProfile
 from mia.features import AdviceSourceChoice, DangerSourceChoice, RecognitionChoice
+from mia.i18n import tr
 from mia.live.runtime import LiveRuntime
 from mia.mjai import MjaiEvent
 from mia.mjai.handstate import HandTracker
@@ -89,14 +91,14 @@ PUMP_INTERVAL_MS = 33
 
 #: `--mortal` 指定的那一項在風格選單裡叫什麼。**不寫回 ui_state** ——
 #: 下次沒帶旗標啟動時這個名字不存在,記了也對不上。
-CLI_STYLE = "命令列指定"
+CLI_STYLE = tr("命令列指定")
 
 #: 規則式引擎在畫面上叫什麼。
 #:
 #: 程式裡的識別字是 ``baseline``,但那三個字擺在比較欄位上沒有講出任何事情
 #: —— 使用者要知道的是「這一欄不是模型算的」。``DummyEngine`` 的預設名字
 #: 不動(日誌與測試在用),只換畫面上的說法。
-BASELINE_NAME = "規則式基準(不是模型)"
+BASELINE_NAME = tr("規則式基準(不是模型)")
 
 
 def build_engines(
@@ -189,7 +191,7 @@ def run_replay(args: argparse.Namespace, model: ViewModel) -> None:
     tracker = HandTracker(_name="ui")
     group = EngineGroup(build_engines(args))
     group.start()
-    model.set_notices([f"重播 {args.replay.name} — 自己坐 {seat}"])
+    model.set_notices([tr("重播 {name} — 自己坐 {seat}", name=args.replay.name, seat=seat)])
 
     step = iter(range(len(events)))
 
@@ -197,7 +199,7 @@ def run_replay(args: argparse.Namespace, model: ViewModel) -> None:
         try:
             index = next(step)
         except StopIteration:
-            model.set_notices([f"重播結束({len(events)} 個事件)"])
+            model.set_notices([tr("重播結束({count} 個事件)", count=len(events))])
             group.close()
             timer.stop()
             return
@@ -357,6 +359,62 @@ class _RememberedDangerSource:
 
     def danger_source_name(self) -> str | None:
         return self._runtime.danger_source_name()
+
+
+class _Preferences:
+    """設定頁的「語言與更新」:語言存進介面設定,版本、檢查更新、重新啟動。
+
+    重新啟動不是當場開新的:先讓這一個照正常流程收掉(引擎、擷取子程序、瀏覽器),
+    再由 :func:`main` 的收尾開新的。兩個 MIA 同時在的話會搶同一個瀏覽器設定檔。
+    """
+
+    def __init__(self, state: UiState, runtime: LiveRuntime | None, app: QApplication) -> None:
+        self._state = state
+        self._runtime = runtime
+        self._app = app
+        #: 打開更新視窗。``install_menu`` 建好選單之後才有。
+        self.updates: Callable[[], None] | None = None
+        self.restart_requested = False
+
+    def language(self) -> str:
+        return i18n.language()
+
+    def set_language(self, code: str) -> None:
+        self._state.language = code
+        self._state.save()
+
+    def version(self) -> str:
+        from mia.distribution.service import configuration
+
+        return str(configuration()["version"])
+
+    def check_updates(self) -> None:
+        if self.updates is not None:
+            self.updates()
+
+    def busy(self) -> bool:
+        runtime = self._runtime
+        return runtime is not None and (
+            runtime.game_running() or any(f.enabled for f in runtime.feature_list)
+        )
+
+    def restart(self) -> None:
+        self.restart_requested = True
+        self._app.quit()
+
+
+def _relaunch() -> None:
+    """用同樣的參數再開一次 MIA。更新後的啟動檢查參數不帶:那只屬於更新完的第一次啟動。"""
+    from PySide6.QtCore import QProcess
+
+    args = list(sys.argv[1:])
+    if "--update-health" in args:
+        index = args.index("--update-health")
+        del args[index : index + 3]
+    if getattr(sys, "frozen", False):
+        QProcess.startDetached(sys.executable, args)
+    else:
+        QProcess.startDetached(sys.executable, [sys.argv[0], *args])
 
 
 class _RememberedPlatform:
@@ -691,7 +749,9 @@ def run_session(args: argparse.Namespace, model: ViewModel) -> None:
     )
     box = rois["own_hand"].rect
     templates = TemplateSet.load()
-    model.set_notices([f"重播畫面 {args.session.name} — {len(records)} 幀"])
+    model.set_notices(
+        [tr("重播畫面 {name} — {count} 幀", name=args.session.name, count=len(records))]
+    )
 
     step = iter(range(len(records)))
 
@@ -699,7 +759,7 @@ def run_session(args: argparse.Namespace, model: ViewModel) -> None:
         try:
             index = next(step)
         except StopIteration:
-            model.set_notices([f"重播結束({len(records)} 幀)"])
+            model.set_notices([tr("重播結束({count} 幀)", count=len(records))])
             timer.stop()
             return
 
@@ -741,7 +801,7 @@ def run_demo(model: ViewModel) -> None:
             Advice("baseline", Dahai(actor=0, pai="9m", tsumogiri=False), None, 0.4),
         ]
     )
-    model.set_notices(["示範資料 —— 不是真實局面"])
+    model.set_notices([tr("示範資料 —— 不是真實局面")])
 
 
 def _quit_on_signals(app: QApplication) -> None:
@@ -820,10 +880,13 @@ def main(argv: list[str] | None = None) -> int:
         metavar="WS.JSONL",
         help="跟著別的程序正在寫的錄影檔走,不自己開擷取子程序",
     )
+    from mia.distribution.layout import LAYOUT
+
     live.add_argument(
         "--capture-mode",
         default="cdp",
-        choices=("cdp", "proxy", "local"),
+        # 發布版不提供 MITM(要使用者自己裝並信任 CA 憑證),見 mia.distribution.capture。
+        choices=("cdp",) if LAYOUT.packaged else ("cdp", "proxy", "local"),
         help="封包擷取方式,預設 cdp(零前置設定)",
     )
     live.add_argument("--url", help="要開啟的網址,預設網頁版雀魂")
@@ -923,9 +986,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # launcher 與 canvas 只給側邊視窗 —— 「開始遊戲」是一個動作而不是要顯示的
     # 狀態,畫布尺寸則是設定;Overlay 上兩者都沒有位置(鎖定之後也按不到)。
+    preferences = _Preferences(ui_state, runtime, app)
     window = PanelWindow(
         model,
         event_log=log_window,
+        preferences=preferences,
         overlay=overlay,
         launcher=runtime,
         canvas=_RememberedCanvas(runtime, ui_state) if runtime is not None else None,
@@ -951,6 +1016,15 @@ def main(argv: list[str] | None = None) -> int:
         **options,  # type: ignore[arg-type]
     )
     model.subscribe(window.apply)
+
+    from mia.distribution.ui import install_menu
+
+    preferences.updates = install_menu(window, app, runtime)
+
+    if runtime is not None:
+        from mia.ui.permissions import install_permission_prompt
+
+        install_permission_prompt(window, runtime)
 
     if runtime is not None:
         hold_off_app_nap()
@@ -978,6 +1052,8 @@ def main(argv: list[str] | None = None) -> int:
         # 一個載著 130MB 權重的 Python 與一個孤兒 Chromium。
         if runtime is not None:
             runtime.stop()
+        if preferences.restart_requested:
+            _relaunch()
 
 
 if __name__ == "__main__":

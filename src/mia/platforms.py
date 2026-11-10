@@ -39,6 +39,7 @@ Steam    擷取遊戲視窗       **沒有** —— Unity 客戶端不經過瀏�
 from __future__ import annotations
 
 from mia.features import ADVICE, DANGER, VISION
+from mia.i18n import tr
 
 __all__ = [
     "NAMES",
@@ -61,7 +62,7 @@ STEAM = "steam"
 PLATFORMS = (WEB, STEAM)
 
 #: 給人看的名字。
-NAMES = {WEB: "網頁版", STEAM: "Steam 版"}
+NAMES = {WEB: tr("網頁版"), STEAM: tr("Steam 版")}
 
 #: 每一版撐得起哪些功能。見模組說明。
 SUPPORTED = {
@@ -89,7 +90,9 @@ def why_unsupported(platform: str, feature: str) -> str | None:
     """為什麼這一版沒有這個功能。支援的話回 ``None``。"""
     if supports(platform, feature):
         return None
-    return _REASONS.get(platform, f"{NAMES.get(platform, platform)}沒有這個功能的資料來源")
+    return _REASONS.get(
+        platform, tr("{get}沒有這個功能的資料來源", get=NAMES.get(platform, platform))
+    )
 
 
 class PlatformChoice:

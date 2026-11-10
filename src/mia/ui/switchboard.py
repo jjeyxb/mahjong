@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AdviceSourcePicker",
+    "AppPreferences",
     "CanvasPicker",
     "DangerSourcePicker",
     "GameLauncher",
@@ -54,6 +55,24 @@ class GameLauncher(Protocol):
     def can_start_game(self) -> bool: ...
     def game_running(self) -> bool: ...
     def start_game(self) -> None: ...
+
+
+class AppPreferences(Protocol):
+    """設定頁「語言與更新」那一區要接到的東西。
+
+    語言存進介面設定,**重新啟動才生效**(見 :mod:`mia.i18n`):整個介面在建的時候就把字組好了,
+    當場換只會換掉一半。所以這裡另外給「重新啟動」。
+    """
+
+    def language(self) -> str: ...
+    def set_language(self, code: str) -> None: ...
+    def version(self) -> str: ...
+    def check_updates(self) -> None: ...
+    def busy(self) -> bool:
+        """遊戲或辨識功能還在跑。重新啟動會把它們一起關掉,要先問。"""
+        ...
+
+    def restart(self) -> None: ...
 
 
 class PlatformPicker(Protocol):
