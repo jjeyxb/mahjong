@@ -1,4 +1,4 @@
-; Build on Windows after tools/package.py. No system Python or GPU SDK installs.
+﻿; Build on Windows after tools/package.py. No system Python or GPU SDK installs.
 #ifndef Payload
   #define Payload "..\..\dist\windows-x64\MIA"
 #endif
