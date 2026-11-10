@@ -135,6 +135,8 @@ class HandWatcher:
     _doubts: int = 0
     _unexplained: tuple[str, ...] = ()
     _last_read: tuple[tuple[str, ...], str | None] = ((), None)
+    #: 上一次讀到、還沒收的鳴牌(只讀到一次的那兩張)。只留給緊接著的下一次讀數用。
+    _unconfirmed: tuple[str, ...] = ()
     _called: int = 0
     _combined_calls: set[int] = field(default_factory=set)
 
@@ -149,6 +151,7 @@ class HandWatcher:
         self._doubts = 0
         self._unexplained = ()
         self._last_read = ((), None)
+        self._unconfirmed = ()
         self._called = 0
         self._combined_calls.clear()
 
@@ -186,8 +189,16 @@ class HandWatcher:
         quiet = thrown is not None and thrown <= discards
         read = (tuple(sorted(tiles)), drawn)
         again, self._last_read = read == self._last_read, read
+        unconfirmed, self._unconfirmed = self._unconfirmed, ()
         fresh = self._explain(
-            change, lost, gained, drawn, self._swap(tiles, thrown, called), quiet=quiet, again=again
+            change,
+            lost,
+            gained,
+            drawn,
+            self._swap(tiles, thrown, called),
+            quiet=quiet,
+            again=again,
+            unconfirmed=unconfirmed,
         )
         if fresh is None:
             if lost or gained:
@@ -314,10 +325,12 @@ class HandWatcher:
         *,
         quiet: bool = False,
         again: bool = True,
+        unconfirmed: tuple[str, ...] = (),
     ) -> list[OwnMove] | None:
         """這兩副手牌的差是哪個動作。解釋不了回 ``None``。
 
         ``quiet`` 是河讀得到、卻沒有多一張。``again`` 是這副手牌上一次也是這樣讀的。
+        ``unconfirmed`` 是上一次讀到、只讀到一次所以還沒收的鳴牌。
         """
         waiting = len(self.hand) % 3 == 1
         if change == 1 and waiting:
@@ -347,6 +360,7 @@ class HandWatcher:
                 # 改成發,事件流停到局尾)。真的鳴牌之後同一副手牌 0.3 ~ 0.4 秒內一定會再讀到一次
                 # (同一場六次吃碰都是),代價就是晚這麼久。
                 if not again:
+                    self._unconfirmed = tuple(lost)
                     return None
                 return [OwnMove(Move.CALL, tuple(lost))]
             if len(lost) == 3 and len(gained) == 1:
@@ -360,6 +374,15 @@ class HandWatcher:
             # 三張一樣是大明槓,嶺上摸切了。理由同下。
             if _is_kan(lost):
                 return [OwnMove(Move.CALL, tuple(lost))]
+            # 鳴完只讀到一次就打了(實打 selfplay-20261110-055023 東3局,吃完 1.5 秒就打,重播卻讀到
+            # 兩次):上一次少的那兩張,這次也在少的裡面,就是那次鳴牌加上打掉多少的這一張。一幀的
+            # 誤讀下一次會讀回原本的手牌,走不到這裡。
+            spare = Counter(lost) - Counter(unconfirmed)
+            if unconfirmed and spare.total() == 1:
+                return [
+                    OwnMove(Move.CALL, unconfirmed),
+                    OwnMove(Move.DISCARD, tuple(spare.elements())),
+                ]
             # 碰牌動畫中途,手上剩下的牌會滑過摸牌的位置,那一瞬間沒讀到就少三張。河裡沒多一張的話
             # 先不收:實測碰發之後讀成「碰、打中」,中滑回來又變成摸中,之後每一手都晚一輪,14 手建議
             # 跟著錯。真的鳴完就打的話,河會跟上,或下一次摸牌時從少三張多一張那條補回來。

@@ -70,6 +70,26 @@ class TestMoves:
             OwnMove(Move.DISCARD, ("1m",)),
         ]
 
+    def test_a_call_read_once_and_then_the_discard(self) -> None:
+        """鳴完只讀到一次就打了。下一次少的包含那兩張,就是鳴牌加打牌,河還沒跟上也一樣。"""
+        watcher = dealt()
+        called = [tile for tile in TEHAI if tile != "S"]
+        assert watcher.observe(called, thrown=0) == []
+        rest = [tile for tile in called if tile != "1m"]
+        assert watcher.observe(rest, thrown=0) == [
+            OwnMove(Move.CALL, ("S", "S")),
+            OwnMove(Move.DISCARD, ("1m",)),
+        ]
+
+    def test_a_call_read_once_is_forgotten_after_another_read(self) -> None:
+        """只留給緊接著的那一次讀數:中間讀回原本的手牌,就是一幀的誤讀。"""
+        watcher = dealt()
+        called = [tile for tile in TEHAI if tile != "S"]
+        watcher.observe(called, thrown=0)
+        watcher.observe(TEHAI, thrown=0)
+        rest = [tile for tile in called if tile != "1m"]
+        assert watcher.observe(rest, thrown=0) == []
+
     def test_a_tile_sliding_during_the_pon_animation_is_not_a_discard(self) -> None:
         """碰牌動畫中途,一張牌滑過摸牌的位置沒讀到。河沒多一張,不能當成碰完打牌。"""
         watcher = dealt()
