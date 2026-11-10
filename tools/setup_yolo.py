@@ -26,8 +26,15 @@ def main() -> None:
     if not environment.exists():
         subprocess.run([args.python, "-m", "venv", str(environment)], check=True)
     python = environment / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    # --no-cache-dir:不然 pip 會把 torch 等套件另外快取一份到使用者目錄
+    # (%LOCALAPPDATA%\pip\Cache 或 ~/.cache/pip),實測約 336 MB,刪掉 engines/yolo/.venv
+    # 也清不到。重裝時多下載一次,換到的是「刪資料夾就乾淨」。
     subprocess.run(
-        [str(python), "-m", "pip", "install", "-r", str(base / "requirements.txt")], check=True
+        [
+            str(python), "-m", "pip", "install", "--no-cache-dir",
+            "-r", str(base / "requirements.txt"),
+        ],
+        check=True,
     )
     models = ROOT / "models/yolo"
     models.mkdir(parents=True, exist_ok=True)

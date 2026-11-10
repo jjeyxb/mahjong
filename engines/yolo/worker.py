@@ -128,6 +128,9 @@ def read_exact(stream,n):
 
 def main():
     os.environ.setdefault("YOLO_CONFIG_DIR",str(BASE/".cache"))
+    # Ultralytics 會 import matplotlib,而它在沒有字型快取時會寫進 ~/.matplotlib。
+    # 跟上一行同一個理由:整個 YOLO 環境要能靠刪掉 engines/yolo/ 底下的東西清乾淨。
+    os.environ.setdefault("MPLCONFIGDIR",str(BASE/".cache"/"matplotlib"))
     os.environ["YOLO_AUTOINSTALL"] = "false"
     import numpy as np
     output = sys.stdout

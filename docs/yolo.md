@@ -10,7 +10,18 @@ YOLO 使用獨立的 Python 3.12 環境，不把 PyTorch 裝進 MIA 的 Python 3
 .venv/bin/python tools/setup_yolo.py --python python3.12
 ```
 
-腳本建立 `engines/yolo/.venv`，安裝 `engines/yolo/requirements.txt`，並從組員提供的 `downloads/majongsoul ai agent_mac/app/Model` 複製四顆辨識權重與三份旁附 JSON 至 `models/yolo`。模型不進 Git。若權重放在別處：
+腳本建立 `engines/yolo/.venv`，安裝 `engines/yolo/requirements.txt`，並從組員提供的 `downloads/majongsoul ai agent_mac/app/Model` 複製四顆辨識權重與三份旁附 JSON 至 `models/yolo`。模型不進 Git。
+
+權重也公開在 HuggingFace：**[jjeyxb/mia-yolo](https://huggingface.co/jjeyxb/mia-yolo)**。沒有組員那個資料夾的機器，先用 `tools/fetch_models.py` 把權重抓進 `models/yolo`（逐檔核對 SHA-256），再跑上面的腳本 —— 檔案已經在目標位置時腳本不會再去複製：
+
+```sh
+.venv/bin/python tools/fetch_models.py
+.venv/bin/python tools/setup_yolo.py --python python3.12
+```
+
+整個 YOLO 環境要能靠刪掉專案裡的資料夾清乾淨（`engines/yolo/.venv`、`engines/yolo/.cache`、`models/yolo`）：`fetch_models.py` 直接寫進 `models/`，不經過使用者目錄下的 HuggingFace 快取；安裝腳本對 pip 用 `--no-cache-dir`，不然 torch 等套件會另外快取一份到使用者目錄（實測約 336 MB）；worker 把 Ultralytics 與 matplotlib 的設定目錄都導到 `engines/yolo/.cache`。
+
+若權重放在別處：
 
 ```sh
 .venv/bin/python tools/setup_yolo.py --python python3.12 --models '/path/to/Model'

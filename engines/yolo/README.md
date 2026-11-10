@@ -9,7 +9,9 @@ in `upstream.json`. The copies preserve upstream implementation; MIA's protocol 
 causal/revision adapter live separately in `worker.py` and `src/mia/yolo/`.
 Upstream capture, its Mortal checkout, launcher and UI entry points are not included.
 The inference wrappers require four `.pt` weights and the accompanying crop/inference
-JSON files in `models/yolo/`, which are local assets and are not committed.
+JSON files in `models/yolo/`, which are local assets and are not committed. They are
+published at [jjeyxb/mia-yolo](https://huggingface.co/jjeyxb/mia-yolo); fetch them with
+`tools/fetch_models.py` (hash-checked) before running `setup_yolo.py`.
 
 The runtime uses torch and Ultralytics in a separate environment. MIA remains on
 Python 3.14 without those dependencies. `worker.py` uses only the upstream visual
