@@ -17,7 +17,8 @@ readers.DoraReader。
 供託       連續 LIVE_CONFIRM 幀一樣才改(局中有人立直會變)
 自風       以 P0 為準推其他三家;其他三家讀到的要一致、紅底那家要是東;
            連續 MIN_VOTES 幀
-點數       四家都讀到 + 總和檢查通過(需要供託),同一組 MIN_VOTES 票
+點數       四家都讀到 + 總和檢查通過(需要供託),同一組 MIN_VOTES 票;
+           只有一家讀不到時用總和補出那一家(2026-11-10),票數照舊
 寶牌       同一格累計 DORA_VOTES 票、而且是第二名的 VOTE_MARGIN 倍;
            定了就不改(槓寶牌事件已經建了,改值會變成重複的 dora 事件)
            ★ 實機 runs\20261026_232930:寶牌每 15 幀讀一次、5 票 -> start_kyoku
@@ -201,6 +202,7 @@ class KyokuInfo:
         self._streak = (None, 0)
         self._wind = (None, 0)
         self.score_votes = Counter()
+        self.derived_scores = 0     # 用總和補出第四家點數的次數,見 _scores
         self.dora_slots = [Counter() for _ in DORA_SLOT_X]
         self.stale = 0
         self.rejected = Counter()
@@ -345,12 +347,23 @@ class KyokuInfo:
         if self.value["scores"] is not None:
             return
         vals = {s: (sc.get(s) or [None])[0] for s in SEAT_ORDER}
-        if any(v is None for v in vals.values()):
+        unread = [s for s, v in vals.items() if v is None]
+        if len(unread) > 1:
             return
         if self.value["kyotaku"] is None:
             self.rejected["scores_no_kyotaku"] += 1
             return
-        if sum(vals.values()) + self.value["kyotaku"] * 1000 != 100000:
+        total = 100000 - self.value["kyotaku"] * 1000
+        if unread:
+            # ★ 2026-11-10 實打一家點數一直讀不到,start_kyoku 整局差這一欄,Mortal 整局收不到。
+            #   三家加供託跟總和的差就是第四家;算出來的要是非負的整百才信,照樣要投到 MIN_VOTES 票。
+            rest = total - sum(v for v in vals.values() if v is not None)
+            if rest < 0 or rest % 100:
+                self.rejected["scores_derived_bad"] += 1
+                return
+            vals[unread[0]] = rest
+            self.derived_scores += 1
+        elif sum(vals.values()) != total:
             self.rejected["scores_total"] += 1
             return
         key = tuple(vals[s] for s in SEAT_ORDER)

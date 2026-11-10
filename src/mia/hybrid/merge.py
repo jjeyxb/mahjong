@@ -19,6 +19,7 @@
    * 別家的段落用 YOLO,除非 YOLO 在那一段落後太多(:data:`LAG_OK`):那是 YOLO 卡住、整局錯位。
    * 樣板有吃碰、YOLO 整段什麼都沒有,用樣板。被立刻鳴走的牌只在河裡停一下,YOLO 要牌停穩才收,
      捨牌、鳴牌、鳴後打的那張整段都不在;樣板的假吃碰則是 YOLO 在同一個位置看到那家照常摸打。
+     夾著摸牌的那段不算(:func:`_called_away`):鳴牌取代了摸牌。
      立直成立也一樣:立直棒放上桌之前 YOLO 不送。樣板有槓、YOLO 那段沒有槓、整局那家的槓也比樣板少
      (:func:`_missed_kans`),也用樣板。
 
@@ -239,7 +240,7 @@ def merge(
                 settled = now is not None and now - since >= SETTLE
                 differing.append((len(pieces), offset, a, b, settled))
         own = any(_own(event) for event in mine + theirs)
-        flash = not theirs and any(isinstance(event, _CALLS) for event in mine)
+        flash = not theirs and _called_away(mine)
         # 槓也是:YOLO 讀副露區比較會漏,樣板要讀出假的槓得同時看到四張牌與翻寶牌。
         flash = flash or (
             any(isinstance(event, _KANS) and event.actor in missed for event in mine)
@@ -318,6 +319,26 @@ def _disagreements(
     return out
 
 
+def _called_away(events: Sequence[MjaiEvent]) -> bool:
+    """這段像是 YOLO 來不及看到的吃碰:有吃碰,而且裡面的摸牌都是吃碰的一部分。
+
+    鳴牌取代了摸牌,被鳴走的那一段只有被鳴那家的摸打、鳴牌與鳴後打的牌(別家摸牌的代號綁著
+    後面那張捨牌,那張被鳴走,摸牌也跟著對不上),槓了還有嶺上牌。夾著別的摸牌的不是:實打
+    selfplay-20261110-091423 東2局1本場,樣板把下家的赤 5p 重讀兩次、推成下家碰 8p,
+    YOLO 沒有的那段還夾著下家與對家的摸打,整段留下來,假碰一直留到局末。
+    """
+    if not any(isinstance(event, _CALLS) for event in events):
+        return False
+    for index, event in enumerate(events):
+        if not isinstance(event, Tsumo):
+            continue
+        before = events[index - 1] if index else None
+        called = events[index + 2] if index + 2 < len(events) else None
+        if not isinstance(before, _KANS) and not isinstance(called, _CALLS):
+            return False
+    return True
+
+
 def _missed_kans(template: Sequence[MjaiEvent], yolo: Sequence[MjaiEvent]) -> set[int]:
     """YOLO 整局讀到的槓比樣板少的那幾家。
 
@@ -390,15 +411,24 @@ def _assemble(
 
 
 def plausible(events: Sequence[MjaiEvent]) -> bool:
-    """拼起來的事件流引擎收不收:暗槓之後、下一張捨牌之前翻寶牌,同一種牌看得見的不超過 4 張。
+    """拼起來的事件流引擎收不收:暗槓之後、下一張捨牌之前翻寶牌,同一種牌看得見的不超過 4 張,
+    立直成立之後那家不吃碰槓(暗槓可以)。
 
     實測拼接過一次「上家暗槓 P」接樣板的嶺上摸牌與捨牌,YOLO 那時還沒送出翻寶牌,引擎拒收。
     翻寶牌排在嶺上摸牌前後都可以:樣板排在後面,YOLO 排在前面。
+
+    立直後鳴牌 libriichi 不是報錯而是整個行程崩潰(見 :mod:`mia.tracker.stream`)。樣板自己那條
+    有擋,拼接時一邊的立直成立配上另一邊的吃碰也要擋。
     """
     seen: Counter[str] = Counter()
     kan = False
+    reached: set[int] = set()
     for event in events:
+        if isinstance(event, (*_CALLS, Kakan)) and event.actor in reached:
+            return False
         match event:
+            case ReachAccepted():
+                reached.add(event.actor)
             case StartKyoku():
                 seen.update(normalize_red(tile) for tile in event.tehais[_OWN])
                 seen[normalize_red(event.dora_marker)] += 1
@@ -484,6 +514,12 @@ class StreamMerger:
             self._streams[source] = stream
             out = self._refresh(wall)
         self._send(*out)
+
+    def template_opening(self) -> StartKyoku | None:
+        """樣板這一局的開局事件,還沒讀到就是 ``None``。YOLO 讀不到點數時借用。"""
+        with self._lock:
+            events = self._sides[self.TEMPLATE].events
+        return events[0] if events and isinstance(events[0], StartKyoku) else None
 
     def pick(self, kyoku: int, actor: int, nth: int, pai: str) -> None:
         """玩家說第 ``kyoku`` 局 ``actor`` 的第 ``nth`` 張捨牌是 ``pai``。已經換局了就不管。"""

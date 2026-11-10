@@ -103,6 +103,7 @@ class WatchStats:
             那一家的格線對不準。
         confused: 看不懂而整筆丟掉的次數。**這一欄要盯著** ——
             它變大代表辨識或對齊出了問題,而症狀不會出現在別的地方。
+        returned: 判定為被鳴走、之後又在同一格讀回來的次數,見 :meth:`RiverWatcher.observe`。
         collapsed: :attr:`confused` 之中「河幾乎整個空掉」的那幾次。
 
             這一欄是為了讓 :attr:`confused` 還能當診斷用。換局在清桌、
@@ -122,6 +123,7 @@ class WatchStats:
     deferred: int = 0
     confused: int = 0
     collapsed: int = 0
+    returned: int = 0
 
 
 def _fits(known: str, seen: str) -> bool:
@@ -206,6 +208,23 @@ def _conflicts(known: Sequence[str], seen: Sequence[str]) -> bool:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _Gone:
+    """被當成鳴走的最後一張:哪一格、什麼牌、第幾張,當時桌上幾組副露、算進幾格讀不出來的。
+
+    雀魂赤五筒的紅圈佔掉牌面一半以上,平常就被判成牌背、只有閃光掃過時才判成有牌
+    (實打 selfplay-20261110-091423 東2局1本場):下家最後那張一下有一下沒有,兩次讀到沒有
+    就當成被鳴走,讀回來又當成新打的一張,一張赤五發了三次,還被推成下家碰了上家的牌。
+    真的被鳴走,別家會多一組副露;沒有的話,同一格讀回來的就是同一張。
+    """
+
+    index: int
+    pai: str
+    serial: int
+    melds: int
+    unread: int
+
+
 @dataclass
 class RiverWatcher:
     """盯著四家的牌河,把變化講成捨牌事件。
@@ -244,6 +263,10 @@ class RiverWatcher:
     _trimming: list[tuple[tuple[str, ...], tuple[str, ...]] | None] = field(
         default_factory=lambda: [None for _ in range(4)], repr=False
     )
+    #: 最後一張被當成鳴走時記下來的那張,每家一個。見 :class:`_Gone`。
+    _gone: list[_Gone | None] = field(
+        default_factory=lambda: [None for _ in range(4)], repr=False
+    )
 
     def thrown(self, position: int) -> int:
         """河裡看到這一家打過幾張,含後來被鳴走的。"""
@@ -266,6 +289,7 @@ class RiverWatcher:
         self._shrinking = [None for _ in range(4)]
         self._growing = [None for _ in range(4)]
         self._trimming = [None for _ in range(4)]
+        self._gone = [None for _ in range(4)]
 
     def revise(self, position: int, index: int, pai: str) -> None:
         """這一格是讀在動畫中途的,重讀的答案蓋過去。
@@ -275,13 +299,17 @@ class RiverWatcher:
         if index < len(self.rivers[position]):
             self.rivers[position][index] = pai
 
-    def observe(self, position: int, tiles: Sequence[str]) -> list[Discard]:
+    def observe(
+        self, position: int, tiles: Sequence[str], *, melds: int | None = None
+    ) -> list[Discard]:
         """收一次觀察,回傳**新**的捨牌事件(可能是空的)。
 
         Args:
             position: 依視角的座位 0~3。
             tiles: 這一家畫面上看得見的牌,依序。讀不到的那幾格放
                 :data:`UNKNOWN` —— **不要省略**,省略會讓後面的位置全部錯開。
+            melds: 現在桌上四家一共幾組副露。給了的話,最後一張被當成鳴走之後副露沒有變多、
+                同一格又讀回同一張牌,就當成同一張(:class:`_Gone`)。
 
         Returns:
             這次觀察帶來的新捨牌。看不懂的觀察回空串列並記進
@@ -295,8 +323,19 @@ class RiverWatcher:
         if trimmed is not None:
             return trimmed
 
+        gone = self._gone[position]
+        if gone is not None and (melds is None or melds > gone.melds):
+            gone = self._gone[position] = None
         if _is_prefix(known, seen):
             self._shrinking[position] = None
+            if gone is not None and len(seen) > len(known):
+                self._gone[position] = None
+                # 要讀得出來而且是同一張。讀不出來的不算:那多半是這家新打的一張還沒讀到,
+                # 當成回來的話新捨牌被吞掉、鳴牌也被撤回。閃爍回來的那張早就停穩,讀得出來。
+                same = gone.pai != UNKNOWN and seen[gone.index] == gone.pai
+                if len(known) == gone.index and same:
+                    self._bring_back(position, gone)
+                    known = self.rivers[position]
             if (
                 not known
                 and len(seen) >= _JUMP
@@ -336,7 +375,11 @@ class RiverWatcher:
                 # 被鳴走一張。**不發事件** —— 那張牌的 dahai 早就發過了,
                 # 它現在只是從畫面上移到別人的副露去。
                 self.stats.calls += 1
-                self._unread_gone[position] += _unread_dropped(known, seen)
+                unread = int(_unread_dropped(known, seen))
+                self._unread_gone[position] += unread
+                if melds is not None and cut == len(known) - 1:
+                    serial = self.serials[position][cut]
+                    self._gone[position] = _Gone(cut, known[cut], serial, melds, unread)
                 self.rivers[position] = list(shorter)
                 del self.serials[position][cut]
                 self._fill(position, seen)
@@ -399,6 +442,14 @@ class RiverWatcher:
         self._trimming[position] = (shorter, tuple(seen))
         self.stats.deferred += 1
         return []
+
+    def _bring_back(self, position: int, gone: _Gone) -> None:
+        """被當成鳴走的那張放回去,不再發一次捨牌。"""
+        self.rivers[position].append(gone.pai)
+        self.serials[position].append(gone.serial)
+        self._unread_gone[position] -= gone.unread
+        self.stats.calls -= 1
+        self.stats.returned += 1
 
     def _cut(self, position: int, length: int) -> None:
         self._trimming[position] = None

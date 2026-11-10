@@ -245,6 +245,74 @@ class TestAShortReadIsNotACall:
         assert watcher._shrinking == [None] * 4  # noqa: SLF001
 
 
+class TestALastTileThatComesBack:
+    """最後一張兩次讀不到就當成被鳴走;沒有人多一組副露、同一格又讀回來的,是同一張。
+
+    實打 selfplay-20261110-091423 東2局1本場:赤五筒平常被判成牌背,閃光掃過才判成有牌,
+    一張赤五發了三次。
+    """
+
+    def _gone(self, melds: int | None = 0, pai: str = "5pr") -> RiverWatcher:
+        watcher = RiverWatcher()
+        watcher.observe(1, ["1m", pai], melds=melds)
+        watcher.observe(1, ["1m"], melds=melds)
+        watcher.observe(1, ["1m"], melds=melds)
+        assert watcher.stats.calls == 1
+        return watcher
+
+    def test_it_is_not_thrown_again(self) -> None:
+        watcher = self._gone()
+        assert watcher.observe(1, ["1m", "5pr"], melds=0) == []
+        assert watcher.rivers[1] == ["1m", "5pr"]
+        assert watcher.serials[1] == [0, 1]
+        assert watcher.thrown(1) == 2
+        assert (watcher.stats.calls, watcher.stats.returned) == (0, 1)
+
+    def test_the_next_discard_still_counts(self) -> None:
+        watcher = self._gone()
+        watcher.observe(1, ["1m", "5pr"], melds=0)
+        assert watcher.observe(1, ["1m", "5pr", "E"], melds=0) == [
+            Discard(position=1, index=2, pai="E", serial=2)
+        ]
+
+    def test_a_new_meld_means_it_was_called(self) -> None:
+        watcher = self._gone()
+        assert watcher.observe(1, ["1m", "5pr"], melds=1) == [
+            Discard(position=1, index=1, pai="5pr", serial=2)
+        ]
+
+    def test_a_different_tile_is_a_new_discard(self) -> None:
+        watcher = RiverWatcher()
+        watcher.observe(1, ["1m", "5pr"], melds=0)
+        watcher.observe(1, ["1m"], melds=0)
+        watcher.observe(1, ["1m"], melds=0)
+        assert watcher.observe(1, ["1m", "E"], melds=0) == [
+            Discard(position=1, index=1, pai="E", serial=2)
+        ]
+
+    def test_without_meld_counts_nothing_comes_back(self) -> None:
+        watcher = self._gone(melds=None)
+        assert watcher.observe(1, ["1m", "5pr"]) == [
+            Discard(position=1, index=1, pai="5pr", serial=2)
+        ]
+
+    def test_an_unreadable_tile_in_that_cell_is_a_new_discard(self) -> None:
+        """真的被鳴走、副露還沒確認,這家的下一張還讀不出來:不能當成回來的那張。"""
+        watcher = RiverWatcher()
+        watcher.observe(1, ["1m", "5pr"], melds=0)
+        watcher.observe(1, ["1m"], melds=0)
+        watcher.observe(1, ["1m"], melds=0)
+        assert watcher.observe(1, ["1m", UNKNOWN], melds=0) == [
+            Discard(position=1, index=1, pai=UNKNOWN, serial=2)
+        ]
+        assert (watcher.stats.calls, watcher.stats.returned) == (1, 0)
+        # 記著的那張是讀不出來的,之後讀到什麼都不算回來。
+        watcher = self._gone(pai=UNKNOWN)
+        assert watcher.observe(1, ["1m", "5pr"], melds=0) == [
+            Discard(position=1, index=1, pai="5pr", serial=2)
+        ]
+
+
 class TestUnknownIsDeferredNotDropped:
     """讀不到的格子**在張數上算數**,只是內容待定。
 

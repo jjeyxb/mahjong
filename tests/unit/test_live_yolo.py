@@ -177,3 +177,54 @@ def test_a_long_wait_for_the_start_is_logged_with_the_reason(monkeypatch):
         logger.remove(sink)
     assert len(messages) == 2
     assert "等了 12.0 秒" in messages[1]
+
+
+def test_a_dead_inference_process_is_restarted_a_bounded_number_of_times(monkeypatch):
+    """子程序死掉以前讓整條執行緒結束,要手動關掉再開;混合辨識連樣板那條也一起收掉。"""
+    from mia.engine.base import EngineError
+    from mia.live import yolo
+
+    made = []
+
+    class FakeClient:
+        def __init__(self):
+            self.closed = False
+            made.append(self)
+
+        def start(self):
+            # made[0] 是原本那個;前兩次重啟起不來,第三次才成。
+            if len(made) <= 3:
+                raise EngineError("起不來")
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(yolo, "YoloClient", FakeClient)
+    worker = object.__new__(yolo.YoloVisionWorker)
+    original = FakeClient()
+    vars(worker).update(
+        _client=original, _restarts=0, status=WorkerStatus("畫面"), label="混合辨識"
+    )
+    assert worker._revive(EngineError("死了"))  # noqa: SLF001
+    assert original.closed
+    assert worker._client is made[-1]  # noqa: SLF001
+    assert worker._restarts == 3  # noqa: SLF001
+    assert not worker._revive(EngineError("又死了"))  # noqa: SLF001
+    assert worker._restarts == 3  # noqa: SLF001
+
+
+def test_abort_wakes_a_waiting_receive_without_closing_the_process():
+    """UI 執行緒按關閉只送中斷訊號,不等子程序;等的事交給工作執行緒。"""
+    import queue
+    import threading
+
+    import pytest
+
+    from mia.engine.base import EngineError
+    from mia.yolo.client import YoloClient
+
+    client = object.__new__(YoloClient)
+    vars(client).update(_closed=threading.Event(), _lines=queue.Queue(), _timeout=5.0)
+    client.abort()
+    with pytest.raises(EngineError, match="已停止"):
+        client._receive()  # noqa: SLF001

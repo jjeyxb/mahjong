@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 
+from mia.mjai.events import StartKyoku
 from mia.yolo.stream import LedgerStream
 
 HAND = [f"{i}m" for i in range(1, 10)] + ["1p", "2p", "3p", "P"]
@@ -252,4 +253,85 @@ def test_waiting_says_why_the_start_is_not_exported_yet():
     adapter.update(snapshot([start() | dict(seat_map={})]))
     assert "seat_map" in adapter.waiting
     assert adapter.update(snapshot([start()])).events
+    assert adapter.waiting == ""
+
+
+def _no_scores():
+    body = start() | dict(export_eligible=False, status="PENDING", missing=["scores"])
+    del body["scores"]
+    return body
+
+
+def _template_opening(**changes):
+    fields = dict(
+        bakaze="E", kyoku=1, honba=0, kyotaku=0, oya=0, dora_marker="9s",
+        tehais=[list(HAND), ["?"] * 13, ["?"] * 13, ["?"] * 13],
+        scores=[40000, 10000, 20000, 30000],
+    )
+    return StartKyoku(**(fields | changes))
+
+
+def test_missing_scores_are_borrowed_from_the_template_of_the_same_round():
+    """實打 091423 YOLO 第 2 局只差點數等了 67 秒。樣板的點數已經是自己視角,不再轉。"""
+    adapter = LedgerStream()
+    stream = adapter.update(snapshot([_no_scores()]), opening=_template_opening())
+    assert stream.events[0].scores == [40000, 10000, 20000, 30000]
+    assert adapter.borrowed
+    assert adapter.waiting == ""
+
+
+def test_scores_are_not_borrowed_from_another_round():
+    adapter = LedgerStream()
+    assert not adapter.update(snapshot([_no_scores()]), opening=_template_opening(honba=1)).events
+    assert "scores" in adapter.waiting
+    assert not adapter.borrowed
+
+
+def test_only_missing_scores_are_borrowed():
+    adapter = LedgerStream()
+    body = _no_scores() | dict(missing=["scores", "dora_marker"])
+    assert not adapter.update(snapshot([body]), opening=_template_opening()).events
+    assert not adapter.update(snapshot([_no_scores()])).events
+
+
+def test_read_scores_are_not_replaced_by_the_template():
+    adapter = LedgerStream()
+    opening = _template_opening(scores=[25000, 25000, 25000, 25000])
+    stream = adapter.update(snapshot([start()]), opening=opening)
+    assert stream.events[0].scores == [40000, 10000, 20000, 30000]
+    assert not adapter.borrowed
+
+
+def test_a_call_after_a_reach_is_held_back():
+    """立直後鳴牌 libriichi 不是報錯而是整個行程崩潰。YOLO 讀錯立直棒是哪一家的就會踩到。"""
+    events = [
+        start(),
+        event("t", "tsumo", 0, pai="P"),
+        event("d", "dahai", 0, pai="P", tsumogiri=False),
+        event("t1", "tsumo", 1, pai="?"),
+        event("r", "reach", 1),
+        event("d1", "dahai", 1, pai="1s", tsumogiri=True),
+        event("ra", "reach_accepted", 1),
+        event("t2", "tsumo", 2, pai="?"),
+        event("d2", "dahai", 2, pai="E", tsumogiri=True),
+        event("p", "pon", 1, target="P2", pai="E", consumed=["E", "E"], source_discard="d2"),
+        event("d3", "dahai", 1, pai="W", tsumogiri=False),
+    ]
+    stream = LedgerStream().update(snapshot(events))
+    assert stream.doubt is not None
+    assert "立直" in stream.doubt
+    assert LedgerStream().update(snapshot(events[:9])).doubt is None
+
+
+def test_a_malformed_event_stalls_the_stream_instead_of_raising():
+    """一筆欄位不齊的事件以前讓整條辨識執行緒結束,狀態列停在「已停止」。"""
+    adapter = LedgerStream()
+    broken = [start(), event("t", "tsumo", 0, pai="P"), {"event_id": "x", "export_eligible": True}]
+    stream = adapter.update(snapshot(broken))
+    assert stream.events == ()
+    assert stream.stalled
+    assert "欄位錯誤" in adapter.waiting
+    short = [start(), event("t", "tsumo", 0, pai="P"), event("d", "dahai", 0, tsumogiri=False)]
+    assert adapter.update(snapshot(short)).events == ()
+    assert adapter.update(snapshot(broken[:2])).events
     assert adapter.waiting == ""

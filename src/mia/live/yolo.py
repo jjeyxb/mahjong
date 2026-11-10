@@ -14,6 +14,7 @@ from mia.calibration.canvas import CanvasChoice
 from mia.calibration.manual import HandRoiChoice, TableRectChoice
 from mia.calibration.table import Calibration
 from mia.config.models import AppConfig
+from mia.engine.base import EngineError
 from mia.hybrid.merge import StreamMerger
 from mia.live.bus import CvHand, Dangers, TileChoices, UpdateBus, WorkerStatus
 from mia.live.table import TableWorker
@@ -33,6 +34,10 @@ Listener = Callable[[int, Stream], None]
 #: YOLO 等開局等這麼久就記一筆它卡在哪,之後原因變了再記(同樣隔這麼久才記一次,原因來回跳
 #: 也不會洗版)。換局之間的結算畫面本來就要等幾秒,所以不能太短。
 _START_WARN = 8.0
+
+#: 推論子程序中斷(死掉、回應逾時)最多重啟幾次。一場裡偶爾一次是意外,接連幾次就是環境壞了,
+#: 再重啟只是反覆載模型。超過之後混合辨識只剩樣板那條,純 YOLO 就停。
+_RESTARTS = 3
 
 
 class YoloHub:
@@ -98,7 +103,9 @@ class YoloVisionWorker(threading.Thread):
         self._bus, self._hub = bus, hub
         self.backend = "hybrid" if hybrid else "yolo"
         self.label = "混合辨識" if hybrid else "YOLO"
-        self._client = YoloClient()
+        #: 推論子程序。重啟過 :data:`_RESTARTS` 次還是死掉就是 ``None``,見 :meth:`_revive`。
+        self._client: YoloClient | None = YoloClient()
+        self._restarts = 0
         # 混合辨識:同一份畫面另外交給樣板的牌桌那條路,兩條事件流在事件層合併再發佈。
         # 見 mia.hybrid.merge。手牌由擷取那一條用樣板認,樣板的牌桌要它。
         self._merger: StreamMerger | None = None
@@ -135,6 +142,8 @@ class YoloVisionWorker(threading.Thread):
         self._waiting_since: float | None = None
         self._waiting_logged = ""
         self._waiting_logged_at = 0.0
+        #: 已經記過「借用樣板點數」的那一局。
+        self._borrowed = 0
 
     def offer_frame(self, image: np.ndarray, calibration: Calibration) -> None:
         with self._lock:
@@ -188,19 +197,53 @@ class YoloVisionWorker(threading.Thread):
             )
 
     def stop(self) -> None:
+        """UI 執行緒呼叫,**不等任何東西**。
+
+        以前在這裡 ``close()`` 子程序,等它結束最多四秒,整個視窗跟著卡住。現在只送中斷訊號,
+        讓卡在等回應的工作執行緒馬上醒來;真的關掉子程序交給 :meth:`run` 的 finally,
+        另外開一條背景執行緒保底:子程序卡死不讀管線時,工作執行緒會卡在寫入,finally 走不到。
+        """
         self._stopping.set()
         self._fresh.set()
         self._capture.stop()
         if self._table is not None:
             self._table.stop()
         self._hub.publish(self._stream.kyoku, Stream(doubt=f"{self.label}已停止"))
-        self._client.close()
+        client = self._client
+        if client is not None:
+            client.abort()
+            threading.Thread(target=client.close, name="yolo-close", daemon=True).start()
+
+    def _revive(self, exc: EngineError) -> bool:
+        """推論子程序中斷了,重開一個。重啟過太多次就放棄,回 ``False``。
+
+        以前一死就讓整條執行緒結束,狀態列停在「已停止」,要手動關掉再開;混合辨識連樣板那條
+        也一起收掉。
+        """
+        reason: EngineError = exc
+        while self._restarts < _RESTARTS:
+            self._restarts += 1
+            logger.warning("YOLO 推論子程序中斷:{},第 {} 次重啟", reason, self._restarts)
+            self.status.say(f"{self.label}重啟中…")
+            if self._client is not None:
+                self._client.close()
+            try:
+                client = YoloClient()
+                client.start()
+            except EngineError as again:
+                reason = again
+                continue
+            self._client = client
+            return True
+        logger.error("YOLO 推論子程序重啟 {} 次都不成,不再重啟:{}", _RESTARTS, reason)
+        return False
 
     def run(self) -> None:
         self.status.alive = True
         self._hub.clear()
         try:
             self.status.say(f"載入{self.label}模型…")
+            assert self._client is not None
             self._client.start()
             if self._table is not None:
                 self._table.start()
@@ -210,6 +253,10 @@ class YoloVisionWorker(threading.Thread):
                 self._fresh.clear()
                 with self._lock:
                     latest, self._latest = self._latest, None
+                if self._client is None:
+                    # YOLO 救不回來了。畫面照樣經 offer_frame 進樣板那條,合併層只剩樣板。
+                    self.status.say(f"{self.label}:YOLO 已停止,只用樣板")
+                    continue
                 if latest is None:
                     self.status.say(self._capture.status.read() or f"{self.label}等待遊戲畫面")
                     continue
@@ -220,10 +267,25 @@ class YoloVisionWorker(threading.Thread):
                     self.status.say(f"{self.label}找不到牌桌，請重新框選遊戲畫面")
                     continue
                 frame = cv2.resize(cropped, (1920, 1080), interpolation=cv2.INTER_AREA)
-                payload = self._client.feed(frame, wall)
+                try:
+                    payload = self._client.feed(frame, wall)
+                except EngineError as exc:
+                    if self._stopping.is_set():
+                        break
+                    if self._revive(exc):
+                        continue
+                    if self._table is None:
+                        raise
+                    self._client = None
+                    self._offer(StreamMerger.YOLO, self._stream.kyoku, Stream(stalled=True))
+                    continue
                 if self._stopping.is_set():
                     break
-                stream = self._stream.update(payload)
+                opening = None if self._merger is None else self._merger.template_opening()
+                stream = self._stream.update(payload, opening=opening)
+                if self._stream.borrowed and self._borrowed != self._stream.kyoku:
+                    self._borrowed = self._stream.kyoku
+                    logger.info("YOLO 第 {} 局讀不到點數,借用樣板的", self._stream.kyoku)
                 self._watch_start(bool(stream.events))
                 if not stream.events:
                     stream = Stream(stalled=True, doubt=f"{self.label}等待開局資訊")
@@ -267,7 +329,8 @@ class YoloVisionWorker(threading.Thread):
                 self._table.stop()
                 if self._table.ident is not None:
                     self._table.join(timeout=2)
-            self._client.close()
+            if self._client is not None:
+                self._client.close()
             self.status.alive = False
 
 

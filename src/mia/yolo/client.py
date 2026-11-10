@@ -146,6 +146,14 @@ class YoloClient:
             raise EngineError("YOLO 混合觀測輸入已中斷") from exc
         return self._receive()
 
+    def abort(self) -> None:
+        """讓卡在 :meth:`_receive` 的那條執行緒馬上收到「已停止」,自己不等子程序。
+
+        :meth:`close` 會等子程序結束,最多四秒;UI 執行緒按關閉時只該呼叫這個,等的事交給
+        工作執行緒的 finally。
+        """
+        self._closed.set()
+
     def close(self) -> None:
         self._closed.set()
         with self._lock:

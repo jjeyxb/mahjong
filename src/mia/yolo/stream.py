@@ -73,6 +73,23 @@ def _calls_after_sources(ledger: Sequence[Mapping[str, Any]]) -> list[Mapping[st
     return ordered
 
 
+def _borrowed_scores(
+    start: Mapping[str, Any], opening: StartKyoku | None
+) -> list[int] | None:
+    """YOLO 的開局只差點數、樣板讀到的是同一局的話,借樣板的點數(已經是自己視角)。
+
+    實打 selfplay-20261110-091423:YOLO 第 2 局等了 67 秒,一直只差點數(四家都讀到、加上供託
+    是 100000、連續幾次一樣才收),那段時間別家的捨牌沒有 YOLO 核對。重播用 JPEG 不會這樣。
+    場風、局數、本場、供託都要跟樣板一樣:樣板還停在上一局的話,借到的是上一局的點數。
+    """
+    if opening is None or start.get("status") != "PENDING" or start.get("missing") != ["scores"]:
+        return None
+    for key in ("bakaze", "kyoku", "honba", "kyotaku"):
+        if start.get(key) != getattr(opening, key):
+            return None
+    return list(opening.scores)
+
+
 def _counts_ok(tiles: Sequence[str]) -> bool:
     return (
         all(t != "?" for t in tiles)
@@ -88,24 +105,29 @@ class LedgerStream:
         self.hand_id: str | None = None
         self.kyoku = 0
         self.rejected: tuple[str, ...] = ()
+        #: 這一局的點數是借樣板的。見 :func:`_borrowed_scores`。
+        self.borrowed = False
         #: 這一份為什麼還不能輸出開局。給記錄用:實打時 YOLO 整局停在「等待開局資訊」
         #: (selfplay-20261110-003121 東4 ~ 南2局),重播同一段錄影卻讀得到,事後查不出卡在哪。
         self.waiting = ""
         self._initial: list[str] | None = None
 
-    def update(self, payload: Mapping[str, Any]) -> Stream:
+    def update(self, payload: Mapping[str, Any], *, opening: StartKyoku | None = None) -> Stream:
+        """``opening``:樣板這一局的開局,YOLO 讀不到點數時借用。"""
         hand_id = str(payload.get("hand_id", ""))
         if hand_id != self.hand_id:
             self.hand_id = hand_id
             self.kyoku += 1
             self._initial = None
         ledger = _calls_after_sources(payload.get("events", []))
-        start = next((e for e in ledger if e["type"] == "start_kyoku"), None)
+        start = next((e for e in ledger if e.get("type") == "start_kyoku"), None)
         self.waiting = ""
+        self.borrowed = False
         if not start:
             self.waiting = f"事件帳沒有 start_kyoku(共 {len(ledger)} 筆)"
             return Stream(stalled=True)
-        if not start.get("export_eligible"):
+        scores = None if start.get("export_eligible") else _borrowed_scores(start, opening)
+        if not start.get("export_eligible") and scores is None:
             self.waiting = (
                 f"start_kyoku 未齊:status={start.get('status')} "
                 f"missing={start.get('missing')} tehais_note={start.get('tehais_note')!r}"
@@ -125,21 +147,46 @@ class LedgerStream:
                     "honba",
                     "kyotaku",
                     "oya",
-                    "scores",
                     "tehais",
                     "dora_marker",
                 )
             }
             msg["type"] = "start_kyoku"
             msg["oya"] = (msg["oya"] - me) % 4
-            for key in ("scores", "tehais"):
-                msg[key] = [msg[key][(me + i) % 4] for i in range(4)]
+            msg["tehais"] = [msg["tehais"][(me + i) % 4] for i in range(4)]
+            if scores is None:
+                msg["scores"] = [start["scores"][(me + i) % 4] for i in range(4)]
+            else:
+                msg["scores"] = scores
+                self.borrowed = True
             events: list[MjaiEvent] = [parse_event(msg)]
         except (KeyError, TypeError, ValueError, IndexError) as exc:
             self.waiting = f"start_kyoku 欄位錯誤:{exc!r}"
             return Stream(stalled=True)
+        try:
+            events, waiting_own = self._replay(ledger, events, msg["oya"], payload)
+        except (KeyError, TypeError, ValueError, IndexError, AttributeError) as exc:
+            # 一筆欄位不齊的事件不能讓整條辨識停掉:這裡丟出去的話 YoloVisionWorker 的執行緒就結束,
+            # 狀態列停在「已停止」,混合辨識連樣板那條也一起收掉。這一幀當成還沒讀到,下一幀再說。
+            self.waiting = f"事件帳欄位錯誤:{exc!r}"
+            return Stream(stalled=True, doubt="YOLO 事件帳欄位錯誤，等待下一幀")
+        reason = validate_inventory(events)
+        if waiting_own and reason is None:
+            reason = "等待自己的摸打辨識"
+        return Stream(tuple(events), stalled=waiting_own, doubt=reason)
 
-        turn, can_discard = msg["oya"], False
+    def _replay(
+        self,
+        ledger: Sequence[Mapping[str, Any]],
+        events: list[MjaiEvent],
+        oya: int,
+        payload: Mapping[str, Any],
+    ) -> tuple[list[MjaiEvent], bool]:
+        """把事件帳照輪次重放成事件流。回傳 ``(事件, 是否在等自己的摸打)``。
+
+        事件帳的欄位由推論子程序決定,缺欄位時直接丟 ``KeyError`` 等例外,由 :meth:`update` 接住。
+        """
+        turn, can_discard = oya, False
         last_discard: Mapping[str, Any] | None = None
         accepted_discards: set[str] = set()
         claimed: set[str] = set()
@@ -175,7 +222,8 @@ class LedgerStream:
                 if actor == 0 and e.get("pai") in (None, "?"):
                     waiting_own = True
                     break
-                body["pai"] = e["pai"]
+                # 別家的摸牌本來就看不到牌面,少了這一欄不必整幀作廢。
+                body["pai"] = e["pai"] if actor == 0 else e.get("pai") or "?"
                 can_discard = True
             elif typ == "dahai":
                 if actor == turn and not can_discard and actor != 0:
@@ -248,12 +296,7 @@ class LedgerStream:
             repaired = _initial_from_hand(events, full)
             if repaired is not None:
                 self._initial = repaired
-        events = _with_initial(events, self._initial)
-
-        reason = validate_inventory(events)
-        if waiting_own and reason is None:
-            reason = "等待自己的摸打辨識"
-        return Stream(tuple(events), stalled=waiting_own, doubt=reason)
+        return _with_initial(events, self._initial), waiting_own
 
 
 def validate_inventory(events: Sequence[MjaiEvent]) -> str | None:
@@ -265,10 +308,17 @@ def validate_inventory(events: Sequence[MjaiEvent]) -> str | None:
     visible[events[0].dora_marker] += 1
     if sum(hand.values()) != 13 or not _counts_ok(list(visible.elements())):
         return "起手牌或寶牌張數對不上"
+    # 立直之後吃碰槓,libriichi 不是報錯而是整個行程崩潰,引擎掉隊到下一局才救得回來。
+    # YOLO 讀錯立直棒是哪一家的就會踩到。暗槓合法,不算。
+    reached: set[int] = set()
     for event in events[1:]:
         body = event.to_dict()
         actor = body.get("actor")
         typ = event.TYPE
+        if typ == "reach_accepted" and actor is not None:
+            reached.add(actor)
+        elif typ in ("chi", "pon", "daiminkan", "kakan") and actor in reached:
+            return "立直之後鳴牌，等待事件更正"
         newly_seen: list[str] = []
         spent: list[str] = []
         if typ == "dora":

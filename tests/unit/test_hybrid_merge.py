@@ -79,6 +79,16 @@ def test_a_call_yolo_never_saw_is_kept():
     assert merge(side(called), side(missing)) == tuple(called)
 
 
+def test_a_phantom_call_with_other_draws_inside_is_dropped():
+    """樣板重讀了下家與對家的舊捨牌、推成下家碰,YOLO 那裡什麼都沒有。
+
+    真的被鳴走的那段不會夾著別家的摸牌(實打 selfplay-20261110-091423 東2局1本場)。
+    """
+    phantom = [*OPENING, Pon(actor=1, target=3, pai="1s", consumed=["1s", "1s"]),
+               Dahai(actor=1, pai="9m", tsumogiri=False), *turn(2, "N"), *NEXT]
+    assert merge(side(phantom), side([*OPENING, *NEXT])) == (*OPENING, *NEXT)
+
+
 def test_own_moves_stay_with_the_template():
     yolo_misread = [*OPENING, *turn(0, "C", "3s"), *turn(1, "7m")]
     assert merge(side([*OPENING, *NEXT]), side(yolo_misread)) == (*OPENING, *NEXT)
@@ -122,6 +132,21 @@ def test_five_of_a_tile_is_not_plausible():
     fives = [start(), *turn(1, "N"), *turn(2, "N"), *turn(3, "N"), *turn(1, "N"), *turn(2, "N")]
     assert not plausible(fives)
     assert plausible(fives[:-2])
+
+
+def test_a_call_after_reach_is_not_plausible():
+    """立直後鳴牌 libriichi 整個行程崩潰。一邊的立直成立配上另一邊的碰也要擋;暗槓合法。"""
+    reach = [*OPENING[:7], Tsumo(actor=1, pai="?"), Reach(actor=1),
+             Dahai(actor=1, pai="9m", tsumogiri=True), ReachAccepted(actor=1), *turn(2, "N")]
+    pon = [Pon(actor=1, target=2, pai="N", consumed=["N", "N"]),
+           Dahai(actor=1, pai="W", tsumogiri=False)]
+    assert not plausible([*reach, *pon])
+    kan = [Tsumo(actor=1, pai="?"), Ankan(actor=1, consumed=["P"] * 4), Dora(dora_marker="9m"),
+           Tsumo(actor=1, pai="?"), Dahai(actor=1, pai="W", tsumogiri=True)]
+    assert plausible([*reach, *turn(3, "1s"), *turn(0, "W", "2s"), *kan])
+    pon = [Pon(actor=1, target=2, pai="1s", consumed=["1s", "1s"]),
+           Dahai(actor=1, pai="W", tsumogiri=False)]
+    assert plausible([*OPENING, *NEXT, *turn(2, "1s"), *pon])
 
 
 def test_only_the_implausible_correction_is_dropped():

@@ -764,6 +764,24 @@ class TestABatchOfTilesAtTheEnd:
         steps = worker._order(1.0, self.BATCH, (), 35, ())  # noqa: SLF001
         assert sum(step.action is Action.DAHAI for step in steps) == 5
 
+    def test_an_unread_wall_holds_the_batch_for_the_next_reading(
+        self, templates: TemplateSet
+    ) -> None:
+        """牌河那一層已經發過這批牌,丟掉就永遠漏了。等下一輪讀到余牌再判。"""
+        worker = self._worker(templates)
+        assert worker._order(1.0, self.BATCH, (), None, ()) == []  # noqa: SLF001
+        assert worker._order(1.5, (), (), None, ()) == []  # noqa: SLF001
+        steps = worker._order(2.0, (), (), 35, ())  # noqa: SLF001
+        assert sum(step.action is Action.DAHAI for step in steps) == 5
+        assert worker._joined == ([], [], [])  # noqa: SLF001
+
+    def test_a_batch_the_wall_never_confirms_is_dropped(self, templates: TemplateSet) -> None:
+        worker = self._worker(templates)
+        assert worker._order(1.0, self.BATCH, (), None, ()) == []  # noqa: SLF001
+        assert worker._order(4.5, (), (), None, ()) == []  # noqa: SLF001
+        assert worker._joined == ([], [], [])  # noqa: SLF001
+        assert worker._order(5.0, (), (), 35, ()) == []  # noqa: SLF001
+
 
 class TestRevisit:
     """輪到自己時還沒停穩的牌也要先讀,停穩之後讀到不一樣的要改掉。"""

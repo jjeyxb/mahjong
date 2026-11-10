@@ -230,6 +230,13 @@ _WALL_LOST = 5
 #: 最多 3 張。
 _JOINED_LATE = 4
 
+#: 一輪湧進一批捨牌而余牌讀不到時,最多留著等幾輪余牌。見 :meth:`TableWorker._order`。
+#:
+#: 真牌與結算畫面的假牌只有余牌分得開,讀不到的那一輪分不出來。以前直接丟掉,而牌河那一層
+#: 已經發過這些牌、不會再發:被立繪蓋住幾秒、回來那一輪余牌又剛好讀不到,整批就漏了,之後
+#: 「余牌對不上」整局沒有建議。等太久還是丟:結算畫面的假牌不會等到余牌。
+_JOINED_WAIT = 3.0
+
 
 def _sure(match: Match) -> bool:
     """牌河這一格的答案有把握。"""
@@ -445,6 +452,9 @@ class TableWorker(threading.Thread):
         self._turn_discards: list[_Seen] = []
         self._turn_melds: list[int] = []
         self._turn_kans: list[int] = []
+        #: 一輪湧進一批、余牌還讀不到的捨牌與副露,與從哪一輪開始等。見 :meth:`_order`。
+        self._joined: tuple[list[_Seen], list[int], list[int]] = ([], [], [])
+        self._joined_since: float | None = None
         self.steps: list[Step] = []
         self._own = HandWatcher()
         self._own_behind = 0
@@ -1059,7 +1069,7 @@ class TableWorker(threading.Thread):
 
     def _emit(self, position: int, known: list[str]) -> None:
         """把這一家看得見的河交給 :class:`RiverWatcher`,新的捨牌送進 tracker。"""
-        fresh = self._rivers.observe(position, known)
+        fresh = self._rivers.observe(position, known, melds=sum(self._melds.groups))
         if position and len(fresh) == 1:
             # 排序器可能被前面的動作卡住數秒。保留看到新牌時的手牌形狀判斷,
             # 不能等排進事件流時才拿已恢復完整的手牌推成摸切。
@@ -1539,12 +1549,29 @@ class TableWorker(threading.Thread):
         hurry: bool = False,
     ) -> list[Step]:
         assert self._turns is not None
+        held, held_melds, held_kans = self._joined
+        if held:
+            discards = [*held, *discards]
+            melds, kans = [*held_melds, *melds], [*held_kans, *kans]
+            self._joined = ([], [], [])
         if len(discards) >= _JOINED_LATE:
             # 余牌要跟著減才是真的牌。和了之後的結算畫面會一次讀出一排假牌,余牌不會動。
-            drawn = _OPENING_WALL[0] - (wall if wall is not None else _OPENING_WALL[0])
+            if wall is None:
+                # 這一輪余牌讀不到,分不出真假:留著等下一輪,最多等 _JOINED_WAIT 輪。
+                # 留在這裡而不是放回 _turn_discards:那邊會再走一次 _own_first,自己的牌會算兩次。
+                if self._joined_since is None:
+                    self._joined_since = tick
+                if tick - self._joined_since < _JOINED_WAIT:
+                    self._joined = (list(discards), list(melds), list(kans))
+                    return []
+                self._joined_since = None
+                return []
+            self._joined_since = None
+            drawn = _OPENING_WALL[0] - wall
             if (drawn - self._turns.drawn) * 2 < len(discards):
                 return []
             return self._turns.jump(tick, discards, wall)
+        self._joined_since = None
         growing = [position for position in range(1, len(SEATS)) if self._melds.growing(position)]
         # 上家不等:上家打完就輪到自己。見 mia.tracker.tedashi。
         now = time.monotonic()
@@ -1717,6 +1744,8 @@ class TableWorker(threading.Thread):
         self._turn_discards = []
         self._turn_melds = []
         self._turn_kans = []
+        self._joined = ([], [], [])
+        self._joined_since = None
         self.steps = []
         self._known = [[] for _ in SEATS]
         self._guess = [{} for _ in SEATS]
