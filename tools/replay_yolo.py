@@ -39,7 +39,9 @@ def main() -> None:
     )
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
-    manifest = json.loads((args.session / "manifest.json").read_text())
+    # 讀寫一律指定 UTF-8:Windows 預設用系統語系編碼(cp950),而 manifest 裡有中文的視窗標題,
+    # 不指定的話第一行就 UnicodeDecodeError(2026-11-11 重播 Steam 錄影實測)。
+    manifest = json.loads((args.session / "manifest.json").read_text(encoding="utf-8"))
     first = manifest["first_frame_wall"]
     sys.path.insert(0, str(ROOT / "engines/yolo"))
     from worker import Session
@@ -63,10 +65,11 @@ def main() -> None:
         if client:
             client.start()
         if args.observations:
-            records = (json.loads(line) for line in args.observations.open() if line.strip())
+            lines = args.observations.open(encoding="utf-8")
+            records = (json.loads(line) for line in lines if line.strip())
         else:
             records = iter(manifest["frames"])
-        with (args.out / "vision.jsonl").open("w") as log:
+        with (args.out / "vision.jsonl").open("w", encoding="utf-8") as log:
             for i, record in enumerate(records, 1):
                 if session:
                     with redirect_stdout(sys.stderr):
@@ -121,7 +124,9 @@ def main() -> None:
         rejected_event_ids=sorted(rejected),
         elapsed_seconds=time.monotonic() - started,
     )
-    (args.out / "summary.json").write_text(json.dumps(stats, ensure_ascii=False, indent=2) + "\n")
+    (args.out / "summary.json").write_text(
+        json.dumps(stats, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     print(json.dumps(stats, ensure_ascii=False, indent=2))
 
 
