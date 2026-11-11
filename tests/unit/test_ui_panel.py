@@ -1809,3 +1809,21 @@ class TestYoloSkinNotice:
         assert "牌背" in box.text()
         assert "牌桌" in box.text()
 
+
+def test_the_candidate_count_box_has_room_for_two_digits(panel) -> None:
+    """候選數的框只有 58px 寬,數字欄位要裝得下最大值 20。
+
+    2026-11-12:樣式表替上下箭頭留了右內距,Qt 擺箭頭時又扣一次,數字欄位只剩 10px,
+    Windows 125% 縮放下連「8」都看不到。
+    """
+    from PySide6.QtWidgets import QStyle, QStyleOptionSpinBox
+
+    _, window = panel
+    spin = window._advice._candidate_count  # noqa: SLF001
+    spin.ensurePolished()
+    option = QStyleOptionSpinBox()
+    spin.initStyleOption(option)
+    field = spin.style().subControlRect(
+        QStyle.ComplexControl.CC_SpinBox, option, QStyle.SubControl.SC_SpinBoxEditField, spin
+    )
+    assert field.width() >= spin.fontMetrics().horizontalAdvance(str(spin.maximum())) + 4

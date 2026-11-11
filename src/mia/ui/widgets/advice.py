@@ -285,7 +285,12 @@ class AdviceTab(QWidget):
         self._candidate_count.setRange(1, 20)
         self._candidate_count.setValue(self.max_candidates)
         self._candidate_count.setToolTip(tr("這份清單最多列幾個"))
-        self._candidate_count.setFixedWidth(58)
+        # 寬度跟著字型算,不寫死:數字欄位要裝得下最大值,而字寬隨系統字型與縮放變。
+        # 36 = 左右邊框 2 + 樣式表左右內距 8+4 + 箭頭 18 + 文字框自帶的左右邊距 2+2
+        # (數字見 mia.ui.theme 的 QSpinBox 規則)。58 是 macOS 上原本調好的寬度,當下限。
+        count = self._candidate_count
+        widest = count.fontMetrics().horizontalAdvance(str(count.maximum()))
+        count.setFixedWidth(max(58, widest + 36))
         self._candidate_count.valueChanged.connect(self.candidate_count_changed)
         header.addWidget(self._candidates_label)
         header.addStretch(1)

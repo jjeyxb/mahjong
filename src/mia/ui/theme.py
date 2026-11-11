@@ -149,7 +149,10 @@ QComboBox, QSpinBox {{
     padding: 5px 28px 5px 10px; min-height: 18px;
     combobox-popup: 0;
 }}
-QSpinBox {{ padding: 4px 20px 4px 8px; }}
+/* 右邊內距不必替上下箭頭留位置:箭頭(下面的 ::up-button,寬 18)貼著邊框擺,
+   Qt 算數字欄位時已經扣掉它。原本這裡也留 20px,等於扣兩次 —— 58px 寬的框只剩
+   10px 給數字,Windows 125% 縮放下連一位數都被切掉(2026-11-12 實測)。 */
+QSpinBox {{ padding: 4px 4px 4px 8px; }}
 QComboBox:hover, QSpinBox:hover {{ background: {c.field_hover}; border-color: {c.border_hover}; }}
 QComboBox:on, QComboBox:focus, QSpinBox:focus {{ border-color: {c.accent}; }}
 QComboBox:disabled, QSpinBox:disabled {{
