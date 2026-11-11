@@ -60,7 +60,7 @@ begin
   if CurPageID <> wpSelectDir then exit;
   Root := RemoveBackslashUnlessRoot(WizardDirValue);
   if (Length(Root) <= 3) or (CompareText(Root, ExpandConstant('{win}')) = 0) or
-     (CompareText(Root, ExpandConstant('{userprofile}')) = 0) then begin
+     (CompareText(Root, ExpandConstant('{%USERPROFILE}')) = 0) then begin
     MsgBox('請選擇 MIA 專用資料夾。', mbError, MB_OK);
     Result := False;
     exit;
