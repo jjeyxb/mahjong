@@ -15,8 +15,9 @@
 
 **不 import 上游的 ``prelude``。** 它會 ``import torch.utils.tensorboard``,
 連帶要求裝 tensorboard —— 那是訓練才需要的東西,推論用不到。它做的另外兩件事
-(把 stdin 設成 utf-8、關掉警告)在這裡沒有必要:父程序開子程序時就指定了
-utf-8,警告本來就走 stderr,不會污染 stdout 上的協定。
+裡,關掉警告沒有必要(警告本來就走 stderr,不會污染 stdout 上的協定);**把 stdio
+設成 utf-8 則是必要的**,由 :func:`main` 自己做。父程序 ``encoding="utf-8"`` 只管
+父程序那一端,子程序在 Windows 上照樣用系統語系編碼讀,見 :func:`main` 開頭。
 
 與上游 ``mortal.py`` 的四個差異
 -------------------------------
@@ -130,6 +131,12 @@ def _load(weights: str, seat: int, upstream: Path):
 
 
 def main() -> int:
+    # 三條管線一律 UTF-8,與父程序那一端(subprocess_engine 的 encoding="utf-8")對齊。
+    # Windows 上被接管線的 stdio 用系統語系編碼(繁中 cp950 + surrogateescape):父程序
+    # 送來的中文被解成 surrogate,libriichi 轉回 UTF-8 時就丟「surrogates not allowed」,
+    # 引擎被移出這一場,AI 建議只剩規則式基準。macOS 本來就是 UTF-8,所以沒發生過。
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description="Mortal MJAI bot(子程序端)")
     parser.add_argument(
         "--seat",
