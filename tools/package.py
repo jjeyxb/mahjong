@@ -249,6 +249,9 @@ def main() -> int:
         info["NSScreenCaptureUsageDescription"] = (
             "MIA 需要擷取遊戲畫面，以辨識麻將牌並提供 AI 建議與放銃分析。"
         )
+        # PyInstaller 預設寫 0.0.0,Finder「取得資訊」看到的就是它。
+        info["CFBundleShortVersionString"] = version
+        info["CFBundleVersion"] = version
         info_path.write_bytes(plistlib.dumps(info))
         subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(program)], check=True)
     installed = destination / program.name
