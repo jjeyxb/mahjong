@@ -164,6 +164,11 @@ class HudDigits:
 
     def best(self, name: str, patch: np.ndarray, *, floor: float = _SCORE) -> str | None:
         """``patch`` 是這一套裡的哪個字;沒把握回 ``None``。"""
+        score, margin, label = self.rank(name, patch)
+        return label if score >= floor and margin >= _MARGIN else None
+
+    def rank(self, name: str, patch: np.ndarray) -> tuple[float, float, str]:
+        """最像的那個字:``(分數, 領先第二名多少, 字)``。門檻由呼叫端決定。"""
         ranked = sorted(
             (
                 (max(_correlation(patch, face) for face in faces), label)
@@ -173,7 +178,7 @@ class HudDigits:
         )
         score, label = ranked[0]
         runner_up = ranked[1][0] if len(ranked) > 1 else -1.0
-        return label if score >= floor and score - runner_up >= _MARGIN else None
+        return score, score - runner_up, label
 
 
 def _correlation(a: np.ndarray, b: np.ndarray) -> float:
@@ -258,6 +263,38 @@ class Hud:
         if self.kyoku is None or self.dealer is None:
             return None
         return (self.kyoku - 1 - self.dealer) % 4
+
+
+#: 場風那個字往四周各試幾個像素。
+#:
+#: 它是整片 HUD 裡唯一整格拿去比模板的欄位(數字會先切出字形,位移無所謂),而裁切框
+#: 貼著字。Retina 上框有 50 多 px,差 1 px 無所謂;Windows 125%、畫布 1600×900 時只剩
+#: 約 34×29 px,牌桌矩形偏 1 px 分數就從 0.97 掉到 0.849,剛好在門檻底下 —— 讀不到
+#: 場風,這一局就永遠讀不穩,樣板比對整局沒有事件流(2026-11-11 實測)。
+#: 而牌桌矩形差 1 px 是常態:畫布換算、自動校正的剝邊都會有這種誤差。
+#:
+#: 門檻不動。掃描讓錯的模板分數也跟著變高,但實測 ±2 px 內錯的那幾個仍在 0.8 以下,
+#: 北場(沒有模板)照樣棄權。
+_WIND_JITTER = 2
+
+
+def _read_wind(image: np.ndarray, table: Rect, digits: HudDigits) -> str | None:
+    best: tuple[float, float, str] | None = None
+    for dy in range(-_WIND_JITTER, _WIND_JITTER + 1):
+        for dx in range(-_WIND_JITTER, _WIND_JITTER + 1):
+            shifted = Rect(table.x + dx, table.y + dy, table.width, table.height)
+            patch = _crop(image, shifted, _WIND)
+            if patch.size == 0:
+                continue
+            gray = cv2.resize(
+                cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY), _DIGIT, interpolation=cv2.INTER_AREA
+            )
+            ranked = digits.rank("wind", gray)
+            if best is None or ranked[0] > best[0]:
+                best = ranked
+    if best is None or best[0] < _WIND_SCORE or best[1] < _MARGIN:
+        return None
+    return best[2]
 
 
 def _crop(image: np.ndarray, table: Rect, field: tuple[float, float, float, float]) -> np.ndarray:
@@ -395,14 +432,9 @@ def read_hud(
     image: np.ndarray, table: Rect, digits: HudDigits, *, panel: Rect | None = None
 ) -> Hud:
     """讀一張畫面的 HUD。讀不到的欄位是 ``None``。"""
-    wind = cv2.resize(
-        cv2.cvtColor(_crop(image, table, _WIND), cv2.COLOR_BGR2GRAY),
-        _DIGIT,
-        interpolation=cv2.INTER_AREA,
-    )
     corner = _on_corner_panel(table, panel)
     return Hud(
-        bakaze=digits.best("wind", wind, floor=_WIND_SCORE),
+        bakaze=_read_wind(image, table, digits),
         kyoku=_number(_crop(image, table, _ROUND), digits, "round"),
         wall=_number(_crop(image, table, _WALL), digits, "wall"),
         honba=_number(_crop(image, corner, _HONBA), digits, "stick"),

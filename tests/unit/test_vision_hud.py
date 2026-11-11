@@ -56,6 +56,41 @@ class TestOnARealFrame:
         assert hud.scores_agree
 
 
+class TestOnASmallWindowsFrame:
+    """Windows 125%、畫布 1600×900 的一幀(只留中央面板),2026-11-11 實測。
+
+    牌桌只有 2000 px 寬,場風那個字裁出來約 34×29 px —— 比 Retina 小得多,牌桌矩形
+    偏 1 px 分數就從 0.97 掉到 0.849,剛好在門檻 0.85 底下。讀不到場風,這一局就
+    永遠讀不穩,樣板比對整局沒有事件流、沒有建議,而且一句話都不說。
+
+    矩形是 ``Canvas.table_rect`` 在這台機器上真的給出來的那個(0, 109, 2000×1125);
+    實際畫布是 (1, 109, 1999×1124),差的正是那 1 px。
+    """
+
+    #: 存檔時裁掉的左上角,矩形要跟著平移。
+    ORIGIN = (780, 400)
+
+    @pytest.fixture(scope="class")
+    def image(self) -> np.ndarray:
+        image = cv2.imread(str(FIXTURES / "hud_win125.png"))
+        assert image is not None
+        return image
+
+    def table(self, x: int, y: int, width: int, height: int) -> Rect:
+        return Rect(x - self.ORIGIN[0], y - self.ORIGIN[1], width, height)
+
+    def test_the_canvas_rect_reads_the_round(self, image: np.ndarray) -> None:
+        hud = read_hud(image, self.table(0, 109, 2000, 1125), HudDigits.load())
+        assert (hud.bakaze, hud.kyoku, hud.wall) == ("E", 1, 63)
+
+    @pytest.mark.parametrize("dx, dy", [(-2, 0), (2, 0), (0, -2), (0, 2), (1, 1)])
+    def test_a_rect_a_pixel_or_two_off_still_reads_the_wind(
+        self, image: np.ndarray, dx: int, dy: int
+    ) -> None:
+        hud = read_hud(image, self.table(1 + dx, 109 + dy, 1999, 1124), HudDigits.load())
+        assert hud.bakaze == "E"
+
+
 class TestTheTurnLight:
     def test_it_is_toimens_turn(self) -> None:
         image = cv2.imread(str(FIXTURES / "table_full.jpg"))
