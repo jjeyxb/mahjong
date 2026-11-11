@@ -188,3 +188,18 @@ class TestHudOpacity:
         target = tmp_path / "ui.json"
         target.write_text(json.dumps({"hud_opacity": raw}), encoding="utf-8")
         assert UiState.load(target).hud_opacity == 1.0
+
+
+class TestDismissedNotices:
+    def test_they_round_trip(self, tmp_path) -> None:
+        state = UiState.load(tmp_path / "ui.json")
+        state.dismissed_notices = ("yolo_skin",)
+        state.save()
+        assert UiState.load(tmp_path / "ui.json").dismissed_notices == ("yolo_skin",)
+
+    @pytest.mark.parametrize("raw", ["yolo_skin", [1], None, {"yolo_skin": True}])
+    def test_a_wrong_type_shows_every_notice_again(self, tmp_path, raw) -> None:
+        """壞掉的值當成沒勾過 —— 多跳一次提醒,比該跳的時候不跳好。"""
+        target = tmp_path / "ui.json"
+        target.write_text(json.dumps({"dismissed_notices": raw}), encoding="utf-8")
+        assert UiState.load(target).dismissed_notices == ()

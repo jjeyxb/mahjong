@@ -23,6 +23,7 @@ __all__ = [
     "DangerSourcePicker",
     "GameLauncher",
     "HandRoiPicker",
+    "NoticeMemory",
     "PlatformPicker",
     "RecognitionPicker",
     "StylePicker",
@@ -162,6 +163,18 @@ class RecognitionPicker(Protocol):
     def can_pick_recognition(self) -> bool: ...
     def recognition_backend(self) -> str: ...
     def set_recognition_backend(self, value: str) -> None: ...
+
+
+class NoticeMemory(Protocol):
+    """記得哪些提醒被勾了「不再顯示」。
+
+    側邊視窗只問「這個提醒還要不要跳」,不知道答案存在哪 —— 存到
+    ``data/ui_state.json`` 是接線那一層(``tools/ui.py``)的決定,
+    與其他「順手記到磁碟」的選項同一個模式。
+    """
+
+    def wants(self, key: str) -> bool: ...
+    def dismiss(self, key: str) -> None: ...
 
 
 class AdviceSourcePicker(Protocol):

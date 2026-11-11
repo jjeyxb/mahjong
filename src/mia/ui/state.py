@@ -91,6 +91,9 @@ class UiState:
         compare_style: 上次選的並排比較對象,``None`` 代表不比較。
             與 :attr:`style` 撞在一起或名字不存在時一律當成不比較 ——
             開著比較要多載一份 130MB 的權重,**所以對不上的時候寧可不開**。
+        dismissed_notices: 使用者勾了「不再顯示」的提醒,存提醒的鍵(例如
+            ``yolo_skin``)。存鍵而不是一個提醒一個布林欄位:提醒會越加越多,
+            每加一個就多一個欄位、多一條型別規則,不值得。
     """
 
     platform: str = WEB
@@ -116,6 +119,7 @@ class UiState:
     log_pos: tuple[int, int] | None = None
     log_size: tuple[int, int] | None = None
     hud_opacity: float = 1.0
+    dismissed_notices: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         #: 從哪裡讀來的就存回哪裡 —— 呼叫端只需要在 :meth:`load` 指定一次路徑。
@@ -169,6 +173,7 @@ _POINTS = ("overlay_pos", "log_pos", "log_size")
 _RECTS = ("hand_roi", "table_rect")
 _TEXTS = ("platform", "language", "recognition_backend", "canvas", "style", "compare_style")
 _FRACTIONS = ("hud_opacity",)
+_KEYS = ("dismissed_notices",)
 
 
 def _numbers(value: object, count: int) -> bool:
@@ -201,6 +206,9 @@ def _known(raw: dict[str, Any]) -> dict[str, Any]:
             # 範圍外的值夾回來而不是丟掉:手改成 0 的人要的是「最透明」,不是預設的不透明。
             if isinstance(value, int | float) and not isinstance(value, bool):
                 out[field.name] = min(1.0, max(MIN_HUD_OPACITY, float(value)))
+        elif field.name in _KEYS:
+            if isinstance(value, list | tuple) and all(isinstance(v, str) for v in value):
+                out[field.name] = tuple(value)
         elif field.name in _TEXTS:
             # 型別對就收下,內容看不懂是各自的事(都會退回預設)
             if isinstance(value, str) or (value is None and field.default is None):

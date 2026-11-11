@@ -1715,3 +1715,97 @@ class TestOneSwitchCanTurnOnAnother:
         qtbot.addWidget(window)
         window._switches[features.ADVICE].click()  # noqa: SLF001
         assert not window._switches[features.ADVICE].isChecked()  # noqa: SLF001
+
+
+class _Recognition:
+    def __init__(self) -> None:
+        self.value = "template"
+
+    def can_pick_recognition(self) -> bool:
+        return True
+
+    def recognition_backend(self) -> str:
+        return self.value
+
+    def set_recognition_backend(self, value: str) -> None:
+        self.value = value
+
+
+class _Notices:
+    def __init__(self) -> None:
+        self.dismissed: set[str] = set()
+
+    def wants(self, key: str) -> bool:
+        return key not in self.dismissed
+
+    def dismiss(self, key: str) -> None:
+        self.dismissed.add(key)
+
+
+class TestYoloSkinNotice:
+    """切到會用 YOLO 的辨識方式時,提醒牌桌與牌背要用預設皮膚。"""
+
+    @pytest.fixture
+    def setup(self, qtbot, monkeypatch):
+        from mia.ui.panel import window as module
+
+        asked: list[bool] = []
+        answer = {"never_again": False}
+
+        def ask(_parent) -> bool:
+            asked.append(True)
+            return answer["never_again"]
+
+        monkeypatch.setattr(module, "_ask_yolo_skin", ask)
+        recognition, notices = _Recognition(), _Notices()
+        window = PanelWindow(ViewModel(), recognition=recognition, notices=notices)
+        qtbot.addWidget(window)
+        picker = window._recognition_pickers[0]  # noqa: SLF001
+        return picker, recognition, notices, asked, answer
+
+    @staticmethod
+    def _pick(picker, value: str) -> None:
+        picker.setCurrentIndex(picker.findData(value))
+
+    @pytest.mark.parametrize("value", ["yolo", "hybrid"])
+    def test_picking_a_yolo_backend_warns(self, setup, value) -> None:
+        picker, recognition, _, asked, _ = setup
+        self._pick(picker, value)
+        assert recognition.value == value
+        assert asked == [True]
+
+    def test_template_matching_does_not_warn(self, setup) -> None:
+        picker, _, _, asked, _ = setup
+        self._pick(picker, "yolo")
+        self._pick(picker, "template")
+        assert asked == [True]
+
+    def test_without_never_again_it_warns_every_time(self, setup) -> None:
+        picker, _, notices, asked, _ = setup
+        self._pick(picker, "yolo")
+        self._pick(picker, "template")
+        self._pick(picker, "yolo")
+        assert asked == [True, True]
+        assert notices.dismissed == set()
+
+    def test_never_again_is_remembered(self, setup) -> None:
+        picker, _, notices, asked, answer = setup
+        answer["never_again"] = True
+        self._pick(picker, "yolo")
+        self._pick(picker, "template")
+        self._pick(picker, "hybrid")
+        assert asked == [True]
+        assert notices.dismissed == {"yolo_skin"}
+
+    def test_the_box_has_a_never_again_checkbox(self, qtbot) -> None:
+        from mia.ui.panel.window import yolo_skin_box
+
+        box = yolo_skin_box(None)
+        qtbot.addWidget(box)
+        check = box.checkBox()
+        assert check is not None
+        assert check.text() == "不再顯示"
+        assert not check.isChecked()
+        assert "牌背" in box.text()
+        assert "牌桌" in box.text()
+

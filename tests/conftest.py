@@ -18,6 +18,22 @@ from mia.capture.base import Frame, WindowInfo
 from mia.utils.geometry import Rect
 
 
+@pytest.fixture(autouse=True)
+def _no_modal_dialogs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """模態對話框的 ``exec()`` 在測試裡直接回「取消」。
+
+    無頭環境沒有人按得到按鈕,``exec()`` 會永遠等下去 —— 整套測試卡死,而不是某一個失敗。
+    2026-11-12 就這樣卡了一整晚:切到混合辨識會跳「YOLO 需要預設皮膚」的提醒,
+    而 ``test_hybrid_ui`` 正好切了一次。要驗對話框內容的測試自己建出來檢查,不靠 exec。
+    """
+    try:
+        from PySide6.QtWidgets import QDialog, QMessageBox
+    except ImportError:
+        return
+    monkeypatch.setattr(QDialog, "exec", lambda _self: QDialog.DialogCode.Rejected)
+    monkeypatch.setattr(QMessageBox, "exec", lambda _self: QMessageBox.StandardButton.Cancel)
+
+
 @pytest.fixture
 def window() -> WindowInfo:
     return WindowInfo(

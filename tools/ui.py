@@ -501,6 +501,21 @@ class _RememberedRecognition:
         self._state.save()
 
 
+class _RememberedNotices:
+    """「不再顯示」的提醒記到磁碟。與其他 ``_Remembered*`` 同一個理由:持久化屬於接線層。"""
+
+    def __init__(self, state: UiState) -> None:
+        self._state = state
+
+    def wants(self, key: str) -> bool:
+        return key not in self._state.dismissed_notices
+
+    def dismiss(self, key: str) -> None:
+        if key not in self._state.dismissed_notices:
+            self._state.dismissed_notices = (*self._state.dismissed_notices, key)
+            self._state.save()
+
+
 class _RememberedAdviceSource:
     """把「AI 建議走圖像辨識」轉給 runtime,順手記到磁碟。"""
 
@@ -1013,6 +1028,7 @@ def main(argv: list[str] | None = None) -> int:
             _RememberedAdviceSource(runtime, ui_state) if runtime is not None else None
         ),
         recognition=_RememberedRecognition(runtime, ui_state) if runtime is not None else None,
+        notices=_RememberedNotices(ui_state),
         **options,  # type: ignore[arg-type]
     )
     model.subscribe(window.apply)

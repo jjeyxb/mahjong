@@ -369,5 +369,9 @@
  "愛鳴牌": "Calls more",
  "不愛鳴牌": "Calls less",
  "愛立直": "Riichi more",
- "不愛立直": "Riichi less"
+ "不愛立直": "Riichi less",
+ "YOLO 需要預設皮膚": "YOLO needs the default skins",
+ "使用 YOLO 前，請把雀魂的牌桌和牌背都換回預設皮膚。": "Before using YOLO, set both the Mahjong Soul table and tile back to the default skins.",
+ "YOLO 的模型是用預設皮膚的畫面訓練的。換了別的牌桌或牌背，它會認不出你摸到的牌，事件流卡住，AI 建議也出不來。\n網頁版和 Steam 版都一樣。": "YOLO's models were trained on screenshots with the default skins. With another table or tile back, it cannot recognize the tile you draw, the event stream stalls, and no AI advice appears.\nThis applies to both the Web and Steam versions.",
+ "不再顯示": "Don't show again"
 }

@@ -74,6 +74,7 @@ from mia.ui.switchboard import (
     DangerSourcePicker,
     GameLauncher,
     HandRoiPicker,
+    NoticeMemory,
     PlatformPicker,
     RecognitionPicker,
     StylePicker,
@@ -134,6 +135,40 @@ def _scrollable(content: QWidget) -> QScrollArea:
 
 #: 功能頁頂端的兩個子頁。
 SUBPAGES = (tr("主頁"), tr("設定"))
+
+
+#: 會用到 YOLO 的辨識方式。混合辨識也算:它的摸牌一樣靠 YOLO 那一半。
+_YOLO_BACKENDS = ("yolo", "hybrid")
+
+#: 「YOLO 要用預設皮膚」那個提醒在 :class:`~mia.ui.switchboard.NoticeMemory` 裡的鍵。
+YOLO_SKIN_NOTICE = "yolo_skin"
+
+
+def yolo_skin_box(parent: QWidget | None) -> QMessageBox:
+    """「YOLO 要用預設皮膚」的提醒框,附「不再顯示」勾選。
+
+    分出來是為了測試:測試要檢查框裡有什麼,但不能真的 ``exec()``(會卡住)。
+    """
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Icon.Warning)
+    box.setWindowTitle(tr("YOLO 需要預設皮膚"))
+    box.setText(tr("使用 YOLO 前，請把雀魂的牌桌和牌背都換回預設皮膚。"))
+    box.setInformativeText(
+        tr("YOLO 的模型是用預設皮膚的畫面訓練的。換了別的牌桌或牌背，"
+        "它會認不出你摸到的牌，事件流卡住，AI 建議也出不來。\n"
+        "網頁版和 Steam 版都一樣。")
+    )
+    box.setStandardButtons(QMessageBox.StandardButton.Ok)
+    box.setCheckBox(QCheckBox(tr("不再顯示"), box))
+    return box
+
+
+def _ask_yolo_skin(parent: QWidget) -> bool:
+    """跳出提醒框並等使用者按掉。回傳有沒有勾「不再顯示」。"""
+    box = yolo_skin_box(parent)
+    box.exec()
+    check = box.checkBox()
+    return check is not None and check.isChecked()
 
 
 class _Segmented(QWidget):
@@ -303,6 +338,7 @@ class PanelWindow(QMainWindow):
         overlay: 要控制的 Overlay。設定頁上的四個勾選都作用在它身上;
             ``None`` 時那四個畫成停用。
         preferences: 「語言與更新」那一區要接到誰。``None`` 時整區畫成停用。
+        notices: 記得哪些提醒勾了「不再顯示」。``None`` 時每次都跳(記不住)。
 
     Note:
         :meth:`apply` 是唯一的資料入口。ViewModel 的通知可能來自別的執行緒,
@@ -326,6 +362,7 @@ class PanelWindow(QMainWindow):
         danger_source: DangerSourcePicker | None = None,
         advice_source: AdviceSourcePicker | None = None,
         recognition: RecognitionPicker | None = None,
+        notices: NoticeMemory | None = None,
         event_log: EventLogWindow | None = None,
         overlay: OverlayWindow | None = None,
         preferences: AppPreferences | None = None,
@@ -351,6 +388,7 @@ class PanelWindow(QMainWindow):
         self._danger_source = danger_source
         self._advice_source = advice_source
         self._recognition = recognition
+        self._notices = notices
         self._event_log = event_log
         self._overlay = overlay
         self._preferences = preferences
@@ -1041,6 +1079,25 @@ class PanelWindow(QMainWindow):
             if picker is not source:
                 with QSignalBlocker(picker):
                     _select_data(picker, value)
+        if value in _YOLO_BACKENDS:
+            self._warn_yolo_skin()
+
+    def _warn_yolo_skin(self) -> None:
+        """切到會用 YOLO 的辨識方式時,提醒把牌桌與牌背換回預設皮膚。
+
+        YOLO 的模型是用預設皮膚的畫面訓練的。2026-11-11 Steam 版實測:
+        換了牌桌與牌背,區域模型完全框不到「摸到的牌」,換回預設就正常 ——
+        而且失敗時沒有任何錯誤訊息,只是事件流卡住、AI 建議出不來,
+        使用者不會想到是皮膚。所以在切換的當下講,不是寫在說明文件裡等人找。
+
+        跳在切換之後而不是之前:換不換是使用者已經決定的事,這只是提醒,
+        不該變成一個要按「確定」才換得成的關卡。
+        """
+        notices = self._notices
+        if notices is not None and not notices.wants(YOLO_SKIN_NOTICE):
+            return
+        if _ask_yolo_skin(self) and notices is not None:
+            notices.dismiss(YOLO_SKIN_NOTICE)
 
     def _build_platform_settings(self, page: QWidget, layout: QVBoxLayout) -> None:
         """玩的是網頁版還是 Steam 版。
