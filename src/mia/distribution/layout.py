@@ -135,6 +135,13 @@ class Layout:
         os.environ["XDG_CACHE_HOME"] = str(self.cache)
         os.environ["TORCH_HOME"] = str(self.cache / "torch")
         os.environ["YOLO_CONFIG_DIR"] = str(self.data / "yolo")
+        # YOLO 推論程序沒拿到這幾個值時,會把快取建在它自己的資料夾底下 —— 打包版那裡在
+        # App 裡面:在唯讀的磁碟映像裡建不了,程序一啟動就結束;在「應用程式」裡則會寫進
+        # 已簽章的 App。全部導到 MIA 自己的快取。
+        os.environ["MPLCONFIGDIR"] = str(self.cache / "matplotlib")
+        os.environ["AMD_COMGR_CACHE_DIR"] = str(self.cache / "comgr")
+        os.environ["MIOPEN_USER_DB_PATH"] = str(self.cache / "miopen")
+        os.environ["MIOPEN_CUSTOM_CACHE_DIR"] = str(self.cache / "miopen")
         os.environ["MIA_YOLO_MODELS"] = str(self.resources / "models" / "yolo")
         os.environ["MIA_RESOURCE_ROOT"] = str(self.resources)
 

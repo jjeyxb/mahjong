@@ -110,6 +110,9 @@ def test_owned_paths_survive_relocation(tmp_path, monkeypatch):
     assert layout.logs.is_dir()
     assert layout.cache.is_dir()
     assert Path(os.environ["PLAYWRIGHT_BROWSERS_PATH"]).is_relative_to(root)
+    # YOLO 程序的快取不能落在程式資料夾裡(Mac 上那是已簽章、可能唯讀的 App)。
+    for name in ("MPLCONFIGDIR", "AMD_COMGR_CACHE_DIR", "MIOPEN_USER_DB_PATH"):
+        assert Path(os.environ[name]).is_relative_to(layout.cache), name
 
 
 def test_mac_data_lives_in_the_library_not_next_to_the_app(tmp_path, monkeypatch):
