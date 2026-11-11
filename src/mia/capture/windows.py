@@ -343,13 +343,28 @@ class WindowsCaptureBackend(CaptureBackend):
                 f"視窗尺寸無效({width}x{height}),多半是剛被關掉: {window}"
             )
 
+        # **PrintWindow 從含隱形邊框的視窗左上角開始畫**,不是從看得見的那一塊。
+        # 點陣圖只開看得見的大小的話,左邊會多出一條隱形邊框、右邊同寬的內容被切掉
+        # (125% 螢幕上 8 px)。所以照整個視窗開,畫完再裁成看得見的那一塊 ——
+        # 輸出仍是 physical 的大小,呼叫端的約定不變。
+        # 實測 2026-11-11:偏的那 8 px 讓牌桌矩形變窄,HUD 的場風與局數認不出來,
+        # 樣板比對整局等不到開局。見 tests/unit/test_capture_windows.py 的 TestInvisibleBorders。
+        try:
+            outer_left, outer_top, outer_right, outer_bottom = win32gui.GetWindowRect(hwnd)
+        except _GDI_ERRORS as exc:
+            raise CaptureFailedError(f"問不到視窗邊界(多半剛被關掉): {window} — {exc}") from exc
+        dx = min(max(physical.x - outer_left, 0), max(outer_right - outer_left - width, 0))
+        dy = min(max(physical.y - outer_top, 0), max(outer_bottom - outer_top - height, 0))
+        full_width = max(outer_right - outer_left, dx + width)
+        full_height = max(outer_bottom - outer_top, dy + height)
+
         window_dc = mfc_dc = mem_dc = bitmap = None
         try:
             window_dc = win32gui.GetWindowDC(hwnd)
             mfc_dc = win32ui.CreateDCFromHandle(window_dc)
             mem_dc = mfc_dc.CreateCompatibleDC()
             bitmap = win32ui.CreateBitmap()
-            bitmap.CreateCompatibleBitmap(mfc_dc, width, height)
+            bitmap.CreateCompatibleBitmap(mfc_dc, full_width, full_height)
             mem_dc.SelectObject(bitmap)
 
             result = ctypes.windll.user32.PrintWindow(
@@ -368,8 +383,9 @@ class WindowsCaptureBackend(CaptureBackend):
             raw = bitmap.GetBitmapBits(True)
             # GetBitmapBits 給的是 BGRA,前三通道即 OpenCV 的 BGR。
             # 用 cv2.cvtColor 而非 numpy 切片,原因見 capture/macos.py 的同段註解。
-            bgra = np.frombuffer(raw, dtype=np.uint8).reshape((height, width, 4))
-            array = cv2.cvtColor(bgra, cv2.COLOR_BGRA2BGR)
+            bgra = np.frombuffer(raw, dtype=np.uint8).reshape((full_height, full_width, 4))
+            visible = bgra[dy : dy + height, dx : dx + width]
+            array = cv2.cvtColor(visible, cv2.COLOR_BGRA2BGR)
         except _GDI_ERRORS as exc:
             # 視窗在擷取途中沒了 —— 對呼叫端而言這就只是「這一幀失敗」,
             # 和 PrintWindow 回傳失敗是同一件事。轉成 CaptureFailedError,

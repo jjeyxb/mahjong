@@ -77,6 +77,61 @@ def real_window() -> Iterator[WindowInfo]:
         process.wait(timeout=10)
 
 
+@pytest.fixture
+def red_window() -> Iterator[WindowInfo]:
+    """客戶區整片純紅的真視窗。邊框之外每一個像素都該是紅的,偏了一眼就量得出來。"""
+    from mia.capture.windows import enable_dpi_awareness, list_windows
+
+    enable_dpi_awareness()
+    title = f"mia-red-{uuid.uuid4().hex[:8]}"
+    source = textwrap.dedent(f"""
+        import ctypes, tkinter as tk
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+        root = tk.Tk()
+        root.title({title!r})
+        root.configure(background="#ff0000")
+        root.geometry("400x300+80+80")
+        root.after(30_000, root.destroy)
+        root.mainloop()
+    """)
+    process = subprocess.Popen([sys.executable, "-c", source])
+    try:
+        deadline = time.monotonic() + 15.0
+        found = None
+        while found is None and time.monotonic() < deadline:
+            found = next((w for w in list_windows() if w.title == title), None)
+            if found is None:
+                time.sleep(0.2)
+        if found is None:
+            pytest.skip("開不出測試視窗(無桌面 session?)")
+        time.sleep(0.5)  # 等第一次重繪完,不然抓到的是還沒塗上紅色的客戶區
+        yield found
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
+
+
+class TestInvisibleBorders:
+    """影像必須對齊**看得見的**視窗,不能往右下偏一個隱形邊框。
+
+    Windows 10 以後的視窗左、右、下各有一圈看不見的縮放邊框(125% 螢幕上 8 px)。
+    點陣圖照看得見的尺寸開,但 ``PrintWindow`` 是從含邊框的視窗左上角開始畫,於是
+    左邊多出 8 px 的邊框、右邊 8 px 的內容被切掉。2026-11-11 實測雀魂視窗:畫布右緣
+    少了 8 px,牌桌矩形跟著變窄,HUD 的字只有約 30 px,偏幾像素場風與局數就認不出來,
+    整局等不到開局 —— 樣板比對的 AI 建議永遠沒有東西,而且一句話都不說。
+    """
+
+    def test_borders_are_symmetric(self, backend, red_window) -> None:
+        frame = backend.capture(red_window)
+        row = frame.image[frame.image.shape[0] // 2]
+        red = (row[:, 2] > 200) & (row[:, 1] < 60) & (row[:, 0] < 60)
+        assert red.any(), "抓到的影像裡沒有紅色客戶區"
+        left = int(red.argmax())
+        right = int(red[::-1].argmax())
+        # 看得見的邊框兩邊各 0~1 px。偏掉時是左 9、右 0。
+        assert left <= 2 and right <= 2, f"左邊框 {left} px、右邊框 {right} px"
+
+
 class TestMinimized:
     """視窗被最小化。
 
@@ -196,6 +251,7 @@ class TestGdiFailures:
 
         monkeypatch.setattr(mod.win32gui, "IsWindow", lambda _h: True)
         monkeypatch.setattr(mod, "_extended_frame_bounds", lambda _h: Rect(0, 0, 100, 100))
+        monkeypatch.setattr(mod.win32gui, "GetWindowRect", lambda _h: (0, 0, 100, 100))
         monkeypatch.setattr(mod.win32gui, "GetWindowDC", lambda _h: 1234)
         monkeypatch.setattr(mod.win32gui, "ReleaseDC", lambda _h, _d: None)
         monkeypatch.setattr(mod.win32ui, "CreateDCFromHandle", lambda _h: DyingDC())
