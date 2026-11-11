@@ -177,8 +177,16 @@ class RoiSet:
             )
 
     def matches(self, calibration: Calibration) -> bool:
-        """這份 RoiSet 是否仍適用於給定的校正結果。"""
-        return calibration.table_rect == self.calibration.table_rect
+        """這份 RoiSet 是否仍適用於給定的校正結果。
+
+        **影像尺寸也要比**,因為 :meth:`_check` 切圖前檢查的就是它。畫布推導的牌桌矩形只看
+        畫布尺寸,視窗差一兩個像素時完全不變;只比矩形的話這份 RoiSet 永遠不會重建,每一幀都
+        「切不出手牌區域」(2026-11-11 Windows 實測,見 test_vision_roi)。
+        """
+        return (
+            calibration.table_rect == self.calibration.table_rect
+            and calibration.image_size == self.calibration.image_size
+        )
 
     def __str__(self) -> str:
         tail = f",{len(self._missing)} 個未量測" if self._missing else ""

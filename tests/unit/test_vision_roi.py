@@ -116,6 +116,17 @@ class TestCrop:
         assert rois.matches(make_calibration())
         assert not rois.matches(make_calibration(Rect(0, 0, 1000, 500)))
 
+    def test_a_new_image_size_with_the_same_table_is_a_recalibration(self) -> None:
+        """牌桌矩形一樣、影像尺寸不同,也要重建。
+
+        畫布推導出來的牌桌矩形只看畫布尺寸,視窗差一兩個像素時完全不變。只比矩形的話
+        RoiSet 永遠不重建,而切圖時檢查的是影像尺寸 —— 於是每一幀都「切不出手牌區域」,
+        沒有手牌、局也開不了。2026-11-11 Windows 實測:MIA 開瀏覽器時逐格微調視窗,
+        影像高度在 1233 與 1234 之間換過,牌桌矩形一直是 2000x1125@(0,109)。
+        """
+        rois = RoiSet(RoiConfig(), make_calibration(image=Size(2001, 1234)))
+        assert not rois.matches(make_calibration(image=Size(2001, 1233)))
+
 
 class TestAgainstProjectConfig:
     """對真正的 config/default.yaml 做煙霧測試。"""
