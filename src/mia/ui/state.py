@@ -91,8 +91,8 @@ class UiState:
         compare_style: 上次選的並排比較對象,``None`` 代表不比較。
             與 :attr:`style` 撞在一起或名字不存在時一律當成不比較 ——
             開著比較要多載一份 130MB 的權重,**所以對不上的時候寧可不開**。
-        yolo_device: YOLO 跑在 ``cpu`` 還是 ``gpu``。預設 CPU,理由見
-            :class:`~mia.features.YoloDeviceChoice`。
+        yolo_device: YOLO 跑在 ``cpu`` 還是 ``gpu``。``None`` 代表還沒選過,用這台電腦的預設
+            (Apple Silicon 是 GPU,其他 CPU),理由見 :func:`~mia.features.default_yolo_device`。
         dismissed_notices: 使用者勾了「不再顯示」的提醒,存提醒的鍵(例如
             ``yolo_skin``)。存鍵而不是一個提醒一個布林欄位:提醒會越加越多,
             每加一個就多一個欄位、多一條型別規則,不值得。
@@ -101,7 +101,7 @@ class UiState:
     platform: str = WEB
     language: str = DEFAULT_LANGUAGE
     recognition_backend: str = "template"
-    yolo_device: str = "cpu"
+    yolo_device: str | None = None
     hand_roi: tuple[float, float, float, float] | None = None
     table_rect: tuple[float, float, float, float] | None = None
     canvas: str | None = None

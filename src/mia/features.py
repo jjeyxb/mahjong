@@ -22,6 +22,7 @@ __all__ = [
     "DangerSourceChoice",
     "RecognitionChoice",
     "YoloDeviceChoice",
+    "default_yolo_device",
 ]
 
 #: 功能 1:螢幕擷取 → 手牌 → 向聽 / 進張。
@@ -118,16 +119,33 @@ class YoloDeviceChoice:
     (``engines/yolo/agent/platform_compat.py``);環境裡的 torch 是 CPU 版的話照樣跑 CPU。
     要不要下載 GPU 版 torch 是設定頁在選的當下處理的(:mod:`mia.yolo.accel`),不在這裡。
 
-    預設 CPU:基本環境裝的就是 CPU 版,預設值要跟實際跑的一致。
+    預設值要跟實際跑的一致(:func:`default_yolo_device`):Apple Silicon 是 GPU —— PyPI 的
+    torch 本來就有 MPS,打包版也是;其他平台的基本環境裝的是 CPU 版,所以是 CPU。
     """
 
     NAMES: ClassVar[dict[str, str]] = {"cpu": "CPU", "gpu": "GPU"}
 
-    def __init__(self, value: str = "cpu") -> None:
-        self.value = value if value in self.NAMES else "cpu"
+    def __init__(self, value: str | None = None) -> None:
+        """``value`` 是 ``None``(使用者還沒選過)或認不得時,用這台電腦的預設。"""
+        self.value = value if value in self.NAMES else default_yolo_device()
 
     def set(self, value: str) -> bool:
         if value not in self.NAMES or value == self.value:
             return False
         self.value = value
         return True
+
+
+def default_yolo_device(system: str | None = None, machine: str | None = None) -> str:
+    """使用者還沒選過時,YOLO 跑在哪。
+
+    Apple Silicon 預設 GPU:以前沒有這個選項時,YOLO 在 Mac 上一律自己用 MPS。預設成 CPU 的話,
+    更新之後 Mac 使用者(包括打包版)會在不知情下變慢。Windows 的基本環境是 CPU 版 torch,
+    預設 GPU 也只會跑 CPU,所以老實寫 CPU,要用顯示卡就去選,選的時候會檢查、需要的話下載。
+    """
+    import platform
+    import sys
+
+    system = system or sys.platform
+    machine = machine or platform.machine()
+    return "gpu" if system == "darwin" and machine == "arm64" else "cpu"

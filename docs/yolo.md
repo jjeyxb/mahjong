@@ -37,6 +37,8 @@ YOLO 使用獨立的 Python 3.12 環境，不把 PyTorch 裝進 MIA 的 Python 3
 
 裝不成或取消時都維持 CPU，不會出現「設成 GPU 但其實在跑 CPU」的狀態。
 
+沒選過時的預設：Apple Silicon 是 GPU(MPS 本來就在，以前也一律用它);其他平台是 CPU,因為基本環境裝的是 CPU 版 torch。打包版沒有 `engines/yolo/.venv`,檢查時改成把打包好的推論程序叫起來，看它回報用哪個裝置。
+
 | 顯示卡 | 安裝的 torch | 下載量 | 實測 |
 |---|---|---|---|
 | Apple Silicon | 不用換（PyPI 版本來就有 MPS） | — | 有 |

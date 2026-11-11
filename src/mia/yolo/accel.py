@@ -195,6 +195,8 @@ def can_install() -> bool:
 
 def probe(timeout: float = 180.0) -> EnvStatus:
     """問 YOLO 環境裡的 torch。第一次在 AMD 卡上跑要編譯 GPU 核心,可能要幾十秒。"""
+    if LAYOUT.packaged:
+        return _probe_worker(timeout)
     python, base = _environment()
     if not python.is_file():
         return EnvStatus(installed=False)
@@ -213,6 +215,31 @@ def probe(timeout: float = 180.0) -> EnvStatus:
     except (OSError, subprocess.TimeoutExpired) as exc:
         return EnvStatus(installed=True, error=tr("檢查 YOLO 環境失敗:{error}", error=exc))
     return parse_probe(result.stdout)
+
+
+def _probe_worker(timeout: float) -> EnvStatus:
+    """打包版:沒有 engines/yolo/.venv 與 probe.py,直接把打包好的推論程序叫起來問。
+
+    要 GPU 啟動,看它回報選了哪個裝置(``ready`` 那一行的 ``device``)。它啟動時已經把四個
+    模型載到那個裝置上,所以回報 GPU 就代表那張卡載得動模型。Apple Silicon 的打包版走這條:
+    基本的推論程序就有 MPS。
+    """
+    from mia.engine.base import EngineError
+    from mia.yolo.client import YoloClient
+
+    try:
+        client = YoloClient(device="gpu", timeout=timeout)
+        client.start()
+    except EngineError as exc:
+        return EnvStatus(installed=True, error=str(exc))
+    try:
+        device = client.device
+    finally:
+        client.close()
+    if device in ("", "cpu"):
+        return EnvStatus(installed=True, build="cpu")
+    name = "Apple GPU" if device == "mps" else device.upper()
+    return EnvStatus(installed=True, build=device, device=device, name=name, ok=True)
 
 
 def parse_probe(output: str) -> EnvStatus:

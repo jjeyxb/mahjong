@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import sys
 import threading
 
@@ -183,3 +184,86 @@ class TestInstall:
         ok, last = accel.install("cuda", lambda _line: cancelled.set(), cancelled)
         assert ok
         assert last == "YOLO 環境已就緒"
+
+
+class TestDefaultDevice:
+    """使用者還沒選過時 YOLO 跑在哪。"""
+
+    def test_apple_silicon_defaults_to_the_gpu(self) -> None:
+        """以前 Mac 一律自己用 MPS;預設 CPU 會讓 Mac 使用者更新之後不知不覺變慢。"""
+        from mia.features import default_yolo_device
+
+        assert default_yolo_device("darwin", "arm64") == "gpu"
+        assert default_yolo_device("darwin", "x86_64") == "cpu"
+        assert default_yolo_device("win32", "AMD64") == "cpu"
+
+    def test_an_unchosen_or_unknown_value_uses_the_default(self, monkeypatch) -> None:
+        from mia import features
+
+        monkeypatch.setattr(features, "default_yolo_device", lambda: "gpu")
+        assert features.YoloDeviceChoice(None).value == "gpu"
+        assert features.YoloDeviceChoice("tpu").value == "gpu"
+        assert features.YoloDeviceChoice("cpu").value == "cpu"
+
+    def test_not_chosen_is_remembered_as_not_chosen(self, tmp_path) -> None:
+        from mia.ui.state import UiState
+
+        path = tmp_path / "ui.json"
+        UiState().save(path)
+        assert UiState.load(path).yolo_device is None
+        UiState(yolo_device="gpu").save(path)
+        assert UiState.load(path).yolo_device == "gpu"
+
+
+class TestPackagedProbe:
+    """打包版沒有 engines/yolo/.venv,要問打包好的推論程序。"""
+
+    @pytest.fixture
+    def packaged(self, monkeypatch):
+        from mia.yolo import client as client_module
+
+        made: list[object] = []
+
+        class FakeClient:
+            device_reply = "mps"
+
+            def __init__(self, *, device=None, timeout=45.0):  # noqa: ARG002 —— 照真的簽名
+                self.asked = device
+                self.closed = False
+                made.append(self)
+
+            def start(self):
+                self.device = FakeClient.device_reply
+
+            def close(self):
+                self.closed = True
+
+        monkeypatch.setattr(accel, "LAYOUT", dataclasses.replace(accel.LAYOUT, packaged=True))
+        monkeypatch.setattr(client_module, "YoloClient", FakeClient)
+        return FakeClient, made
+
+    def test_apple_silicon_is_ready_without_a_download(self, packaged) -> None:
+        _fake, made = packaged
+        status = accel.probe()
+        assert status.gpu_ready
+        assert status.device == "mps"
+        assert made[0].asked == "gpu"
+        assert made[0].closed
+
+    def test_a_cpu_only_worker_is_not_ready(self, packaged) -> None:
+        fake, _ = packaged
+        fake.device_reply = "cpu"
+        assert not accel.probe().gpu_ready
+
+    def test_a_worker_that_does_not_start_is_reported(self, packaged, monkeypatch) -> None:
+        from mia.engine.base import EngineError
+
+        fake, _ = packaged
+
+        def broken(_self):
+            raise EngineError("YOLO 程序已結束")
+
+        monkeypatch.setattr(fake, "start", broken)
+        status = accel.probe()
+        assert not status.gpu_ready
+        assert "已結束" in status.error
