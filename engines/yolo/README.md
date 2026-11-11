@@ -47,6 +47,7 @@ packet ground truth (2026-11-06); each change carries a dated `★` comment at t
 | `live_v7/pipeline.py` | After a hand ends, river readings are ignored while the wall count is unreadable | selfplay-20261106-110134 S4-1 → W1: the win screen's revealed hand became a phantom hand that took W1's start info |
 | `dora_reader.py` | A slot counts as a tile back at saturation ≥ 60 instead of ≥ 150. Measured backs: web Mac 181, web Windows 212, Steam (Windows, pale yellow) 115; face-up tiles 3–6 | Steam 2560x1440, 2026-11-11: the four face-down indicator slots were read as `P`, and four fake `dora P` events were confirmed in the first hand |
 | `live_v7/kyoku_info.py` | Honba is not exported before the round label is known | same: the old panel's honba 1 was frozen into W1-0 before the stale-panel check could reject it |
+| `platform_compat.py` | Intel GPUs (`xpu`) are picked in auto mode and accepted as `MJ_DEVICE=xpu`; every device except CUDA is passed to `Model.predict` explicitly (was MPS only) | not a recording: ultralytics uses CUDA whenever torch sees it, so `MJ_DEVICE=cpu` on the ROCm build still ran on the GPU while reporting CPU, and it never picks XPU unless told. Needed for MIA's CPU/GPU setting (2026-11-12) |
 
 MIA reads the centre panel's wall count and turn light with its own template reader
 (`YoloClient.hud`) and adds them to every observation as `hud: {wall, turn}` before
