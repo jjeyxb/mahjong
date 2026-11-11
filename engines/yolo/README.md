@@ -1,6 +1,8 @@
 # Optional YOLO inference environment
 
 Run `.venv/bin/python tools/setup_yolo.py --python python3.12` from the repository root.
+On Windows with an AMD GPU, add `--gpu rocm` to use AMD's ROCm build of torch
+(pinned with hashes in `requirements-rocm.txt`, which must stay UTF-8 with BOM).
 See [docs/yolo.md](../../docs/yolo.md) for UI selection, protocol, replay, and validation.
 
 `agent/` contains the inference/state-machine portion of the team-provided

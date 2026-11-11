@@ -2,7 +2,7 @@ from mia import features
 from mia.features import RecognitionChoice
 from mia.live.bus import UpdateBus, WorkerStatus
 from mia.live.runtime import Feature, LiveRuntime
-from mia.live.yolo import YoloHub, YoloStreamSource
+from mia.live.yolo import YoloHub, YoloStreamSource, device_name
 from mia.tracker import Stream
 from mia.ui.state import UiState
 from mia.ui.viewmodel import ViewModel
@@ -268,3 +268,11 @@ def test_the_steam_corner_panel_is_moved_to_where_yolo_expects_it():
     plain = table_frame(image, Rect(-8, 102, 3040, 1710))
     assert plain is not None
     assert plain[middle].tolist() != [250, 250, 250]
+
+
+def test_the_status_bar_says_gpu_not_the_torch_device_name():
+    """AMD 顯示卡的 ROCm 版 torch 也回 ``cuda``,狀態列寫「CUDA」會讓人以為裝錯了。"""
+    assert device_name("cuda") == "GPU"
+    assert device_name("mps") == "GPU"
+    assert device_name("cpu") == "CPU"
+    assert device_name("xpu") == "XPU"

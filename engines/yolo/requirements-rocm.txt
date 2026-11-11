@@ -1,0 +1,15 @@
+﻿# AMD 顯示卡(ROCm)版的 torch,只給 Windows + Python 3.12。由 tools/setup_yolo.py --gpu rocm 安裝,
+# 不要直接 pip install 這個檔案:其餘套件(ultralytics 等)要接著照 requirements.txt 裝,而且
+# 不能讓 pip 把這裡的 torch 換回 PyPI 的 CPU 版,那一步由 setup_yolo.py 處理。
+#
+# ⚠ 這個檔案必須存成「UTF-8 含 BOM」。pip 讀需求檔時沒有 BOM 就用系統語系編碼,繁中 Windows
+#   上是 cp950,中文註解會讓它直接失敗(實測)。有 BOM 時各平台的 pip 都照 UTF-8 讀。
+#
+# 版本與雜湊是 2026-11-11 在 RX 9070 上實測可用的那一組,來源是 AMD 官方的 repo.radeon.com。
+# torch 自己會要 rocm[libraries]==7.2.1;它與它的兩個依賴也用網址釘住,pip 才不會去 PyPI 找。
+# 換版本時五行一起換,雜湊從同一個目錄取。
+torch @ https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torch-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl#sha256=e88bf270163b48f7f27f7ea3db5ffb3be4ba107301933022bcb3c6ddedfeeabb
+torchvision @ https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torchvision-0.24.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl#sha256=b5c34d76a2f01fb97e1e0f224bd97fc3a58ec1ee1ef2376af2d72086e9aca34c
+rocm[libraries] @ https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm-7.2.1.tar.gz#sha256=9084902eaa69213a00a90784ad89e6e5fe73c702df0cc6cc3a70d777c7a6142b
+rocm-sdk-core @ https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_core-7.2.1-py3-none-win_amd64.whl#sha256=f68989d48df71cbfc3cb68bf705dc37c0f56e9666feddb59a1a0f5ff7539fe1c
+rocm-sdk-libraries-custom @ https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_libraries_custom-7.2.1-py3-none-win_amd64.whl#sha256=c7fe0b0731af8896093ff69e11496830d3cb6a4aed73e895c60b7cbdc200be92

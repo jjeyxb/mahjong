@@ -19,7 +19,36 @@ YOLO 使用獨立的 Python 3.12 環境，不把 PyTorch 裝進 MIA 的 Python 3
 .venv/bin/python tools/setup_yolo.py --python python3.12
 ```
 
-整個 YOLO 環境要能靠刪掉專案裡的資料夾清乾淨（`engines/yolo/.venv`、`engines/yolo/.cache`、`models/yolo`）：`fetch_models.py` 直接寫進 `models/`，不經過使用者目錄下的 HuggingFace 快取；安裝腳本對 pip 用 `--no-cache-dir`，不然 torch 等套件會另外快取一份到使用者目錄（實測約 336 MB）；worker 把 Ultralytics 與 matplotlib 的設定目錄都導到 `engines/yolo/.cache`。
+整個 YOLO 環境要能靠刪掉專案裡的資料夾清乾淨（`engines/yolo/.venv`、`engines/yolo/.cache`、`models/yolo`）：
+
+- `fetch_models.py` 直接寫進 `models/`，不經過使用者目錄下的 HuggingFace 快取。
+- 安裝腳本跑 pip 時設環境變數 `PIP_NO_CACHE_DIR=1`，不然 torch 等套件會另外快取一份到使用者目錄（實測約 336 MB）。用環境變數而不是 `--no-cache-dir`：ROCm 的 `rocm` 套件要現場建置，pip 另開的建置子程序看不到命令列參數，照樣會寫快取。
+- worker 把 Ultralytics、matplotlib 的設定目錄，以及 AMD 顯示卡第一次跑模型時編譯的 GPU 核心快取，都導到 `engines/yolo/.cache`。
+
+### Windows 用 AMD 顯示卡跑（ROCm）
+
+Windows 上 `requirements.txt` 釘的是 PyPI 的 CPU 版 torch，每幀 0.7~2 秒，混合辨識跟不上牌局。AMD 顯示卡加上 `--gpu rocm`，把環境裡的 torch 換成 AMD 官方的 ROCm 版：
+
+```powershell
+.venv\Scripts\python.exe tools\setup_yolo.py --gpu rocm
+```
+
+- **已經裝好 CPU 版的話直接再跑一次就好。** 換的是 `engines/yolo/.venv` 裡的套件，不搬資料夾，MIA 找環境的路徑不變。跑之前要先關掉 MIA：Windows 上執行中的 torch 檔案換不掉。
+- 只支援 Windows + Python 3.12（AMD 只提供這一種 wheel）。Windows 上沒指定 `--python` 時用 `py -3.12` 建環境。
+- 第一次要下載數 GB（torch 與 AMD 的 ROCm 執行環境）。版本與雜湊釘在 `engines/yolo/requirements-rocm.txt`；那個檔必須存成 UTF-8 含 BOM，理由寫在檔案開頭。
+- 裝完腳本會問一次 torch 看不看得到顯示卡，看不到就報錯，不會安靜地退回 CPU。
+- 換回 CPU：`--gpu cpu`，同時移除 ROCm 執行環境。
+- 沒加 `--gpu` 時，偵測到 AMD 顯示卡會提示可以加。
+
+RX 9070 實測（同一張牌桌截圖、30 幀）：
+
+| | CPU 版 | ROCm 版 |
+|---|---|---|
+| 之後每幀 | 約 650 ms 以上 | 約 150~200 ms |
+| 第一幀 | 約 2 秒 | 第一次 9.8 秒（現場編譯 GPU 核心），之後約 4 秒 |
+| 輸出 | — | 牌河、手牌、寶牌逐項與 CPU 版相同 |
+
+開著 YOLO 時，狀態列會寫 `YOLO · GPU` 或 `YOLO · CPU`。ROCm 版 torch 對外也叫 `cuda`，所以狀態列不照抄 torch 的裝置名稱。macOS 不需要這個選項：Apple Silicon 的 torch 本來就用 MPS。NVIDIA 顯示卡還沒實測過，沒有提供選項。
 
 若權重放在別處：
 
@@ -27,7 +56,7 @@ YOLO 使用獨立的 Python 3.12 環境，不把 PyTorch 裝進 MIA 的 Python 3
 .venv/bin/python tools/setup_yolo.py --python python3.12 --models '/path/to/Model'
 ```
 
-目前這台 Mac 已安裝完成並通過 MPS 推論測試。Windows 可用現有啟動 Python 執行同一腳本；`--python` 指向另外安裝的 Python 3.12 執行檔。
+目前這台 Mac 已安裝完成並通過 MPS 推論測試。Windows 用 `.venv\Scripts\python.exe tools\setup_yolo.py`；預設用 `py -3.12` 建環境，要用別的 Python 3.12 就加 `--python <路徑>`。有 AMD 顯示卡的話見上面的 ROCm 一節。
 
 ## 使用
 

@@ -92,6 +92,15 @@ _START_WARN = 8.0
 #: 再重啟只是反覆載模型。超過之後混合辨識只剩樣板那條,純 YOLO 就停。
 _RESTARTS = 3
 
+#: 狀態列上 YOLO 跑在什麼上面。torch 的裝置名稱不直接拿來顯示:AMD 顯示卡的 ROCm 版 torch
+#: 也叫 ``cuda``(沿用 CUDA 的 API),AMD 的使用者看到「CUDA」會以為裝錯了。
+_DEVICE_NAMES = {"cuda": "GPU", "mps": "GPU", "cpu": "CPU"}
+
+
+def device_name(device: str) -> str:
+    """給人看的裝置名稱。認不得的照原樣大寫,不要猜。"""
+    return _DEVICE_NAMES.get(device.lower(), device.upper())
+
 
 class YoloHub:
     def __init__(self) -> None:
@@ -361,7 +370,7 @@ class YoloVisionWorker(threading.Thread):
                     or (
                         f"{self.label}等待開局資訊"
                         if not stream.events
-                        else f"{self.label} · {self._client.device.upper()}"
+                        else f"{self.label} · {device_name(self._client.device)}"
                     )
                 )
         except Exception as exc:  # noqa: BLE001
