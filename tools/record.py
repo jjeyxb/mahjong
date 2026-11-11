@@ -129,7 +129,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--no-calibrate",
         action="store_true",
-        help="不偵測牌桌範圍。Steam 版要這樣錄:畫布不是 16:9,校正每一幀都重試,一幀要 400 毫秒",
+        help="不偵測牌桌範圍。版面沒量過的 Steam 視窗才需要:校正每一幀都重試,一幀要 400 毫秒",
+    )
+    parser.add_argument(
+        "--platform",
+        choices=("web", "steam"),
+        default="web",
+        help="steam:牌桌矩形用 Steam 版量過的版面(16:9 全螢幕是整個畫面、Mac 全螢幕另有比例),"
+             "與 MIA 即時模式同一套。不給的話 Steam 畫面會走網頁的剝邊框,矩形可能偏掉",
     )
     parser.add_argument(
         "--change-threshold", type=float, default=1.5,
@@ -172,7 +179,9 @@ def main(argv: list[str] | None = None) -> int:
                     writer,
                     target_fps=args.fps or config.capture.target_fps,
                     duration=args.duration,
-                    calibrator=None if args.no_calibrate else StableCalibrator(config.calibration),
+                    calibrator=None
+                    if args.no_calibrate
+                    else StableCalibrator(config.calibration, unity=args.platform == "steam"),
                 )
     except CaptureError as exc:
         print(f"\n擷取失敗:\n{exc}", file=sys.stderr)
