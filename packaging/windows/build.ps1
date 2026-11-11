@@ -31,7 +31,8 @@ function NewVenv([string[]]$Base, [string]$Path) {
     if ($have -and $have -ne $want) { $Arguments += "--clear" }
     RunChecked $Exe ($Arguments + @($Path))
 }
-$Base312 = if ($Python312) { @($Python312) } else { @("py", "-3.12") }
+# 宣告成字串陣列:PowerShell 會把 if 回傳的單一元素陣列展開成字串,$Base312[0] 就變成路徑的第一個字母。
+[string[]]$Base312 = if ($Python312) { $Python312 } else { "py", "-3.12" }
 $Pre312 = @($Base312 | Select-Object -Skip 1)
 $Version312 = (& $Base312[0] @Pre312 -c "import sys; print(sys.version.split()[0])").Trim()
 if ($Version312 -eq "3.12.0") {
