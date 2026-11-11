@@ -39,7 +39,6 @@
  "新版 {version}，下載 {value:.1f} MB": "New version {version}, download {value:.1f} MB",
  "下載": "Download",
  "正在停止下載，請稍候…": "Stopping the download, please wait…",
- "MIA {value}\n安裝位置：{install}": "MIA {value}\nInstalled at: {install}",
  "稍後安裝": "Install later",
  "請先結束對局／錄製並關閉辨識功能，再安裝更新。": "Finish the game or recording and turn off recognition before installing the update.",
  "正在下載…": "Downloading…",
@@ -403,5 +402,13 @@
  "沒有裝成:{error}": "Not installed: {error}",
  "無法執行安裝程式:{error}": "Cannot run the installer: {error}",
  "目前環境的顯示卡檢查失敗:{error}": "The GPU check of the current environment failed: {error}",
- "關閉": "Close"
+ "關閉": "Close",
+ "MIA {value}\n程式位置：{install}\n資料位置：{data}": "MIA {value}\nProgram: {install}\nData: {data}",
+ "清除所有資料…": "Clear all data…",
+ "清除所有資料": "Clear all data",
+ "刪掉設定、雀魂登入資料、錄影與紀錄，然後結束 MIA。程式本身不會刪。": "Deletes settings, your Mahjong Soul login, recordings and logs, then quits MIA. The app itself is not removed.",
+ "會刪掉 MIA 的設定、雀魂登入資料、錄影與紀錄，刪了就無法復原。\nMIA 會先結束，再刪除這些資料夾：\n\n{folders}\n\n繼續嗎？": "This deletes MIA's settings, your Mahjong Soul login, recordings and logs. It cannot be undone.\nMIA will quit first and then delete these folders:\n\n{folders}\n\nContinue?",
+ "請先把 MIA.app 拖進「應用程式」資料夾，再從那裡開啟，才能自動更新": "Move MIA.app into the Applications folder and open it from there to enable automatic updates",
+ "MIA.app 與資料不在同一顆磁碟，請手動下載新版": "MIA.app and its data are on different disks; please download the new version manually",
+ "設定目錄不在 MIA 專用目錄": "The settings folder is not inside MIA's own folder"
 }

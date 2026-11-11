@@ -80,6 +80,13 @@ class AppPreferences(Protocol):
         ...
 
     def restart(self) -> None: ...
+    def data_folders(self) -> tuple[str, ...]:
+        """「清除所有資料」會刪的資料夾。空的就是這一版沒有可以清的(原始碼版)。"""
+        ...
+
+    def clear_data(self) -> None:
+        """結束 MIA,收完之後刪掉 :meth:`data_folders`。不能當場刪:瀏覽器還開著登入資料。"""
+        ...
 
 
 class PlatformPicker(Protocol):

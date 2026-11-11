@@ -187,7 +187,12 @@ def install_menu(
         lambda: QMessageBox.information(
             window,
             tr("關於 MIA"),
-            tr("MIA {value}\n安裝位置：{install}", value=config["version"], install=LAYOUT.install),
+            tr(
+                "MIA {value}\n程式位置：{install}\n資料位置：{data}",
+                value=config["version"],
+                install=LAYOUT.bundle or LAYOUT.install,
+                data=LAYOUT.data,
+            ),
         )
     )
 

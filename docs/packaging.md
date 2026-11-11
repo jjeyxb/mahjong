@@ -76,20 +76,18 @@ Windows 的概念配置如下，名稱可在原型完成後調整：
 
 Windows 建議以 Inno Setup 提供選擇目的資料夾的精靈，採個人安裝模式。預設放在當前使用者可寫入的位置，也允許其他磁碟的專用資料夾。若環境和可寫資料都必須在同一處，首版不支援一般帳號無權寫入的 `Program Files` 位置，也不要求使用者平時以系統管理員啟動 App。[目的資料夾](https://jrsoftware.org/ishelp/topic_setup_defaultdirname.htm)、[個人安裝模式](https://jrsoftware.org/ishelp/topic_setup_privilegesrequired.htm)
 
-Mac 使用相同的外層原則：
+Mac 照一般 Mac App 的習慣：DMG 裡只有 `MIA.app` 與「應用程式」捷徑，使用者把 App 拖進「應用程式」。資料不放在 App 旁邊（2026-11-12 改，原本是整個 `MIA/` 資料夾連同 `userdata/` 一起拖）：
 
 ```text
-使用者指定的位置/MIA/
-  MIA.app/                 主程式、引擎、模型、瀏覽器、素材
-  components/              預留的可選元件；首版 Mac GPU 走包內 MPS
-  userdata/                設定、錄影、登入狀態、紀錄與自有快取
-  updates/                 App 管理的更新暫存
-  install-info.json
+/Applications/MIA.app                    主程式、引擎、模型、瀏覽器、素材
+~/Library/Application Support/MIA/       設定、錄影、登入狀態、updates/、components/、install-info.json
+~/Library/Caches/MIA/                    快取（暫存目錄、torch、介面圖示）
+~/Library/Logs/MIA/                      紀錄
 ```
 
-可用 DMG 提供完整的 `MIA/` 資料夾，讓使用者拖至自己選擇且可寫入的位置，例如 `~/Applications/MIA/`。首次開啟建立 `userdata/`。若要與 Windows 一樣的選路徑精靈，可另外製作小型安裝 App，但不是原型必要條件。需測試非預設位置、空白與中文路徑，以及檔案系統是否保留符號連結。
+更新器只換掉 `MIA.app`，資料不受影響；App 從磁碟映像或被 macOS 隔離（App Translocation）的位置執行時不更新，提示先拖進「應用程式」。丟掉 App 不會刪資料，所以設定頁有「清除所有資料…」，結束 MIA 後刪掉上面三個資料夾。螢幕錄製授權由使用者在系統設定移除。路徑規則在 `mia.distribution.layout`。
 
-Mac 的可變資料放在 `MIA.app` 外、同一根目錄內；更新器替換 App 時保留旁邊的資料。所有會執行的程式與固定模型應納入發布版本的驗證範圍。
+所有會執行的程式與固定模型應納入發布版本的驗證範圍。
 
 「同一資料夾」適用於 App 自有檔案。系統的螢幕錄製權限、顯卡驅動、應用程式註冊、安裝器及更新框架可能使用的系統暫存仍由作業系統管理，不能承諾系統其他位置完全不會產生紀錄。若選用封包 MITM 功能，其憑證與系統設定也需獨立評估清除方式；不應為安裝一般圖像辨識功能而啟用它。
 
@@ -169,7 +167,7 @@ Mac 優先評估 Sparkle 2 管理下載、確認與替換 App。MIA 是 PySide6�
 
 ## 解除安裝
 
-Windows 提供系統「已安裝的應用程式」與資料夾內的解除安裝入口，清除程式與已下載的 MIA 加速元件；Mac 可先以移除專用 `MIA/` 根目錄完成主要檔案清除，若有需要再提供資料管理／解除安裝 helper。
+Windows 提供系統「已安裝的應用程式」與資料夾內的解除安裝入口，清除程式與已下載的 MIA 加速元件；Mac 由設定頁的「清除所有資料…」刪掉 `~/Library` 底下三個 MIA 資料夾，再把 `MIA.app` 丟到垃圾桶。
 
 建議預設保留設定與錄影，提供明確選項一併刪除；使用者選擇全刪時，僅刪除這次安裝所擁有的資料子目錄。不能直接使用萬用字元刪除整個任意目的資料夾，安裝時也應避免把磁碟根目錄或其他程式的目錄當作專用根目錄。[Inno 官方的解除安裝注意事項](https://jrsoftware.org/ishelp/topic_uninstalldeletesection.htm)
 

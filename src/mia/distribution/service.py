@@ -58,6 +58,8 @@ def prepare_update(
         raise ReleaseError("不接受較舊的程式更新")
     if release.kind == "component" and release.app_version != config["version"]:
         raise ReleaseError("加速元件與目前 App 版本不相容")
+    if release.kind == "app" and (blocker := layout.update_blocker()) is not None:
+        raise ReleaseError(blocker)
     folder = layout.updates / uuid.uuid4().hex
     archive = download(release, folder, **download_options)
     (folder / "release.json").write_bytes(envelope)
@@ -65,7 +67,10 @@ def prepare_update(
         folder / "plan.json",
         {
             "app_id": APP_ID,
-            "root": str(layout.install),
+            "root": str(layout.root),
+            # Mac 的 App 不在資料根目錄底下,要明說換哪一個;Windows 換 root/program。
+            **({"app": str(layout.bundle)} if layout.bundle is not None else {}),
+            "data": str(layout.data),
             "archive": archive.name,
             "from_version": config["version"],
             "parent_pid": os.getpid(),

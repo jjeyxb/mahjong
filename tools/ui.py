@@ -381,6 +381,7 @@ class _Preferences:
         #: 打開更新視窗。``install_menu`` 建好選單之後才有。
         self.updates: Callable[[], None] | None = None
         self.restart_requested = False
+        self.clear_requested = False
 
     def language(self) -> str:
         return i18n.language()
@@ -407,6 +408,37 @@ class _Preferences:
     def restart(self) -> None:
         self.restart_requested = True
         self._app.quit()
+
+    def data_folders(self) -> tuple[str, ...]:
+        from mia.distribution.layout import LAYOUT
+
+        return tuple(str(path) for path in LAYOUT.owned_data())
+
+    def clear_data(self) -> None:
+        self.clear_requested = True
+        self._app.quit()
+
+
+def _clear_data(folders: Sequence[Path]) -> None:
+    """刪掉 MIA 自己的資料夾。在 :func:`main` 的收尾、所有子程序都收掉之後才跑。
+
+    log 檔還開著的話 Windows 刪不掉,所以先關 log;瀏覽器剛結束時檔案可能還鎖著
+    一下子,多試幾次。只刪 :meth:`Layout.owned_data` 給的那幾個,而且名字要對得上。
+    """
+    import shutil
+    import time
+
+    from loguru import logger as log
+
+    log.remove()
+    for folder in folders:
+        if folder.name not in ("MIA", "userdata") or folder == folder.parent:
+            continue
+        for _ in range(10):
+            shutil.rmtree(folder, ignore_errors=True)
+            if not folder.exists():
+                break
+            time.sleep(0.5)
 
 
 def _relaunch() -> None:
@@ -1103,7 +1135,11 @@ def main(argv: list[str] | None = None) -> int:
         # 一個載著 130MB 權重的 Python 與一個孤兒 Chromium。
         if runtime is not None:
             runtime.stop()
-        if preferences.restart_requested:
+        if preferences.clear_requested:
+            from mia.distribution.layout import LAYOUT
+
+            _clear_data(LAYOUT.owned_data())
+        elif preferences.restart_requested:
             _relaunch()
 
 

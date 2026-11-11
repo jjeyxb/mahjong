@@ -60,7 +60,7 @@ class ScreenCapturePermissionPrompt(QObject):
         dialog.setIcon(QMessageBox.Icon.Information)
         dialog.setText(tr("請允許 MIA 擷取遊戲畫面，才能啟用圖像辨識。"))
         application = (
-            str(LAYOUT.install / "MIA.app")
+            str(LAYOUT.bundle or LAYOUT.install)
             if LAYOUT.packaged
             else tr("執行 MIA 的終端機或 VS Code")
         )

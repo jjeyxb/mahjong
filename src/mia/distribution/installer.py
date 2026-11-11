@@ -21,13 +21,13 @@ from mia.distribution.release import ReleaseError, verified_release
 from mia.distribution.service import atomic_json
 
 
-def _settings(root: Path, job: Path, *, restore: bool = False) -> None:
+def _settings(data: Path, job: Path, *, restore: bool = False) -> None:
     """Only small settings migrate with code; recordings and login profiles stay put."""
     backup = job / "settings-backup"
     if not restore:
         backup.mkdir()
     for name in ("ui_state.json", "config"):
-        current, saved = root / "userdata" / name, backup / name
+        current, saved = data / name, backup / name
         if restore:
             if current.is_symlink() or current.is_file():
                 current.unlink()
@@ -104,6 +104,33 @@ def _health(command: list[str], health: Path, version: str, nonce: str) -> None:
     raise ReleaseError("新版啟動檢查失敗")
 
 
+def _data_dir(plan: dict[str, Any], root: Path) -> Path:
+    """設定放在哪。舊的計畫沒寫這一欄,那時一律是 root/userdata。"""
+    data = Path(plan.get("data", root / "userdata")).resolve()
+    if not data.is_relative_to(root):
+        raise ReleaseError("設定目錄不在 MIA 專用目錄")
+    return data
+
+
+def _app_target(plan: dict[str, Any], root: Path, platform: str) -> Path:
+    """要換掉的程式。Mac 的 MIA.app 可以在任何地方(通常是「應用程式」),所以由計畫指定。"""
+    if platform != "macos-arm64":
+        return root / "program"
+    target = Path(plan.get("app", root / "MIA.app"))
+    if target.suffix != ".app" or target.is_symlink():
+        raise ReleaseError("程式目錄不是有效的 MIA 安裝")
+    target = target.resolve()
+    try:
+        bundled = json.loads(
+            (target / "Contents/Resources/resources/release.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError) as exc:
+        raise ReleaseError("程式目錄不是有效的 MIA 安裝") from exc
+    if bundled.get("app_id") != APP_ID:
+        raise ReleaseError("程式目錄不是有效的 MIA 安裝")
+    return target
+
+
 def install(
     plan_path: Path,
     config: dict[str, Any],
@@ -141,15 +168,19 @@ def install(
         if Version(release.version) <= Version(info["version"]):
             raise ReleaseError("不接受較舊的程式更新")
         name = "MIA.app" if config["platform"] == "macos-arm64" else "program"
-        staged = extract(archive, plan_path.parent / "staged", name, release.unpacked_size)
-        target = root / name
+        target = _app_target(plan, root, config["platform"])
         if target.is_symlink() or not target.is_dir():
             raise ReleaseError("程式目錄不是有效的 MIA 安裝")
+        data = _data_dir(plan, root)
+        # 換程式靠 rename,跨磁碟做不到;App 放在外接碟時寧可不更新,也不要換到一半。
+        if target.parent.stat().st_dev != plan_path.parent.stat().st_dev:
+            raise ReleaseError("MIA.app 與資料不在同一顆磁碟，請手動下載新版")
+        staged = extract(archive, plan_path.parent / "staged", name, release.unpacked_size)
         executable = Path("Contents/MacOS/MIA") if name == "MIA.app" else Path("MIA.exe")
         if not (staged / executable).is_file():
             raise ReleaseError("新版缺少啟動檔")
         wait(int(plan["parent_pid"]))
-        _settings(root, plan_path.parent)
+        _settings(data, plan_path.parent)
         backup = plan_path.parent / "previous"
         atomic_json(
             plan_path.parent / "transaction.json",
@@ -173,7 +204,7 @@ def install(
             if target.exists():
                 target.rename(plan_path.parent / "failed")
             backup.rename(target)
-            _settings(root, plan_path.parent, restore=True)
+            _settings(data, plan_path.parent, restore=True)
             atomic_json(info_path, info)
             raise
         atomic_json(plan_path.parent / "result.json", {"installed": release.version})
@@ -198,10 +229,11 @@ def _component(
     worker = staged / name
     if worker.is_symlink() or not worker.is_file():
         raise ReleaseError("加速元件缺少推論程序")
+    app = _app_target(plan, root, config["platform"])
     resources = (
-        root / "MIA.app/Contents/Resources/resources"
+        app / "Contents/Resources/resources"
         if config["platform"] == "macos-arm64"
-        else root / "program/_internal/resources"
+        else app / "_internal/resources"
     )
     check = subprocess.run(
         [str(worker), "--self-check"],
@@ -252,11 +284,12 @@ def main() -> int:
             config["platform"],
         )
         if envelope.kind == "component":
-            root = Path(json.loads(args.plan.read_text())["root"])
+            plan = json.loads(args.plan.read_text(encoding="utf-8"))
+            app = _app_target(plan, Path(plan["root"]).resolve(), config["platform"])
             exe = (
-                root / "MIA.app/Contents/MacOS/MIA"
+                app / "Contents/MacOS/MIA"
                 if config["platform"] == "macos-arm64"
-                else root / "program/MIA.exe"
+                else app / "MIA.exe"
             )
             subprocess.Popen(
                 [str(exe), "--live"], env={**os.environ, "PYINSTALLER_RESET_ENVIRONMENT": "1"}

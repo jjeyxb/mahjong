@@ -29,7 +29,9 @@ Mac 需使用 arm64 Python 與 `libriichi.so`。不能跨 OS 建置。
 Windows 可執行 `packaging/windows/build.ps1 -AssetSource ... -BrowserRoot ...`，
 再以 Inno Setup 編譯 `packaging/windows/mia.iss`；這些腳本尚未在 Windows 驗收。
 Mac 可用 `python tools/package_dmg.py dist/macos-arm64/MIA dist/MIA.dmg`
-建立僅含 App 與安裝識別的內測 DMG，不會把原型使用時的錄影或登入資料打進去。
+建立內測 DMG：只有 `MIA.app`、「應用程式」捷徑與中英對照的安裝說明，不會把原型使用時的錄影或登入資料打進去。
+Mac 打包版的資料放在 `~/Library/Application Support/MIA`、`~/Library/Caches/MIA`、`~/Library/Logs/MIA`，
+不在 App 旁邊；Windows 照舊放在安裝資料夾的 `userdata/`。
 正式發布還需使用 Developer ID 簽署完整 App、送交公證並 stapling；
 目前建置腳本只做 ad-hoc 簽署。
 
@@ -54,8 +56,9 @@ Mac 可用 `python tools/package_dmg.py dist/macos-arm64/MIA dist/MIA.dmg`
 「說明 → 檢查更新」提供背景檢查、下載、取消，以及確認後關閉安裝。
 開著辨識功能或受管瀏覽器時會先要求停止，避免中斷對局。
 更新 helper 驗證固定公鑰的 Ed25519 發布資訊，再核對大小與 SHA-256。
-封裝只能包含 `program/` 或 `MIA.app/`，保留旁邊的 `userdata/`。
-新版本須回報 UI 啟動成功，失敗將舊程式移回；下載與安裝紀錄在 `updates/`、`userdata/logs/`。
+封裝只能包含 `program/` 或 `MIA.app/`，使用者資料不在封裝範圍內。
+新版本須回報 UI 啟動成功，失敗將舊程式移回；下載與安裝紀錄在 `updates/` 與紀錄資料夾。
+Mac 換掉的是實際執行的那個 `MIA.app`（通常在「應用程式」）；從磁碟映像執行時不更新。
 
 先在另行保管的位置產生金鑰；不要把私鑰放進發布目錄、安裝包或 Git：
 
@@ -89,7 +92,7 @@ Mac 也必須透過 Finder／`open -n -W MIA.app --args --capture ...` 驗收啟
 因為 Finder 的工作目錄可能是唯讀的 `/`。只在開發目錄執行自我檢查不會
 發現 CLI 匯入模組時意外建立相對路徑檔案的問題。可指定 `data:text/html,...`
 測試頁與獨立暫存 profile，再以 `--duration 2` 自動結束，不必開啟真正對局。
-安裝版擷取子程序的 stdout／stderr 會保存在 `userdata/logs/capture.log`，
+安裝版擷取子程序的 stdout／stderr 會保存在紀錄資料夾的 `capture.log`（Windows `userdata/logs/`，Mac `~/Library/Logs/MIA/`），
 失敗時狀態列提供該路徑。離線包的 headless 擷取也使用包內完整 Chromium。
 
 Mac 的圖像辨識需要授權 **MIA.app 本身** 的螢幕錄製權限；開發時給終端機或
@@ -97,8 +100,8 @@ VS Code 的權限不會自動給安裝版。開啟畫面辨識或依賴畫面的
 UI 會在啟動工作執行緒及載入模型前請求系統授權。仍未授權就顯示含「開啟系統設定」
 與「稍後」按鈕的提醒框，功能保持關閉；不會在背景重複彈窗。純封包模式不受影響。
 後端也會在搜尋視窗前檢查權限，避免只顯示「找不到遊戲視窗」。
-若系統設定清單沒有 MIA，可在「隱私權與安全性 → 螢幕錄製」按 + 加入安裝
-資料夾裡的 MIA.app；授權後完整退出再重開。對同一後端只主動請求一次。
+若系統設定清單沒有 MIA，可在「隱私權與安全性 → 螢幕錄製」按 + 加入「應用程式」
+裡的 MIA.app；授權後完整退出再重開。對同一後端只主動請求一次。
 
 更新 helper 已以本機簽署的合成更新測試成功替換與失敗復原，
 但沒有發布 GitHub 更新檔，也未用此測試宣稱已驗證遠端正式更新通道。

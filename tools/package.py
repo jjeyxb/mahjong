@@ -177,6 +177,9 @@ def main() -> int:
                     for flag in ("--exclude-module", module)
                 ),
             ]
+            # 圖示由 tools/make_icons.py 從 assets/icon.svg 產生。
+            icon = "MIA.icns" if sys.platform == "darwin" else "MIA.ico"
+            command += ["--icon", str(ROOT / "packaging/icons" / icon)]
             if sys.platform == "darwin":
                 command += ["--osx-bundle-identifier", "io.github.jjeyxb.mia"]
         command += [str(ROOT / "packaging/entrypoints" / f"{role}.py")]
@@ -265,9 +268,11 @@ def main() -> int:
         if previous.exists():
             previous.rename(installed)
         raise
-    (destination / "install-info.json").write_text(
-        json.dumps({"app_id": config["app_id"], "version": version})
-    )
+    if target != "macos-arm64":
+        # Mac 的 install-info.json 在使用者的 Application Support,由 App 第一次啟動時寫。
+        (destination / "install-info.json").write_text(
+            json.dumps({"app_id": config["app_id"], "version": version})
+        )
     if previous.exists():
         shutil.rmtree(previous)
     stage.rmdir()

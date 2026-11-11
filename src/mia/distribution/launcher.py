@@ -40,6 +40,8 @@ def main() -> int:
             "install": str(LAYOUT.install),
             "resources": str(LAYOUT.resources),
             "data": str(LAYOUT.data),
+            "logs": str(LAYOUT.logs),
+            "cache": str(LAYOUT.cache),
             "browser": os.environ.get("PLAYWRIGHT_BROWSERS_PATH"),
             "mortal": LAYOUT.worker("mortal").is_file(),
             "yolo": LAYOUT.worker("yolo").is_file(),
@@ -95,14 +97,19 @@ def main() -> int:
             raise ValueError("啟動檢查檔案必須在更新目錄")
         HEALTH = path, nonce
         del args[index : index + 3]
-    if LAYOUT.packaged:
-        marker = LAYOUT.install / "install-info.json"
-        if not marker.exists():
-            atomic_json(
-                marker,
-                {
-                    "app_id": APP_ID,
-                    "version": configuration()["version"],
-                },
-            )
+    if LAYOUT.packaged and HEALTH is None:
+        # Mac 上換新版可以直接把新的 MIA.app 拖進去蓋掉,不經過更新程式,所以每次
+        # 啟動都對一次版本。啟動檢查那一次不寫:那是更新程式的交易,由它決定。
+        _record_install(LAYOUT.install_info, configuration()["version"])
     return int(importlib.import_module("tools.ui").main(args or ["--live"]))
+
+
+def _record_install(marker: Path, version: str) -> None:
+    try:
+        recorded = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        recorded = None
+    if recorded != {"app_id": APP_ID, "version": version} and (
+        recorded is None or recorded.get("app_id") in (None, APP_ID)
+    ):
+        atomic_json(marker, {"app_id": APP_ID, "version": version})

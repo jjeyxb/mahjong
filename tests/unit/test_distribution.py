@@ -112,6 +112,63 @@ def test_owned_paths_survive_relocation(tmp_path, monkeypatch):
     assert Path(os.environ["PLAYWRIGHT_BROWSERS_PATH"]).is_relative_to(root)
 
 
+def test_mac_data_lives_in_the_library_not_next_to_the_app(tmp_path, monkeypatch):
+    """Mac 的 App 拖進「應用程式」,資料照 Mac 慣例放 ~/Library;換 App 不會動到資料。"""
+    import os
+
+    monkeypatch.setattr(os, "environ", os.environ.copy())
+    library = tmp_path / "Library"
+    home = library / "Application Support/MIA"
+    bundle = tmp_path / "Applications/MIA.app"
+    layout = Layout(
+        bundle / "Contents/Resources/resources",
+        bundle.parent,
+        True,
+        bundle=bundle,
+        home=home,
+        library=library,
+    )
+    assert layout.data == home
+    assert layout.config == home / "config"
+    assert layout.updates == home / "updates"
+    assert layout.install_info == home / "install-info.json"
+    assert layout.cache == library / "Caches/MIA"
+    assert layout.logs == library / "Logs/MIA"
+    assert layout.owned_data() == (home, library / "Caches/MIA", library / "Logs/MIA")
+    layout.prepare()
+    assert not (bundle.parent / "userdata").exists()
+
+
+def test_windows_and_source_layouts_keep_their_folders(tmp_path):
+    root = tmp_path / "MIA"
+    windows = Layout(root / "program/_internal/resources", root, True)
+    assert windows.data == root / "userdata"
+    assert windows.install_info == root / "install-info.json"
+    assert windows.owned_data() == (root / "userdata",)
+    assert windows.update_blocker() is None
+    # 原始碼版的 data/ 是開發用的,「清除所有資料」不能碰。
+    assert Layout(tmp_path, tmp_path).owned_data() == ()
+
+
+def test_an_app_that_cannot_be_replaced_refuses_to_update(tmp_path):
+    readonly = tmp_path / "Volumes/MIA"
+    (readonly / "MIA.app").mkdir(parents=True)
+    readonly.chmod(0o555)
+    try:
+        layout = Layout(tmp_path, tmp_path, True, bundle=readonly / "MIA.app", home=tmp_path)
+        assert "應用程式" in (layout.update_blocker() or "")
+    finally:
+        readonly.chmod(0o755)
+    moved = Layout(
+        tmp_path,
+        tmp_path,
+        True,
+        bundle=tmp_path / "AppTranslocation/X/d/MIA.app",
+        home=tmp_path,
+    )
+    assert moved.update_blocker() is not None
+
+
 @pytest.mark.parametrize("name", ["../x", "/x", "program/../../x", "program/a\\b", "program/C:x"])
 def test_archive_cannot_escape(tmp_path, name):
     archive = tmp_path / "x.zip"
@@ -179,6 +236,8 @@ def setup_install(tmp_path, keys):
     app = root / "MIA.app"
     (app / "Contents/MacOS").mkdir(parents=True)
     (app / "Contents/MacOS/MIA").write_text("old")
+    (app / "Contents/Resources/resources").mkdir(parents=True)
+    atomic_json(app / "Contents/Resources/resources/release.json", {"app_id": APP_ID})
     (root / "userdata").mkdir()
     (root / "userdata/recording").write_bytes(b"keep me")
     atomic_json(root / "install-info.json", {"app_id": APP_ID, "version": "0.1.0"})
@@ -209,6 +268,36 @@ def test_install_preserves_data_and_old_release(tmp_path, keys):
     assert (plan.parent / "previous/Contents/MacOS/MIA").read_text() == "old"
     assert (root / "userdata/recording").read_bytes() == b"keep me"
     assert json.loads((root / "install-info.json").read_text())["version"] == "0.2.0"
+
+
+def test_mac_update_replaces_the_app_in_applications(tmp_path, keys):
+    """App 不在資料根目錄底下:更新換掉計畫指定的那一個,設定在資料根目錄。"""
+    root, plan, config = setup_install(tmp_path, keys)
+    applications = tmp_path / "Applications"
+    applications.mkdir()
+    (root / "MIA.app").rename(applications / "MIA.app")
+    (root / "ui_state.json").write_text('{"old":true}')
+    raw = json.loads(plan.read_text())
+    atomic_json(plan, {**raw, "app": str(applications / "MIA.app"), "data": str(root)})
+    target = install(plan, config, wait=lambda _pid: None, health=lambda *_args: None)
+    assert target == (applications / "MIA.app").resolve()
+    assert (target / "Contents/MacOS/MIA").read_text() == "new"
+    assert (plan.parent / "settings-backup/ui_state.json").read_text() == '{"old":true}'
+    assert not (root / "MIA.app").exists()
+
+
+def test_the_plan_cannot_point_at_another_app(tmp_path, keys):
+    _root, plan, config = setup_install(tmp_path, keys)
+    other = tmp_path / "Other.app"
+    (other / "Contents/Resources/resources").mkdir(parents=True)
+    atomic_json(other / "Contents/Resources/resources/release.json", {"app_id": "x.other"})
+    raw = json.loads(plan.read_text())
+    atomic_json(plan, {**raw, "app": str(other)})
+    with pytest.raises(ReleaseError, match="有效的 MIA"):
+        install(plan, config, wait=lambda _pid: pytest.fail("must not wait"))
+    atomic_json(plan, {**raw, "data": str(tmp_path / "elsewhere")})
+    with pytest.raises(ReleaseError, match="設定目錄"):
+        install(plan, config, wait=lambda _pid: pytest.fail("must not wait"))
 
 
 def test_failed_launch_restores_program_and_version(tmp_path, keys):

@@ -17,6 +17,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 AppMutex=io.github.jjeyxb.mia
 UninstallDisplayIcon={app}\program\MIA.exe
+SetupIconFile=..\icons\MIA.ico
 OutputBaseFilename=MIA-{#AppVersion}-windows-x64-setup
 OutputDir=..\..\dist\installers
 Compression=lzma2

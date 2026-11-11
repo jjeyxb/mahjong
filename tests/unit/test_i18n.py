@@ -114,11 +114,13 @@ def test_the_language_choice_is_remembered(tmp_path: Path) -> None:
 
 
 class _Preferences:
-    def __init__(self, *, busy: bool = False) -> None:
+    def __init__(self, *, busy: bool = False, folders: tuple[str, ...] = ()) -> None:
         self.chosen = "zh-TW"
         self.checked = 0
         self.restarted = 0
+        self.cleared = 0
         self._busy = busy
+        self._folders = folders
 
     def language(self) -> str:
         return "zh-TW"
@@ -137,6 +139,12 @@ class _Preferences:
 
     def restart(self) -> None:
         self.restarted += 1
+
+    def data_folders(self) -> tuple[str, ...]:
+        return self._folders
+
+    def clear_data(self) -> None:
+        self.cleared += 1
 
 
 def test_the_settings_page_switches_language_and_offers_a_restart(qtbot) -> None:
@@ -177,6 +185,55 @@ def test_restarting_while_busy_asks_first(qtbot, monkeypatch: pytest.MonkeyPatch
     assert prefs.restarted == 0
     panel._on_restart()  # noqa: SLF001
     assert prefs.restarted == 1
+
+
+def test_clearing_all_data_asks_first_and_lists_the_folders(
+    qtbot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from PySide6.QtWidgets import QMessageBox
+
+    from mia.ui.panel.window import PanelWindow
+    from mia.ui.viewmodel import ViewModel
+
+    asked: list[str] = []
+    answers = [QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes]
+
+    def question(_parent, _title, text):
+        asked.append(text)
+        return answers.pop(0)
+
+    monkeypatch.setattr(QMessageBox, "question", question)
+    prefs = _Preferences(folders=("/x/Application Support/MIA", "/x/Caches/MIA"))
+    panel = PanelWindow(ViewModel(), preferences=prefs)
+    qtbot.addWidget(panel)
+    button = panel._clear_button  # noqa: SLF001
+    assert button.isEnabled()
+    button.click()
+    assert prefs.cleared == 0
+    assert "/x/Caches/MIA" in asked[0]
+    button.click()
+    assert prefs.cleared == 1
+
+
+def test_the_source_version_has_nothing_to_clear(qtbot) -> None:
+    from mia.ui.panel.window import PanelWindow
+    from mia.ui.viewmodel import ViewModel
+
+    panel = PanelWindow(ViewModel(), preferences=_Preferences())
+    qtbot.addWidget(panel)
+    assert not panel._clear_button.isEnabled()  # noqa: SLF001
+
+
+def test_clear_data_only_removes_owned_folders(tmp_path: Path) -> None:
+    module = _tools_ui()
+    owned = tmp_path / "Application Support/MIA"
+    (owned / "live").mkdir(parents=True)
+    (owned / "live/ws.jsonl").write_text("x")
+    stranger = tmp_path / "Documents"
+    stranger.mkdir()
+    module._clear_data([owned, stranger])  # noqa: SLF001
+    assert not owned.exists()
+    assert stranger.exists(), "名字對不上的資料夾不刪"
 
 
 def test_without_preferences_the_section_is_disabled(qtbot) -> None:

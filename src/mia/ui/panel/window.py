@@ -1011,6 +1011,14 @@ class PanelWindow(QMainWindow):
         self._version_label = QLabel("", page)
         self._version_label.setStyleSheet(CAPTION)
         self._update_button = QPushButton(tr("檢查更新…"), page)
+        self._clear_button = QPushButton(tr("清除所有資料…"), page)
+        self._clear_button.setToolTip(
+            tr("刪掉設定、雀魂登入資料、錄影與紀錄，然後結束 MIA。程式本身不會刪。")
+        )
+        if prefs is None or not prefs.data_folders():
+            self._clear_button.setEnabled(False)
+        else:
+            self._clear_button.clicked.connect(self._on_clear_data)
         if prefs is None:
             for widget in (picker, self._update_button):
                 widget.setEnabled(False)
@@ -1029,6 +1037,7 @@ class PanelWindow(QMainWindow):
         self._restart_row.hide()
         layout.addWidget(self._restart_row)
         layout.addWidget(_row(page, self._update_button, self._version_label))
+        layout.addWidget(_row(page, self._clear_button))
 
     def _on_language_picked(self, index: int) -> None:
         if self._preferences is None:
@@ -1054,6 +1063,24 @@ class PanelWindow(QMainWindow):
             if answer != QMessageBox.StandardButton.Yes:
                 return
         prefs.restart()
+
+    def _on_clear_data(self) -> None:
+        """清除所有資料。一定要先問:登入資料與錄影刪了就回不來。"""
+        prefs = self._preferences
+        if prefs is None:
+            return
+        folders = "\n".join(prefs.data_folders())
+        answer = QMessageBox.question(
+            self,
+            tr("清除所有資料"),
+            tr(
+                "會刪掉 MIA 的設定、雀魂登入資料、錄影與紀錄，刪了就無法復原。\n"
+                "MIA 會先結束，再刪除這些資料夾：\n\n{folders}\n\n繼續嗎？",
+                folders=folders,
+            ),
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            prefs.clear_data()
 
     def _add_recognition_picker(self, page: _Page) -> None:
         """在一個功能頁的設定子頁放「畫面辨識方式」。
