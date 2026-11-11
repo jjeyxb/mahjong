@@ -94,7 +94,7 @@ _RESTARTS = 3
 
 #: 狀態列上 YOLO 跑在什麼上面。torch 的裝置名稱不直接拿來顯示:AMD 顯示卡的 ROCm 版 torch
 #: 也叫 ``cuda``(沿用 CUDA 的 API),AMD 的使用者看到「CUDA」會以為裝錯了。
-_DEVICE_NAMES = {"cuda": "GPU", "mps": "GPU", "cpu": "CPU"}
+_DEVICE_NAMES = {"cuda": "GPU", "mps": "GPU", "xpu": "GPU", "cpu": "CPU"}
 
 
 def device_name(device: str) -> str:
@@ -160,13 +160,16 @@ class YoloVisionWorker(threading.Thread):
         table_rect: TableRectChoice | None = None,
         hybrid: bool = False,
         skin: str = "mjpface_default",
+        device: str | None = None,
     ) -> None:
         super().__init__(name="yolo-vision", daemon=True)
+        #: ``cpu`` / ``gpu``,重啟推論子程序時也要沿用。見 :class:`~mia.features.YoloDeviceChoice`。
+        self._device = device
         self._bus, self._hub = bus, hub
         self.backend = "hybrid" if hybrid else "yolo"
         self.label = "混合辨識" if hybrid else "YOLO"
         #: 推論子程序。重啟過 :data:`_RESTARTS` 次還是死掉就是 ``None``,見 :meth:`_revive`。
-        self._client: YoloClient | None = YoloClient()
+        self._client: YoloClient | None = YoloClient(device=device)
         self._restarts = 0
         # 混合辨識:同一份畫面另外交給樣板的牌桌那條路,兩條事件流在事件層合併再發佈。
         # 見 mia.hybrid.merge。手牌由擷取那一條用樣板認,樣板的牌桌要它。
@@ -290,7 +293,7 @@ class YoloVisionWorker(threading.Thread):
             if self._client is not None:
                 self._client.close()
             try:
-                client = YoloClient()
+                client = YoloClient(device=self._device)
                 client.start()
             except EngineError as again:
                 reason = again

@@ -1,0 +1,16 @@
+﻿# Intel 顯示卡(XPU)版的 torch,只給 Windows + Python 3.12。由 tools/setup_yolo.py --gpu xpu 安裝,
+# 不要直接 pip install 這個檔案:其餘套件(ultralytics 等)要接著照 requirements.txt 裝,而且
+# 不能讓 pip 把這裡的 torch 換回 PyPI 的 CPU 版,那一步由 setup_yolo.py 處理。
+#
+# ⚠ 這個檔案必須存成「UTF-8 含 BOM」,理由見 requirements-rocm.txt 開頭。
+#
+# 版本跟 ROCm / CUDA 版同一組(torch 2.9.1 / torchvision 0.24.1)。支援 Intel Arc 獨立顯示卡與
+# Core Ultra 內建的 Arc 顯示晶片;舊的 Iris Xe 不在 PyTorch 的支援範圍。
+# torch 自己釘死了 Intel 執行環境的版本(intel-sycl-rt、mkl 等,約 0.5 GB),那些在 PyPI 上有,
+# pip 會照 torch 寫的版本去拿;只有 pytorch-triton-xpu 不在 PyPI,所以這裡用網址釘住。
+# 雜湊取自 download.pytorch.org/whl/xpu(2026-11-12)。全部加起來約 1.4 GB。
+#
+# ⚠ 還沒有在 Intel 顯示卡上實測過。
+torch @ https://download-r2.pytorch.org/whl/xpu/torch-2.9.1%2Bxpu-cp312-cp312-win_amd64.whl#sha256=bee9623254d0f95a1ca115dbd17e9a9d966fdb8ae123e2ada4a9eb2fb8d38db8
+torchvision @ https://download-r2.pytorch.org/whl/xpu/torchvision-0.24.1%2Bxpu-cp312-cp312-win_amd64.whl#sha256=8bae6d4c042f8d20818da4a5aa9109c6fbd6ec11bc422be152ce8adf9a7095bf
+pytorch-triton-xpu @ https://download-r2.pytorch.org/whl/pytorch_triton_xpu-3.5.0-cp312-cp312-win_amd64.whl#sha256=97337a47425f1963a723475bd61037460e84ba01db4f87a1d662c3718ff6c47e

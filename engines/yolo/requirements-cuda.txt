@@ -1,0 +1,15 @@
+﻿# NVIDIA 顯示卡(CUDA 12.8)版的 torch,只給 Windows + Python 3.12。由 tools/setup_yolo.py --gpu cuda 安裝,
+# 不要直接 pip install 這個檔案:其餘套件(ultralytics 等)要接著照 requirements.txt 裝,而且
+# 不能讓 pip 把這裡的 torch 換回 PyPI 的 CPU 版,那一步由 setup_yolo.py 處理。
+#
+# ⚠ 這個檔案必須存成「UTF-8 含 BOM」,理由見 requirements-rocm.txt 開頭。
+#
+# 版本跟 ROCm 版同一組(torch 2.9.1 / torchvision 0.24.1):ultralytics 8.4.127 在這組上
+# 已經實測過(RX 9070)。CUDA 12.8 是 2.9 系列裡最舊、又支援 RTX 50 系列的那一版。
+# Windows 的 CUDA 版 torch 把 CUDA 執行環境包在 wheel 裡,沒有另外的依賴要釘;
+# 但需要夠新的 NVIDIA 驅動(CUDA 12.8 要 570 版以上),太舊的話 setup_yolo.py 最後的檢查會失敗。
+# 雜湊取自 download.pytorch.org/whl/cu128(2026-11-12)。torch 這個檔約 2.9 GB。
+#
+# ⚠ 還沒有在 NVIDIA 顯示卡上實測過。
+torch @ https://download-r2.pytorch.org/whl/cu128/torch-2.9.1%2Bcu128-cp312-cp312-win_amd64.whl#sha256=3a01f0b64c10a82d444d9fd06b3e8c567b1158b76b2764b8f51bfd8f535064b0
+torchvision @ https://download-r2.pytorch.org/whl/cu128/torchvision-0.24.1%2Bcu128-cp312-cp312-win_amd64.whl#sha256=33ecea57afa1daeedfed443a8a0cb8e4b0b403fdf18c2a328ba6f9069d403384

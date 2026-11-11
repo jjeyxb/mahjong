@@ -187,8 +187,9 @@ def test_a_dead_inference_process_is_restarted_a_bounded_number_of_times(monkeyp
     made = []
 
     class FakeClient:
-        def __init__(self):
+        def __init__(self, device=None):
             self.closed = False
+            self.device = device
             made.append(self)
 
         def start(self):
@@ -203,11 +204,14 @@ def test_a_dead_inference_process_is_restarted_a_bounded_number_of_times(monkeyp
     worker = object.__new__(yolo.YoloVisionWorker)
     original = FakeClient()
     vars(worker).update(
-        _client=original, _restarts=0, status=WorkerStatus("畫面"), label="混合辨識"
+        _client=original, _restarts=0, status=WorkerStatus("畫面"), label="混合辨識",
+        _device="gpu",
     )
     assert worker._revive(EngineError("死了"))  # noqa: SLF001
     assert original.closed
     assert worker._client is made[-1]  # noqa: SLF001
+    # 重開的子程序沿用使用者選的裝置,不會悄悄退回預設。
+    assert all(client.device == "gpu" for client in made[1:])
     assert worker._restarts == 3  # noqa: SLF001
     assert not worker._revive(EngineError("又死了"))  # noqa: SLF001
     assert worker._restarts == 3  # noqa: SLF001
@@ -274,5 +278,6 @@ def test_the_status_bar_says_gpu_not_the_torch_device_name():
     """AMD 顯示卡的 ROCm 版 torch 也回 ``cuda``,狀態列寫「CUDA」會讓人以為裝錯了。"""
     assert device_name("cuda") == "GPU"
     assert device_name("mps") == "GPU"
+    assert device_name("xpu") == "GPU"  # Intel 顯示卡
     assert device_name("cpu") == "CPU"
-    assert device_name("xpu") == "XPU"
+    assert device_name("npu") == "NPU"

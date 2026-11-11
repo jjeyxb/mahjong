@@ -13,8 +13,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
+    import threading
+    from collections.abc import Callable
+
     from mia.capture.base import Frame
     from mia.utils.geometry import NormRect
+    from mia.yolo.accel import EnvStatus, Plan
 
 __all__ = [
     "AdviceSourcePicker",
@@ -22,6 +26,7 @@ __all__ = [
     "CanvasPicker",
     "DangerSourcePicker",
     "GameLauncher",
+    "GpuSetup",
     "HandRoiPicker",
     "NoticeMemory",
     "PlatformPicker",
@@ -29,6 +34,7 @@ __all__ = [
     "StylePicker",
     "Switchboard",
     "TableRectPicker",
+    "YoloDevicePicker",
     "is_on",
 ]
 
@@ -163,6 +169,33 @@ class RecognitionPicker(Protocol):
     def can_pick_recognition(self) -> bool: ...
     def recognition_backend(self) -> str: ...
     def set_recognition_backend(self, value: str) -> None: ...
+
+
+class YoloDevicePicker(Protocol):
+    """YOLO 跑在 CPU 還是 GPU。見 :class:`~mia.features.YoloDeviceChoice`。
+
+    :meth:`set_yolo_device` **會重啟用到 YOLO 的功能**(如果開著):裝置是推論子程序啟動時決定的。
+    """
+
+    def can_pick_yolo_device(self) -> bool: ...
+    def yolo_device(self) -> str: ...
+    def set_yolo_device(self, value: str) -> None: ...
+
+    #: 用到 YOLO 的功能現在有沒有開著。開著的時候不能裝 GPU 版 torch(檔案被占著)。
+    def yolo_running(self) -> bool: ...
+
+
+class GpuSetup(Protocol):
+    """檢查顯示卡、安裝 GPU 版 torch。實作在 :class:`mia.yolo.accel.LocalGpuSetup`。
+
+    兩個方法都會等子程序,**只在背景執行緒呼叫**。
+    """
+
+    def inspect(self) -> tuple[Plan, EnvStatus]: ...
+    def can_install(self) -> bool: ...
+    def install(
+        self, backend: str, on_line: Callable[[str], None], cancelled: threading.Event
+    ) -> tuple[bool, str]: ...
 
 
 class NoticeMemory(Protocol):

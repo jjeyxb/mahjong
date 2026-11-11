@@ -21,6 +21,7 @@ __all__ = [
     "AdviceSourceChoice",
     "DangerSourceChoice",
     "RecognitionChoice",
+    "YoloDeviceChoice",
 ]
 
 #: 功能 1:螢幕擷取 → 手牌 → 向聽 / 進張。
@@ -102,6 +103,28 @@ class RecognitionChoice:
 
     def __init__(self, value: str = "template") -> None:
         self.value = value if value in self.NAMES else "template"
+
+    def set(self, value: str) -> bool:
+        if value not in self.NAMES or value == self.value:
+            return False
+        self.value = value
+        return True
+
+
+class YoloDeviceChoice:
+    """YOLO 跑在 CPU 還是顯示卡。與 :class:`RecognitionChoice` 同一種共用格子。
+
+    **只決定「要不要用」,不決定「用哪一張」。** 選 GPU 時由 YOLO 子程序自己挑看得到的那張
+    (``engines/yolo/agent/platform_compat.py``);環境裡的 torch 是 CPU 版的話照樣跑 CPU。
+    要不要下載 GPU 版 torch 是設定頁在選的當下處理的(:mod:`mia.yolo.accel`),不在這裡。
+
+    預設 CPU:基本環境裝的就是 CPU 版,預設值要跟實際跑的一致。
+    """
+
+    NAMES: ClassVar[dict[str, str]] = {"cpu": "CPU", "gpu": "GPU"}
+
+    def __init__(self, value: str = "cpu") -> None:
+        self.value = value if value in self.NAMES else "cpu"
 
     def set(self, value: str) -> bool:
         if value not in self.NAMES or value == self.value:

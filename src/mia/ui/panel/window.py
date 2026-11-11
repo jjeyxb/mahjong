@@ -73,6 +73,7 @@ from mia.ui.switchboard import (
     CanvasPicker,
     DangerSourcePicker,
     GameLauncher,
+    GpuSetup,
     HandRoiPicker,
     NoticeMemory,
     PlatformPicker,
@@ -80,6 +81,7 @@ from mia.ui.switchboard import (
     StylePicker,
     Switchboard,
     TableRectPicker,
+    YoloDevicePicker,
     is_on,
 )
 from mia.ui.theme import (
@@ -100,6 +102,8 @@ from mia.ui.widgets.tiles import DEFAULT_SKIN, TileIcons
 from mia.ui.widgets.toggle import ToggleSwitch
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from mia.ui.overlay.log import EventLogWindow
 from mia.ui.overlay.window import OverlayWindow
 
@@ -169,6 +173,14 @@ def _ask_yolo_skin(parent: QWidget) -> bool:
     box.exec()
     check = box.checkBox()
     return check is not None and check.isChecked()
+
+
+def _run_gpu_setup(parent: QWidget, setup: GpuSetup, busy: Callable[[], bool]) -> bool:
+    """跳出 GPU 設定對話框,等它結束。回傳 GPU 能不能用。測試換掉這個,不真的開對話框。"""
+    from mia.ui.panel.gpu import GpuSetupDialog
+
+    dialog = GpuSetupDialog(parent, setup, busy=busy)
+    return dialog.exec() == QDialog.DialogCode.Accepted
 
 
 class _Segmented(QWidget):
@@ -339,6 +351,8 @@ class PanelWindow(QMainWindow):
             ``None`` 時那四個畫成停用。
         preferences: 「語言與更新」那一區要接到誰。``None`` 時整區畫成停用。
         notices: 記得哪些提醒勾了「不再顯示」。``None`` 時每次都跳(記不住)。
+        yolo_device: YOLO 跑 CPU 還是 GPU。``None`` 時那兩顆按鈕畫成停用。
+        gpu_setup: 選 GPU 時檢查顯示卡、需要時安裝。``None`` 時直接換,不檢查。
 
     Note:
         :meth:`apply` 是唯一的資料入口。ViewModel 的通知可能來自別的執行緒,
@@ -363,6 +377,8 @@ class PanelWindow(QMainWindow):
         advice_source: AdviceSourcePicker | None = None,
         recognition: RecognitionPicker | None = None,
         notices: NoticeMemory | None = None,
+        yolo_device: YoloDevicePicker | None = None,
+        gpu_setup: GpuSetup | None = None,
         event_log: EventLogWindow | None = None,
         overlay: OverlayWindow | None = None,
         preferences: AppPreferences | None = None,
@@ -389,6 +405,8 @@ class PanelWindow(QMainWindow):
         self._advice_source = advice_source
         self._recognition = recognition
         self._notices = notices
+        self._yolo_device = yolo_device
+        self._gpu_setup = gpu_setup
         self._event_log = event_log
         self._overlay = overlay
         self._preferences = preferences
@@ -934,6 +952,10 @@ class PanelWindow(QMainWindow):
         self._build_table_rect_settings(page, layout)
 
         layout.addWidget(_rule(page))
+        layout.addWidget(_section(tr("YOLO 運算裝置"), page))
+        self._build_yolo_device_settings(page, layout)
+
+        layout.addWidget(_rule(page))
         layout.addWidget(_section(tr("MIA 視窗"), page))
         self._on_top = QCheckBox(tr("視窗置頂"), page)
         self._on_top.setChecked(bool(self.windowFlags() & Qt.WindowType.WindowStaysOnTopHint))
@@ -1135,6 +1157,40 @@ class PanelWindow(QMainWindow):
         row_layout.addWidget(picker)
         row_layout.addStretch(1)
         layout.addWidget(row)
+
+    def _build_yolo_device_settings(self, page: QWidget, layout: QVBoxLayout) -> None:
+        """YOLO 跑在 CPU 還是顯示卡。
+
+        放在一般設定而不是三個功能頁:它是 YOLO 推論子程序的設定,三個功能共用一個。
+        選 GPU 不是單純撥一個開關 —— 環境裡的 torch 可能是 CPU 版,要先檢查、可能要下載
+        好幾 GB,所以交給 :class:`~mia.ui.panel.gpu.GpuSetupDialog`。
+        """
+        picker = ChoiceButtons([("CPU", "cpu"), ("GPU", "gpu")], page)
+        self._yolo_device_picker = picker
+        if self._yolo_device is None or not self._yolo_device.can_pick_yolo_device():
+            picker.setEnabled(False)
+        else:
+            picker.select(self._yolo_device.yolo_device())
+            picker.chosen.connect(self._on_yolo_device_picked)
+        picker.setToolTip(
+            tr("只影響 YOLO 與混合辨識，樣板比對不受影響。\n"
+            "選 GPU 時會檢查顯示卡(NVIDIA、AMD Radeon RX 7000/9000、Intel Arc、Apple Silicon),\n"
+            "需要的話下載對應的 PyTorch。")
+        )
+        layout.addWidget(_row(page, picker))
+
+    def _on_yolo_device_picked(self, value: object) -> None:
+        """選 GPU 要先過 :class:`~mia.ui.panel.gpu.GpuSetupDialog`;沒過就畫回 CPU。"""
+        if self._yolo_device is None:
+            return
+        if (
+            value == "gpu"
+            and self._gpu_setup is not None
+            and not _run_gpu_setup(self, self._gpu_setup, self._yolo_device.yolo_running)
+        ):
+            self._yolo_device_picker.select("cpu")
+            return
+        self._yolo_device.set_yolo_device(str(value))
 
     def _on_platform_picked(self, value: object) -> None:
         """換版本 —— **會關掉新版本撐不起的功能,並重啟畫面辨識**。

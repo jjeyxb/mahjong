@@ -54,7 +54,12 @@ from mia.capture.base import Frame
 from mia.config.models import AppConfig
 from mia.engine import AIEngine, DummyEngine, EngineGroup
 from mia.engine.styles import StyleChoice, StyleProfile
-from mia.features import AdviceSourceChoice, DangerSourceChoice, RecognitionChoice
+from mia.features import (
+    AdviceSourceChoice,
+    DangerSourceChoice,
+    RecognitionChoice,
+    YoloDeviceChoice,
+)
 from mia.i18n import tr
 from mia.live.runtime import LiveRuntime
 from mia.mjai import MjaiEvent
@@ -72,6 +77,7 @@ from mia.utils.appnap import hold_off_app_nap
 from mia.utils.geometry import NormRect
 from mia.utils.logging import logger, setup_logging
 from mia.utils.paths import DATA_DIR, PROJECT_ROOT
+from mia.yolo.accel import LocalGpuSetup
 
 #: 瀏覽器設定檔的預設位置 —— **有預設值是刻意的**。
 #:
@@ -501,6 +507,27 @@ class _RememberedRecognition:
         self._state.save()
 
 
+class _RememberedYoloDevice:
+    """YOLO 跑 CPU 還是 GPU,轉給 runtime 並記到磁碟。"""
+
+    def __init__(self, runtime: LiveRuntime, state: UiState) -> None:
+        self._runtime, self._state = runtime, state
+
+    def can_pick_yolo_device(self) -> bool:
+        return self._runtime.can_pick_yolo_device()
+
+    def yolo_device(self) -> str:
+        return self._runtime.yolo_device()
+
+    def yolo_running(self) -> bool:
+        return self._runtime.yolo_running()
+
+    def set_yolo_device(self, value: str) -> None:
+        self._runtime.set_yolo_device(value)
+        self._state.yolo_device = self._runtime.yolo_device()
+        self._state.save()
+
+
 class _RememberedNotices:
     """「不再顯示」的提醒記到磁碟。與其他 ``_Remembered*`` 同一個理由:持久化屬於接線層。"""
 
@@ -551,6 +578,7 @@ def build_live_runtime(
     advice_source: AdviceSourceChoice | None = None,
     event_log: EventLog | None = None,
     recognition: RecognitionChoice | None = None,
+    yolo_device: YoloDeviceChoice | None = None,
 ) -> LiveRuntime:
     """組出 runtime。**什麼都還沒開始** —— 瀏覽器等使用者按「開始遊戲」,
     三個功能等使用者撥開關。
@@ -575,6 +603,7 @@ def build_live_runtime(
     danger_source = danger_source if danger_source is not None else DangerSourceChoice()
     advice_source = advice_source if advice_source is not None else AdviceSourceChoice()
     recognition = recognition if recognition is not None else RecognitionChoice()
+    yolo_device = yolo_device if yolo_device is not None else YoloDeviceChoice()
     yolo_hub = YoloHub()
     bus = UpdateBus()
     feature_list: list[Feature] = []
@@ -662,7 +691,8 @@ def build_live_runtime(
             if recognition.value in ("yolo", "hybrid"):
                 return YoloVisionWorker(bus, config=config, hub=yolo_hub, canvas=canvas,
                     platform=platform.value if platform else WEB, hand_roi=hand_roi,
-                    table_rect=table_rect, hybrid=recognition.value == "hybrid", skin=skin)
+                    table_rect=table_rect, hybrid=recognition.value == "hybrid", skin=skin,
+                    device=yolo_device.value)
             return VisionWorker(
                 bus,
                 config=config,
@@ -724,6 +754,7 @@ def build_live_runtime(
         advice_source=advice_source,
         event_log=event_log,
         recognition=recognition,
+        yolo_device=yolo_device,
     )
 
 
@@ -953,6 +984,7 @@ def main(argv: list[str] | None = None) -> int:
     danger_source = DangerSourceChoice(ui_state.danger_vision_only)
     advice_source = AdviceSourceChoice(ui_state.advice_vision_only)
     recognition = RecognitionChoice(ui_state.recognition_backend)
+    yolo_device = YoloDeviceChoice(ui_state.yolo_device)
     event_log = EventLog()
     # 視窗比對條件要與擷取執行緒讀的是同一份 —— 兩邊找的必須是同一個視窗,
     # 否則使用者框的是 A、辨識跑的是 B。
@@ -975,6 +1007,7 @@ def main(argv: list[str] | None = None) -> int:
             advice_source=advice_source,
             event_log=event_log,
             recognition=recognition,
+            yolo_device=yolo_device,
         )
         if args.live
         else None
@@ -1029,6 +1062,8 @@ def main(argv: list[str] | None = None) -> int:
         ),
         recognition=_RememberedRecognition(runtime, ui_state) if runtime is not None else None,
         notices=_RememberedNotices(ui_state),
+        yolo_device=_RememberedYoloDevice(runtime, ui_state) if runtime is not None else None,
+        gpu_setup=LocalGpuSetup(),
         **options,  # type: ignore[arg-type]
     )
     model.subscribe(window.apply)

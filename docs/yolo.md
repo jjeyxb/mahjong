@@ -25,30 +25,44 @@ YOLO 使用獨立的 Python 3.12 環境，不把 PyTorch 裝進 MIA 的 Python 3
 - 安裝腳本跑 pip 時設環境變數 `PIP_NO_CACHE_DIR=1`，不然 torch 等套件會另外快取一份到使用者目錄（實測約 336 MB）。用環境變數而不是 `--no-cache-dir`：ROCm 的 `rocm` 套件要現場建置，pip 另開的建置子程序看不到命令列參數，照樣會寫快取。
 - worker 把 Ultralytics、matplotlib 的設定目錄，以及 AMD 顯示卡第一次跑模型時編譯的 GPU 核心快取，都導到 `engines/yolo/.cache`。
 
-### Windows 用 AMD 顯示卡跑（ROCm）
+### 用顯示卡跑（GPU）
 
-Windows 上 `requirements.txt` 釘的是 PyPI 的 CPU 版 torch，每幀 0.7~2 秒，混合辨識跟不上牌局。AMD 顯示卡加上 `--gpu rocm`，把環境裡的 torch 換成 AMD 官方的 ROCm 版：
+基本環境裝的是 PyPI 的 CPU 版 torch。Windows 上每幀 0.7~2 秒，混合辨識跟不上牌局。
 
-```powershell
-.venv\Scripts\python.exe tools\setup_yolo.py --gpu rocm
-```
+**最簡單的做法：MIA 的「一般設定 → YOLO 運算裝置」選 GPU。** MIA 會先檢查這台電腦的顯示卡和 YOLO 環境:
 
-- **已經裝好 CPU 版的話直接再跑一次就好。** 換的是 `engines/yolo/.venv` 裡的套件，不搬資料夾，MIA 找環境的路徑不變。跑之前要先關掉 MIA：Windows 上執行中的 torch 檔案換不掉。
-- 只支援 Windows + Python 3.12（AMD 只提供這一種 wheel）。Windows 上沒指定 `--python` 時用 `py -3.12` 建環境。
-- 第一次要下載數 GB（torch 與 AMD 的 ROCm 執行環境）。版本與雜湊釘在 `engines/yolo/requirements-rocm.txt`；那個檔必須存成 UTF-8 含 BOM，理由寫在檔案開頭。
-- 裝完腳本會問一次 torch 看不看得到顯示卡，看不到就報錯，不會安靜地退回 CPU。
-- 換回 CPU：`--gpu cpu`，同時移除 ROCm 執行環境。
-- 沒加 `--gpu` 時，偵測到 AMD 顯示卡會提示可以加。
+- 環境已經能用顯示卡：直接切過去。
+- 需要換 torch:顯示要下載哪一版、多大，按「下載並安裝」才開始。
+- 顯示卡不支援：說明原因，維持 CPU。
 
-RX 9070 實測（同一張牌桌截圖、30 幀）：
+裝不成或取消時都維持 CPU，不會出現「設成 GPU 但其實在跑 CPU」的狀態。
+
+| 顯示卡 | 安裝的 torch | 下載量 | 實測 |
+|---|---|---|---|
+| Apple Silicon | 不用換（PyPI 版本來就有 MPS） | — | 有 |
+| NVIDIA | CUDA 12.8（`requirements-cuda.txt`），驅動要 570 版以上 | 約 2.9 GB | **還沒有** |
+| AMD Radeon RX 7700 以上、RX 9000 系列 | Windows ROCm 7.2.1（`requirements-rocm.txt`） | 約 2.0 GB | RX 9070 |
+| Intel Arc（獨顯與 Core Ultra 內建） | XPU（`requirements-xpu.txt`） | 約 1.4 GB | **還沒有** |
+
+- 一台電腦有好幾張顯示卡時，依序挑 NVIDIA、AMD、Intel。AMD 不能看到品牌就裝:ROCm 只支援上表那幾代，不在清單上的卡(例如 RX 6600)會直接說明、不下載。
+  規則在 `src/mia/yolo/accel.py`,清單來源是 AMD 官方的 Windows 支援表(2026-11-12)。
+- 設定頁按下去跑的是 `tools/setup_yolo.py --gpu <cuda|rocm|xpu>`,也可以自己在命令列跑。`--gpu auto` 會照上面的規則自己選。跑之前要先關掉用到 YOLO 的功能，因為 Windows 上執行中的 torch 檔案換不掉;設定頁會擋著，不讓你在 YOLO 執行時安裝。
+- 下載期間可以取消，YOLO 環境維持原本那一套。pip 開始換套件之後就不給取消了：裝到一半的 torch 是壞的環境。
+- 裝完會由 `engines/yolo/probe.py` 在顯示卡上實際算一次。只看 `is_available()` 不夠：驅動太舊時它照樣回 True,要到第一幀才報錯。算不動就報錯並維持 CPU。
+- 換成別的版本時，舊版本帶進來的執行環境(ROCm 的 `rocm-sdk-*`、XPU 的 `intel-*`、`mkl` 等)最後才移除，而且只移除沒有別的套件需要的那些。`--gpu cpu` 會換回 CPU 版。
+- 只支援 Windows + Python 3.12(各家只提供這一種 wheel)。Windows 上沒指定 `--python` 時用 `py -3.12` 建環境。版本與雜湊釘在 `engines/yolo/requirements-<版本>.txt`,這幾個檔必須存成 UTF-8 含 BOM,理由寫在 `requirements-rocm.txt` 開頭。
+- 選 CPU 時，就算環境裡是 GPU 版 torch 也真的跑 CPU。以前做不到：ultralytics 只要看得到 CUDA 就會用，`MJ_DEVICE=cpu` 擋不住，見 `engines/yolo/README.md` 的本地修改表。
+- 打包版不在使用者電腦上跑 pip(`docs/packaging.md`),選 GPU 時會請使用者去「說明 → GPU 加速元件」找發布方提供的元件。
+
+RX 9070 實測(同一張牌桌截圖、30 幀):
 
 | | CPU 版 | ROCm 版 |
 |---|---|---|
 | 之後每幀 | 約 650 ms 以上 | 約 150~200 ms |
-| 第一幀 | 約 2 秒 | 第一次 9.8 秒（現場編譯 GPU 核心），之後約 4 秒 |
+| 第一幀 | 約 2 秒 | 第一次 9.8 秒(現場編譯 GPU 核心),之後約 4 秒 |
 | 輸出 | — | 牌河、手牌、寶牌逐項與 CPU 版相同 |
 
-開著 YOLO 時，狀態列會寫 `YOLO · GPU` 或 `YOLO · CPU`。ROCm 版 torch 對外也叫 `cuda`，所以狀態列不照抄 torch 的裝置名稱。macOS 不需要這個選項：Apple Silicon 的 torch 本來就用 MPS。NVIDIA 顯示卡還沒實測過，沒有提供選項。
+開著 YOLO 時，狀態列會寫 `YOLO · GPU` 或 `YOLO · CPU`。ROCm 版 torch 對外也叫 `cuda`,所以狀態列不照抄 torch 的裝置名稱。
 
 若權重放在別處：
 
@@ -56,7 +70,7 @@ RX 9070 實測（同一張牌桌截圖、30 幀）：
 .venv/bin/python tools/setup_yolo.py --python python3.12 --models '/path/to/Model'
 ```
 
-目前這台 Mac 已安裝完成並通過 MPS 推論測試。Windows 用 `.venv\Scripts\python.exe tools\setup_yolo.py`；預設用 `py -3.12` 建環境，要用別的 Python 3.12 就加 `--python <路徑>`。有 AMD 顯示卡的話見上面的 ROCm 一節。
+目前這台 Mac 已安裝完成並通過 MPS 推論測試。Windows 用 `.venv\Scripts\python.exe tools\setup_yolo.py`；預設用 `py -3.12` 建環境，要用別的 Python 3.12 就加 `--python <路徑>`。要用顯示卡的話見上面的 GPU 一節。
 
 ## 使用
 

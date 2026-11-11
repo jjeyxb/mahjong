@@ -158,7 +158,7 @@ git clone / pull 之後**還缺四樣東西** —— 它們都在 gitignore 裡,
 | 缺什麼 | 怎麼補 | 大小 |
 |---|---|---|
 | `models/*.pth` | `python tools/fetch_models.py` —— 基準權重(直接從原作者 [VoidShine/mortal-298k](https://huggingface.co/VoidShine/mortal-298k) 抓)+ 四份風格權重,逐檔核對 SHA-256,不經過使用者目錄下的快取。**不含 `grp.pth`**:那只有重新訓練才用得到,要的話 `hf download jjeyxb/mia-mortal-style grp.pth --local-dir models` | 625 MB |
-| `models/yolo/` | **選用。** `tools/fetch_models.py` 會連同上一列一起抓(逐檔核對雜湊),再 `tools/setup_yolo.py` 建 `engines/yolo/.venv`(macOS 加 `--python python3.12`)。見 [yolo.md](yolo.md)。⚠ Windows 預設裝 CPU 版 torch,實測每幀 0.7~2 秒;AMD 顯示卡加 `--gpu rocm` 改跑顯示卡,RX 9070 約 150~200 ms | 50 MB + 環境 |
+| `models/yolo/` | **選用。** `tools/fetch_models.py` 會連同上一列一起抓(逐檔核對雜湊),再 `tools/setup_yolo.py` 建 `engines/yolo/.venv`(macOS 加 `--python python3.12`)。見 [yolo.md](yolo.md)。⚠ 預設裝 CPU 版 torch,Windows 實測每幀 0.7~2 秒;到 MIA「一般設定 → YOLO 運算裝置」選 GPU 會看顯示卡下載對應的版本(NVIDIA / AMD / Intel;或 `--gpu auto`),RX 9070 約 150~200 ms | 50 MB + 環境 |
 | `engines/mortal/Mortal/` | `git clone --depth 1 https://github.com/Equim-chan/Mortal.git engines/mortal/Mortal` | |
 | Playwright 的 Chromium | `.venv\Scripts\python.exe -m playwright install chromium` | |
 | 兩個 venv | 見下 | |

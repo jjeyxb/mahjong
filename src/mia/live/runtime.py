@@ -38,7 +38,13 @@ from mia import features
 from mia.calibration.canvas import CanvasChoice
 from mia.engine.base import EngineError
 from mia.engine.styles import StyleChoice
-from mia.features import NAMES, AdviceSourceChoice, DangerSourceChoice, RecognitionChoice
+from mia.features import (
+    NAMES,
+    AdviceSourceChoice,
+    DangerSourceChoice,
+    RecognitionChoice,
+    YoloDeviceChoice,
+)
 from mia.hybrid.merge import TileChoice
 from mia.i18n import translate
 from mia.live.bus import (
@@ -181,6 +187,7 @@ class LiveRuntime:
         advice_source: AdviceSourceChoice | None = None,
         event_log: EventLog | None = None,
         recognition: RecognitionChoice | None = None,
+        yolo_device: YoloDeviceChoice | None = None,
     ) -> None:
         self._viewmodel = viewmodel
         self._bus = bus
@@ -193,6 +200,7 @@ class LiveRuntime:
         self._advice_source = advice_source
         self._event_log = event_log
         self._recognition = recognition
+        self._yolo_device = yolo_device
         self._running = False
         self._screen_permission_check: Callable[[], bool] | None = None
         #: 最近一次「功能起不來」的理由。見 :meth:`_enable`。
@@ -321,9 +329,19 @@ class LiveRuntime:
     def set_recognition_backend(self, value: str) -> None:
         if self._recognition is None or not self._recognition.set(value):
             return
-        active = [key for key in (features.ADVICE, features.DANGER, features.VISION)
-                  if self.is_enabled(key) and (key == features.VISION or
-                  getattr(self._features[key].worker, "SOURCE", None) == _SCREEN_SOURCE)]
+        self._rebuild_screen_features()
+        logger.info("畫面辨識模式改為 {}", RecognitionChoice.NAMES[value])
+        self.pump()
+
+    def _screen_features(self) -> list[str]:
+        """現在開著、而且吃畫面的功能。"""
+        return [key for key in (features.ADVICE, features.DANGER, features.VISION)
+                if self.is_enabled(key) and (key == features.VISION or
+                getattr(self._features[key].worker, "SOURCE", None) == _SCREEN_SOURCE)]
+
+    def _rebuild_screen_features(self) -> None:
+        """關掉再開吃畫面的功能:辨識方式與 YOLO 裝置都是推論那條路建起來時決定的。"""
+        active = self._screen_features()
         for key in active:
             self._features[key].disable()
         self.pump()
@@ -332,8 +350,27 @@ class LiveRuntime:
         for key in reversed(active):
             self._enable(self._features[key])
             self._ensure_vision_for(self._features[key])
-        logger.info("畫面辨識模式改為 {}", RecognitionChoice.NAMES[value])
+
+    # ------------------------------------------------------- YOLO 跑在哪
+
+    def can_pick_yolo_device(self) -> bool:
+        return self._yolo_device is not None and features.VISION in self._features
+
+    def yolo_device(self) -> str:
+        return self._yolo_device.value if self._yolo_device is not None else "cpu"
+
+    def set_yolo_device(self, value: str) -> None:
+        """換 CPU / GPU。只有正在用 YOLO 時才需要重開 —— 樣板比對不受影響。"""
+        if self._yolo_device is None or not self._yolo_device.set(value):
+            return
+        logger.info("YOLO 改用 {}", YoloDeviceChoice.NAMES[value])
+        if self.yolo_running():
+            self._rebuild_screen_features()
         self.pump()
+
+    def yolo_running(self) -> bool:
+        """有沒有開著、用到 YOLO 推論子程序的功能。"""
+        return self.recognition_backend() in ("yolo", "hybrid") and bool(self._screen_features())
 
     def can_pick_advice_source(self) -> bool:
         """有沒有得選。Steam 版沒有封包,``--no-vision`` 沒有畫面,都只剩一條。"""

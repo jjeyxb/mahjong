@@ -26,7 +26,15 @@ _FRAME = Rect(0, 0, 1920, 1080)
 
 
 class YoloClient:
-    def __init__(self, *, python: Path | None = None, timeout: float = 45.0) -> None:
+    def __init__(
+        self, *, python: Path | None = None, timeout: float = 45.0, device: str | None = None
+    ) -> None:
+        """
+        Args:
+            device: ``cpu`` / ``gpu``(見 :class:`~mia.features.YoloDeviceChoice`)。``None`` 讓子程序
+                自己挑(有顯示卡就用)。環境變數 ``MJ_DEVICE`` 有設的話以它為準 —— 那是開發時
+                手動指定的。
+        """
         base = PROJECT_ROOT / "engines/yolo"
         executable = "Scripts/python.exe" if sys.platform == "win32" else "bin/python"
         self._packaged = LAYOUT.packaged and python is None
@@ -42,6 +50,7 @@ class YoloClient:
             raise EngineError("YOLO 尚未安裝，請執行 .venv/bin/python tools/setup_yolo.py")
         self._base = base
         self._timeout = timeout
+        self._device = device
         self._process: subprocess.Popen[bytes] | None = None
         self._log: BinaryIO | None = None
         self._lines: queue.Queue[bytes | None] = queue.Queue()
@@ -71,6 +80,9 @@ class YoloClient:
                 raise EngineError("YOLO 已停止")
             self._log = (LOG_DIR / "yolo-worker.log").open("ab")
             child_env = {**os.environ, "PYINSTALLER_RESET_ENVIRONMENT": "1"}
+            if self._device is not None and "MJ_DEVICE" not in os.environ:
+                # auto:有哪張用哪張(CUDA / ROCm / Intel XPU / Apple MPS),都沒有就 CPU。
+                child_env["MJ_DEVICE"] = "cpu" if self._device == "cpu" else "auto"
             if self._packaged and self.python != LAYOUT.worker("yolo"):
                 # ROCm also uses PyTorch's cuda device API. Preserve an explicit CPU override.
                 child_env.setdefault("MJ_DEVICE", "cuda")
