@@ -72,7 +72,7 @@ dist/windows-x64/MIA/program/MIA.exe --self-check --engines --browser
 & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" packaging/windows/mia.iss
 ```
 
-安裝檔在 `dist/installers/`。超過 1.9 GB 會切成 `Setup.exe` 加幾個 `.bin`,放在同一個資料夾就能裝。
+安裝檔在 `dist/installers/`,是單一個 `Setup.exe`(2026-11-12 約 1.2 GB)。包超過約 2 GB 時 ISCC 會報錯,那時加 `/DSpan` 重編:會切成 `Setup.exe` 加幾個 1.9 GB 的 `.bin`,放在同一個資料夾就能裝。
 
 ## 7. 驗收重點
 

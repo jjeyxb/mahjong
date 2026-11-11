@@ -22,8 +22,13 @@ OutputBaseFilename=MIA-{#AppVersion}-windows-x64-setup
 OutputDir=..\..\dist\installers
 Compression=lzma2
 SolidCompression=yes
+; DiskSpanning=yes 會「一律」把資料放進外部的 -1.bin,不是超過大小才切 —— 1.2 GB 的包也被拆成
+; 2.7 MB 的 Setup.exe 加一個 .bin。所以預設不切,打出單一個 Setup.exe。
+; 包超過約 2 GB(單一 exe 的上限)時 ISCC 會報錯,那時加 /DSpan 重編,每片 1.9 GB(GitHub 單檔上限 2 GiB 以內)。
+#ifdef Span
 DiskSpanning=yes
 DiskSliceSize=1900000000
+#endif
 CloseApplications=no
 
 [Files]
