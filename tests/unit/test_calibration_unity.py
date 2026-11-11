@@ -32,8 +32,35 @@ def test_the_same_ratio_scales() -> None:
 
 
 def test_an_unmeasured_ratio_is_refused() -> None:
+    """Mac 一般視窗含標題列,比例 1.79 只差 16:9 約 0.8%,不能當成整片場景。"""
     assert unity_layout(Size(1512, 844)) is None
-    assert unity_layout(Size(2560, 1440)) is None
+    assert unity_layout(Size(1600, 1200)) is None
+
+
+def test_a_sixteen_by_nine_screen_is_the_whole_scene() -> None:
+    """Windows 全螢幕 2560x1440 實測:整張就是牌桌,面板在標準位置。"""
+    assert unity_layout(Size(2560, 1440)) == (Rect(0, 0, 2560, 1440), None)
+    assert unity_layout(Size(1920, 1080)) == (Rect(0, 0, 1920, 1080), None)
+
+
+def test_a_sixteen_by_nine_steam_screen_ignores_the_browser_canvas() -> None:
+    """選過網頁的畫布也不能蓋過去。
+
+    畫布是 CSS 像素,換算要乘 DPI 縮放;Unity 畫的是實體像素。125% 螢幕上原本算成
+    3200px 去對 2560px 的影像,整條畫面辨識都起不來。
+    """
+    from mia.calibration.canvas import Canvas, CanvasChoice
+
+    frame = Frame(
+        image=np.zeros((1440, 2560, 3), np.uint8),
+        window=WindowInfo(handle=1, title="", owner="", bounds=Rect(0, 0, 2048, 1152), pid=1),
+        scale=1.25,
+        captured_at=0.0,
+    )
+    calibrator = TableCalibrator(unity=True, canvas=CanvasChoice(Canvas.parse("2560x1440")))
+    calibration = calibrator.calibrate(frame)
+    assert calibration.table_rect == Rect(0, 0, 2560, 1440)
+    assert calibration.panel is None
 
 
 def test_the_calibrator_uses_it_only_for_steam() -> None:
