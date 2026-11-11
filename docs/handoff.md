@@ -1896,7 +1896,7 @@ docs/   decisions.md  ← 方向轉折與全部決策理由(最重要)
 
 ### 讀原始碼的建議順序
 
-1. `README.md` 的「架構」與「兩條資料流」
+1. `docs/development.md`(舊 README)的「架構」與「兩條資料流」
 2. `docs/decisions.md` 第二、三節(為什麼是這三個功能)
 3. `src/mia/ui/viewmodel.py` —— 整個 UI 要顯示什麼都在這裡,而且不碰 Qt
 4. `src/mia/live/bus.py` 的模組 docstring —— 郵箱的設計理由
