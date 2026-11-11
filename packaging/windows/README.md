@@ -8,6 +8,9 @@ Windows 版只能在 Windows x64 上建,不能從 Mac 跨平台產生。建置�
 - [Git](https://git-scm.com/download/win)
 - [Python 3.14 與 3.12](https://www.python.org/downloads/windows/),兩個都裝,安裝時勾「py launcher」。
   主程式用 3.14,Mortal 與 YOLO 用 3.12。
+  **3.12 必須是 3.12.1 以上。** 3.12.0 的 `code.replace()` 會把行內推導式改壞,PyInstaller 打包時
+  對每個模組都做這件事,打出來的 YOLO 一推論就 `NameError`(torch 的 `_numpy/_ufuncs.py`)。
+  `build.ps1` 遇到 3.12.0 會直接停下來;`py -3.12` 不是新版時,用 `-Python312 <python.exe 路徑>` 指定。
 - [Rust](https://rustup.rs/) 與 Visual Studio Build Tools 的「使用 C++ 的桌面開發」。只用來編 libriichi。
 - [Inno Setup 6](https://jrsoftware.org/isdl.php),產生安裝檔。
 
@@ -47,6 +50,8 @@ cd ../../..
 ```powershell
 powershell -ExecutionPolicy Bypass -File packaging/windows/build.ps1
 ```
+
+跑之前建議把 `dist\` 與 `out\` 加進 Windows Defender 的排除範圍:建置會產生好幾 GB 的新檔案,Defender 逐一掃描會把記憶體與磁碟吃滿,整台電腦變得很卡(2026-11-12 實測)。
 
 腳本會在 `out/` 建三個獨立的 Python 環境、下載對應版本的 Chromium、用 PyInstaller 打包,
 產物在 `dist/windows-x64/MIA/`。第一次要下載 torch 與 Chromium,約二、三十分鐘。

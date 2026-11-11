@@ -14,6 +14,7 @@ import plistlib
 import shutil
 import subprocess
 import sys
+import time
 import tomllib
 import uuid
 from pathlib import Path
@@ -41,6 +42,33 @@ def copy(source: Path, destination: Path) -> None:
         shutil.copy2(source, destination)
 
 
+
+def _rename(source: Path, target: Path, *, attempts: int = 30) -> None:
+    """改名整個資料夾;Windows 上被拒絕就等一下再試。
+
+    剛複製出來的幾千個檔案,Windows Defender 與搜尋索引會短暫開著掃描。資料夾裡只要有一個
+    檔案被開著,整個資料夾就改不了名,回「存取被拒」(2026-11-12 第一次在 Windows 上組裝就撞到)。
+    掃完就放開,所以重試就好;30 秒還不行才真的是別的問題。
+    """
+    for attempt in range(attempts):
+        try:
+            source.rename(target)
+            return
+        except PermissionError:
+            if sys.platform != "win32" or attempt == attempts - 1:
+                raise
+            time.sleep(1)
+
+
+def _has_pyinstaller(python: Path) -> bool:
+    """這個 Python 環境自己裝了 PyInstaller 沒有。"""
+    return (
+        subprocess.run(
+            [str(python), "-c", "import PyInstaller"], capture_output=True, check=False
+        ).returncode
+        == 0
+    )
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--asset-source", type=Path, default=ROOT)
@@ -61,20 +89,19 @@ def main() -> int:
     )
     if not (sys.platform == "win32" or target == "macos-arm64"):
         parser.error("請在對應的 Windows x64 或 Apple Silicon Mac 上建置")
-    version = (
-        args.version or tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
-    )
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    version = args.version or pyproject["project"]["version"]
     config = dict(
         app_id="io.github.jjeyxb.mia",
         version=version,
         platform=target,
-        public_key=args.public_key.read_text().strip() if args.public_key else "",
+        public_key=args.public_key.read_text(encoding="utf-8").strip() if args.public_key else "",
         feed_url=f"https://github.com/jjeyxb/mahjong/releases/latest/download/update-{target}.json",
         components={},
     )
     generated = args.out / "build-config"
     generated.mkdir(parents=True, exist_ok=True)
-    (generated / "release.json").write_text(json.dumps(config, indent=2))
+    (generated / "release.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
     suffix = ".exe" if sys.platform == "win32" else ""
     roles = {
         "mortal": args.mortal_python,
@@ -114,6 +141,11 @@ def main() -> int:
             "--exclude-module",
             "IPython",
         ]
+        if role in ("gui", "updater"):
+            # 驗證更新簽章用的 cryptography 是 Rust 擴充模組,它在 C 層才載入 _cffi_backend,
+            # PyInstaller 從 Python 程式碼看不到這個依賴。漏了的話打包版一啟動就
+            # ModuleNotFoundError(2026-11-12 Windows 第一次自我檢查)。
+            command += ["--hidden-import", "_cffi_backend"]
         if role == "mortal":
             upstream = args.asset_source / "engines/mortal/Mortal/mortal"
             command += [
@@ -183,14 +215,19 @@ def main() -> int:
             if sys.platform == "darwin":
                 command += ["--osx-bundle-identifier", "io.github.jjeyxb.mia"]
         command += [str(ROOT / "packaging/entrypoints" / f"{role}.py")]
+        # 這個環境自己有 PyInstaller 就不借 --build-tools。借來的是另一個環境的 site-packages,
+        # 整個放在 PYTHONPATH 最前面:Windows 上它就是 3.14 的主程式建置環境,打包 3.12 的
+        # Mortal / YOLO 時會先找到 3.14 編的 numpy、pywin32,PyInstaller 的 pythoncom hook
+        # 在 3.12 底下載入失敗(2026-11-12 實測)。
+        paths = [str(ROOT / "src"), str(ROOT)]
+        if not _has_pyinstaller(python):
+            paths.append(str(args.build_tools.resolve()))
         env = {
             **os.environ,
             "YOLO_AUTOINSTALL": "false",
             "YOLO_CONFIG_DIR": str(args.out / "yolo-config"),
             "PYINSTALLER_CONFIG_DIR": str(args.out / "pyinstaller-cache" / role),
-            "PYTHONPATH": os.pathsep.join(
-                [str(ROOT / "src"), str(ROOT), str(args.build_tools.resolve())]
-            ),
+            "PYTHONPATH": os.pathsep.join(paths),
         }
         subprocess.run(command, cwd=ROOT, env=env, check=True)
     if args.only and args.only != "assemble":
@@ -207,13 +244,15 @@ def main() -> int:
         program = stage / "program"
         copy(args.out / "frozen/MIA", program)
         resources = program / "_internal/resources"
-    if json.loads((resources / "release.json").read_text()) != config:
+    if json.loads((resources / "release.json").read_text(encoding="utf-8")) != config:
         raise SystemExit("主程式版本／更新金鑰與組裝參數不同，請以相同參數重建")
     for role in ("mortal", "yolo", "updater"):
         source = args.out / "frozen" / f"MIA-{role}"
         if not (source / f"MIA-{role}{suffix}").exists():
             raise SystemExit(f"缺少建置產物: {source}")
-        worker_config = json.loads((source / "_internal/resources/release.json").read_text())
+        worker_config = json.loads(
+            (source / "_internal/resources/release.json").read_text(encoding="utf-8")
+        )
         if worker_config != config:
             raise SystemExit(f"{role} 的版本／更新金鑰不同，請以相同參數重建")
         copy(source, resources / "engines" / role)
@@ -264,17 +303,18 @@ def main() -> int:
         )
         if not entry.is_file():
             raise SystemExit("既有組裝目錄不是有效的 MIA，不予覆寫")
-        installed.rename(previous)
+        _rename(installed, previous)
     try:
-        program.rename(installed)
+        _rename(program, installed)
     except BaseException:
         if previous.exists():
-            previous.rename(installed)
+            _rename(previous, installed)
         raise
     if target != "macos-arm64":
         # Mac 的 install-info.json 在使用者的 Application Support,由 App 第一次啟動時寫。
         (destination / "install-info.json").write_text(
-            json.dumps({"app_id": config["app_id"], "version": version})
+            json.dumps({"app_id": config["app_id"], "version": version}),
+            encoding="utf-8",
         )
     if previous.exists():
         shutil.rmtree(previous)

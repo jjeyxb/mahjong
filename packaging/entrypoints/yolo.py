@@ -9,7 +9,7 @@ import sys
 multiprocessing.freeze_support()
 os.environ["YOLO_AUTOINSTALL"] = "false"
 base = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
-config = json.loads((base / "resources/release.json").read_text())
+config = json.loads((base / "resources/release.json").read_text(encoding="utf-8"))
 resources = Path(os.environ.get("MIA_RESOURCE_ROOT", Path(sys.executable).resolve().parents[2]))
 os.environ.setdefault("MIA_YOLO_MODELS", str(resources / "models/yolo"))
 install = resources.parents[3 if config["platform"] == "macos-arm64" else 2]

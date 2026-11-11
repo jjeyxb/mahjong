@@ -35,7 +35,9 @@ def keygen(private: Path, public: Path) -> None:
             )
         )
     public.parent.mkdir(parents=True, exist_ok=True)
-    public.write_text(base64.b64encode(key.public_key().public_bytes_raw()).decode() + "\n")
+    public.write_text(
+        base64.b64encode(key.public_key().public_bytes_raw()).decode() + "\n", encoding="utf-8"
+    )
 
 
 def package(source: Path, destination: Path) -> int:
@@ -114,7 +116,9 @@ def main() -> int:
         payload=base64.b64encode(payload).decode(),
         signature=base64.b64encode(key.sign(payload)).decode(),
     )
-    (args.out / f"update-{args.platform}.json").write_text(json.dumps(envelope, indent=2))
+    (args.out / f"update-{args.platform}.json").write_text(
+        json.dumps(envelope, indent=2), encoding="utf-8"
+    )
     print(f"已產生簽署資訊與封裝（尚未發布）:{args.out}")
     return 0
 
