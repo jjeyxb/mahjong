@@ -50,7 +50,6 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSlider,
     QStackedWidget,
-    QStatusBar,
     QToolTip,
     QVBoxLayout,
     QWidget,
@@ -404,19 +403,30 @@ class PanelWindow(QMainWindow):
         self._nav.setCurrentRow(0)
 
         central = QWidget(self)
-        layout = QHBoxLayout(central)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        layout.addWidget(self._build_nav_column(central))
-        layout.addWidget(_rule(central, vertical=True))
-        layout.addWidget(self._stack, 1)
-        self.setCentralWidget(central)
+        outer = QVBoxLayout(central)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        body.addWidget(self._build_nav_column(central))
+        body.addWidget(_rule(central, vertical=True))
+        body.addWidget(self._stack, 1)
+        outer.addLayout(body, 1)
+        outer.addWidget(_rule(central))
 
-        self._notice = QLabel("", self)
+        # 狀態訊息放在視窗底部、**會換行**,一個來源一行。原本是 QStatusBar 上的一行字,
+        # 幾個來源用「|」串起來 —— 使用者回報(2026-11-11)真正要看的那句(「牌桌校正失敗:
+        # 畫布尺寸對不上…」)排在最後,被視窗寬度切掉,根本看不到。狀態訊息講的正是「為什麼
+        # 沒有東西」,被切掉就等於沒講。
+        self._notice = QLabel("", central)
         self._notice.setStyleSheet(MUTED)
-        status = QStatusBar(self)
-        status.addWidget(self._notice, 1)
-        self.setStatusBar(status)
+        self._notice.setWordWrap(True)
+        self._notice.setTextFormat(Qt.TextFormat.PlainText)
+        self._notice.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._notice.setContentsMargins(10, 6, 10, 6)
+        outer.addWidget(self._notice)
+        self.setCentralWidget(central)
 
         self._apply_theme()
         # 一打開焦點會落在第一個收得到鍵盤的控制項 —— AI 建議頁的候選數框,
@@ -1533,7 +1543,8 @@ def _status_text(state: ViewState) -> str:
     if not parts:
         engines = tr("、").join(translate(e.name) for e in state.engines)
         return tr("引擎:{engines}", engines=engines) if engines else tr("等待資料…")
-    return "　|　".join(parts)
+    # 一個來源一行。串成一行的話後面那幾句會被視窗寬度切掉,見 __init__ 的 _notice。
+    return "\n".join(parts)
 
 
 def _select_data(picker: QComboBox, data: object) -> None:

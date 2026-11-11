@@ -310,6 +310,29 @@ class TestEmptySkeleton:
         model.update_packet_hand(TENPAI)
         assert "不一致" in window._notice.text()  # noqa: SLF001
 
+    def test_long_notices_each_get_a_line_and_wrap(self, panel) -> None:
+        """使用者回報(2026-11-11):幾句話串成一行,真正要看的最後一句被視窗寬度切掉。
+
+        一個來源一行,而且會換行 —— 視窗再窄,每一句都看得到全文。
+        """
+        model, window = panel
+        calibration = (
+            "畫面:牌桌校正失敗:畫布尺寸 2560×1440 對不上目前的視窗:影像寬 2560px 與畫布 "
+            "2560×1440 @1.25x (= 3200px)差了 -640 px。視窗大小可能被手動改過。"
+        )
+        model.set_notices(["封包擷取:封包擷取已結束(exit 0)", "AI 建議:等待對局開始", calibration])
+        notice = window._notice  # noqa: SLF001
+        assert notice.text().split("\n") == [
+            "封包擷取:封包擷取已結束(exit 0)",
+            "AI 建議:等待對局開始",
+            calibration,
+        ]
+        assert notice.wordWrap()
+        window.resize(420, 600)
+        window.show()
+        lines = notice.heightForWidth(notice.width()) // notice.fontMetrics().lineSpacing()
+        assert lines >= 4, "最後一句太長,應該換成好幾行而不是被切掉"
+
     def test_a_single_candidate_does_not_divide_by_zero(self, panel) -> None:
         """立直之後強制摸切,合法動作只有一個 —— 實測真的會發生。"""
         model, window = panel
