@@ -5,6 +5,80 @@
 > 辨識與事件順序,最新實測、未解問題見 [cv_mjai.md](cv_mjai.md) 的「第一場真人對局」與
 > 「副露:先列候選,再到畫面上比」。功能支援以 `src/mia/platforms.py` 的 `SUPPORTED` 為準。
 
+> **2026-11-12 補註:** 11 月 10~12 日在 Windows 上做的事見下面的
+> [「2026-11-12:Windows 實機修正與 YOLO GPU」](#2026-11-12windows-實機修正與-yolo-gpu)。
+> **接著要在 Mac 上打包的話,先看那一節的「到 Mac 上打包前要知道的」。**
+
+## 2026-11-12:Windows 實機修正與 YOLO GPU
+
+這幾天在 Windows(RX 9070,主螢幕 2560x1440 @125%)上實際使用時撞到的問題,以及新做的
+YOLO 運算裝置設定。每一項的理由寫在各自的 commit 訊息與程式註解裡,這裡只列「改了什麼、
+在哪」。
+
+### 新功能
+
+| 功能 | 在哪 | 說明 |
+|---|---|---|
+| **YOLO 運算裝置 CPU / GPU** | 一般設定;`src/mia/ui/panel/gpu.py`、`src/mia/yolo/accel.py` | 選 GPU 時先檢查顯示卡與 YOLO 環境:能用就切;要換 torch 就先講下載哪一版、多大,按了才裝(背景跑 `tools/setup_yolo.py --gpu <cuda\|rocm\|xpu>`);不支援就講為什麼。裝不成、取消都維持 CPU。詳見 [yolo.md](yolo.md)「用顯示卡跑」 |
+| 四家顯示卡 | `accel.plan_for` | NVIDIA → CUDA 12.8;AMD RX 7700 以上與 RX 9000 → Windows ROCm 7.2.1;Intel Arc → XPU;Apple Silicon → 不用下載(MPS)。**CUDA 與 XPU 沒有在真的卡上跑過** |
+| 預設值 | `features.default_yolo_device` | 使用者沒選過時:Apple Silicon 是 GPU(以前就一律用 MPS),其他平台 CPU(基本環境是 CPU 版 torch) |
+| YOLO 皮膚提醒 | `window.yolo_skin_box` | 切到 YOLO / 混合辨識時提醒牌桌與牌背用預設皮膚(可勾「不再顯示」,記在 `ui_state.json` 的 `dismissed_notices`)。Steam 版實測:換了皮膚,區域模型完全框不到「摸到的牌」,換回預設就正常 |
+| 狀態訊息移到視窗底部 | `window._notice` | 原本的狀態列太短,長訊息被切掉。現在一個來源一行、會換行、可以選取複製 |
+| `tools/record.py --platform steam` | | Steam 版錄影用 Unity 的版面算牌桌矩形 |
+| `tools/steam_step.py` | | Steam 版看牌譜時定時點牌桌空白處(只在遊戲視窗在最前面時點) |
+
+### 修掉的 bug
+
+| 症狀 | 原因 | 修在 |
+|---|---|---|
+| YOLO 一開局就「傳回無效資料」並重啟 | Windows 上被接管線的 stdout 是 cp950,回覆裡有中文就解不開 | `engines/yolo/worker.py` 改 UTF-8 |
+| 愛鳴牌等風格引擎「surrogates not allowed」被移出 | 同上,Mortal 子程序的 stdio | `engines/mortal/bot.py` |
+| 樣板比對完全沒有建議(網頁版,沒有最大化視窗) | `PrintWindow` 從含隱形縮放邊框(125% 時 8px)的外框開始畫,整張圖偏一截 | `capture/windows.py` 照外框截再裁 |
+| 小視窗上風位讀不到 | 風位圖只有約 34x29px,差 1px 就比不上 | `vision/hud.py` 在 ±2px 內找 |
+| 視窗換大小後樣板全錯 | ROI 快取只比牌桌矩形、沒比影像尺寸 | `vision/roi.py` |
+| Steam 版校正錯 | 16:9 全螢幕時整張就是牌桌,原本套了 Mac 的版面 | `calibration/unity.py` |
+| Steam 版沒翻開的寶牌被讀成白 | Steam 的牌背比網頁版淡(飽和度 115 vs 181~212) | `engines/yolo/agent/dora_reader.py`(vendored,★ 註解) |
+| YOLO 選 CPU 卻跑在顯示卡上 | ultralytics 只要看得到 CUDA 就用,`MJ_DEVICE=cpu` 擋不住 | `engines/yolo/agent/platform_compat.py`(vendored,★ 註解) |
+| 「其他候選 列 [ ] 個」看不到數字 | 樣式表與 Qt 都替上下箭頭留位置,扣了兩次 | `ui/theme.py`、`ui/widgets/advice.py` |
+| 整套測試卡一整晚 | 新的提醒框在測試裡 `exec()`,無頭環境沒人按 | `tests/conftest.py`:模態對話框在測試裡直接回取消 |
+
+vendored 的兩處修改都記在 `engines/yolo/README.md` 的本地修改表。
+
+### Steam 版 YOLO 的現況
+
+- 2026-11-11 錄了一場 Steam 牌譜自動播放(`data/recordings/20261111-084414`,真值
+  `data/gt/steam-paipu-20261111.mjai.jsonl`,東 1~4 局)。牌河 475 張只錯 1 張、副露 14 組對 11 組;
+  **自己的摸牌測不準** —— 自動播放時摸到的牌平均只在畫面上停 0.5 秒,116 次摸牌畫面只出現 57 次。
+  那次錄影用的是非預設皮膚,區域模型完全沒框到「摸到的牌」。
+- 使用者把牌桌與牌背換回預設後,YOLO 就正常了(所以才加上面那個提醒)。
+- 本機分支 `wip/yolo-fill-drawn`(**沒推上 GitHub**)有一個備用判斷:區域模型沒給框時,看手牌最右邊
+  的空隙補一張摸到的牌。單幀驗過,整場沒驗過(上面那份素材量不了摸牌)。皮膚的原因找到之後
+  它可能用不到了;要用的話,先錄一場預設皮膚的**實戰**(不是牌譜自動播放)再量。
+
+### 到 Mac 上打包前要知道的
+
+1. **Apple Silicon 的 YOLO 預設是 GPU(MPS),跟以前一樣。** 打包版選 GPU 時,檢查的方式是把打包好的
+   推論程序叫起來看它回報哪個裝置(`accel._probe_worker`),不找 `engines/yolo/.venv`。這條路只有
+   單元測試,**還沒有在真的打包版 Mac 上點過** —— 打包完請到「一般設定 → YOLO 運算裝置」先點 CPU
+   再點 GPU,應該顯示「Apple GPU 已就緒」,狀態列在開著 YOLO 時寫 `YOLO · GPU`。
+2. **打包版不會下載 GPU 版 torch**(`accel.can_install` 在打包版回 False,理由見
+   [packaging.md](packaging.md)「可選 GPU 加速包」)。Windows 打包版選 GPU 只會指向「說明 → GPU 加速元件」,
+   而那個選單目前是空的:`tools/package.py` 寫的是 `components={}`,也還沒有打包 GPU 版推論程序的腳本
+   (`tools/release.py` 能替元件簽章,只認 `yolo-cuda` / `yolo-rocm`)。Mac 不受影響,MPS 在基本包裡。
+3. `platform_compat.setup_device` 現在對 CUDA 以外的裝置**都**把 device 補進 `predict()`(原本只補 MPS),
+   MPS 的行為不變。
+4. 在 Mac 上跑測試:`tests/unit/test_distribution.py` 那兩個失敗是 Windows 才有的(路徑分隔符與符號連結),
+   Mac 上應該是過的。`tests/unit/test_yolo_accel.py` 裡「取消時連 pip 一起停」那個測試只在 Windows 跑。
+5. 新增的 `engines/yolo/probe.py` 只給原始碼版本用(打包版不需要它)。
+
+### 還沒確認的
+
+- 樣板比對修好之後(擷取偏移、風位、Steam 校正),使用者還沒實際在網頁版 / Steam 版打一場確認有 AI 建議。
+  網頁版若之前存過手動的遊戲視窗尺寸,要到一般設定按「改回自動」。
+- NVIDIA(CUDA)與 Intel(XPU)的安裝流程沒有在真的卡上跑過;RX 9070 上走過完整的設定頁安裝流程
+  (已裝 ROCm 的情況,166 秒,沒有誤刪套件)。
+- `engines/yolo/.venv-gpu` 是早期試 ROCm 留下的,沒用了,在 Windows 上可以整個刪掉(沒進 git)。
+
 給接手這個專案的下一個對話 / 下一個人。**主體整理於 2026-10-21(Steam 版的
 向聽分析可用了,見 [兩個版本](#兩個版本網頁版與-steam-版))。**
 在那之前:權重上架 HuggingFace
