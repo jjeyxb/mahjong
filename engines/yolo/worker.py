@@ -141,6 +141,13 @@ def main():
             (BASE/".cache"/sub).mkdir(parents=True,exist_ok=True)
             os.environ[name] = str(BASE/".cache"/sub)
     os.environ["YOLO_AUTOINSTALL"] = "false"
+    # 回覆一律 UTF-8。MIA 那端是 json.loads(bytes),只認 UTF-8;但 Windows 上被接管線的
+    # stdout 用系統語系編碼(繁中是 cp950)。回覆裡有中文(例如追蹤器的說明文字)時,
+    # MIA 讀到的就是一串解不開的位元組,報「YOLO 傳回無效資料」並重啟 —— 開局之後每一幀
+    # 都會撞到,混合辨識看起來就是卡住。macOS 本來就是 UTF-8,所以在那邊從沒出現過。
+    # stderr 進日誌檔,同樣改 UTF-8;遇到編不了的字元寫成跳脫序列,不要讓日誌害死程序。
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     import numpy as np
     output = sys.stdout
     with redirect_stdout(sys.stderr):
