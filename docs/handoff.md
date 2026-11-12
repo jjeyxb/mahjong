@@ -55,21 +55,40 @@ vendored 的兩處修改都記在 `engines/yolo/README.md` 的本地修改表。
   的空隙補一張摸到的牌。單幀驗過,整場沒驗過(上面那份素材量不了摸牌)。皮膚的原因找到之後
   它可能用不到了;要用的話,先錄一場預設皮膚的**實戰**(不是牌譜自動播放)再量。
 
+### Windows 打包版(安裝檔與 GPU 加速)
+
+- 建置:`packaging/windows/build.ps1 -Python312 <3.12.1 以上>`,再用 Inno Setup 編
+  `packaging/windows/mia.iss`,產出單一個 Setup.exe。**這台電腦建置時一定要套記憶體上限**
+  (之前不設上限當機過兩次)。
+- 打包版選 GPU(或「說明 → GPU 加速…」)會照 `packaging/gpu/` 的清單**從官方來源**下載:
+  python.org 的 embeddable Python、PyTorch / AMD 官方的 torch、其餘從 PyPI,每個檔核對網址、
+  SHA-256 與大小。裝在 `components/gpu/<backend>-<id>/`,由 `MIA-yolo/_internal/yolo.py` 執行,
+  跟 exe 同一份推論程式。程式在 `src/mia/yolo/component.py`。
+- 清單用 `tools/lock_gpu.py` 產生,版本跟 `engines/yolo/.venv` 實測過的一致;升級 torch 或
+  ultralytics 時要重跑它並重新打包。
+- RX 9070 實測(在打包版的資料夾結構裡,但由原始碼版 MIA 啟動):下載 + 安裝 + 自我檢查 131 秒,
+  每幀 50~120 ms。**由打包好的 MIA.exe 啟動元件還沒實機跑過**(入口有清掉 PyInstaller 繼承的
+  DLL 搜尋路徑);CUDA、XPU 沒有卡可以測。
+
 ### 到 Mac 上打包前要知道的
 
 1. **Apple Silicon 的 YOLO 預設是 GPU(MPS),跟以前一樣。** 打包版選 GPU 時,檢查的方式是把打包好的
    推論程序叫起來看它回報哪個裝置(`accel._probe_worker`),不找 `engines/yolo/.venv`。這條路只有
    單元測試,**還沒有在真的打包版 Mac 上點過** —— 打包完請到「一般設定 → YOLO 運算裝置」先點 CPU
    再點 GPU,應該顯示「Apple GPU 已就緒」,狀態列在開著 YOLO 時寫 `YOLO · GPU`。
-2. **打包版不會下載 GPU 版 torch**(`accel.can_install` 在打包版回 False,理由見
-   [packaging.md](packaging.md)「可選 GPU 加速包」)。Windows 打包版選 GPU 只會指向「說明 → GPU 加速元件」,
-   而那個選單目前是空的:`tools/package.py` 寫的是 `components={}`,也還沒有打包 GPU 版推論程序的腳本
-   (`tools/release.py` 能替元件簽章,只認 `yolo-cuda` / `yolo-rocm`)。Mac 不受影響,MPS 在基本包裡。
+2. **GPU 下載只有 Windows 打包版有**(見上面「Windows 打包版」)。Mac 的 MPS 本來就在基本包裡,
+   `component.available()` 在 Mac 回 False,不會出現下載。舊的「簽章元件」路線(`components.py`、
+   `tools/release.py --component`)已經整個拿掉,`release.py` 只簽 `app`。
 3. `platform_compat.setup_device` 現在對 CUDA 以外的裝置**都**把 device 補進 `predict()`(原本只補 MPS),
    MPS 的行為不變。
 4. 在 Mac 上跑測試:`tests/unit/test_distribution.py` 那兩個失敗是 Windows 才有的(路徑分隔符與符號連結),
    Mac 上應該是過的。`tests/unit/test_yolo_accel.py` 裡「取消時連 pip 一起停」那個測試只在 Windows 跑。
 5. 新增的 `engines/yolo/probe.py` 只給原始碼版本用(打包版不需要它)。
+6. **更新簽章金鑰已經建好。** 公鑰在 `packaging/release-public-key.txt`(進版控),`tools/package.py`
+   自動帶進 `release.json`,Mac 不用加參數。**私鑰不在專案裡**:Windows 在
+   `C:\Users\ccppa\.mia-release\mia-release-private.pem`;Mac 要由使用者自己複製到
+   `~/.mia-release/mia-release-private.pem` 並 `chmod 600`。發布 Mac 更新時用它簽
+   (見 [packaging/README.md](../packaging/README.md)「發布金鑰」)。私鑰遺失就沒辦法再推更新給已安裝的人。
 
 ### 還沒確認的
 
