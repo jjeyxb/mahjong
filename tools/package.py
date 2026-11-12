@@ -7,6 +7,7 @@ venv and pass its site-packages via --build-tools; source environments stay inta
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import platform
@@ -36,12 +37,32 @@ _NOT_SHIPPED = (
 )
 
 
-def copy(source: Path, destination: Path) -> None:
+def _link_or_copy(source: str, destination: str) -> None:
+    try:
+        os.link(source, destination)
+    except OSError:
+        # 不同磁碟、檔案系統不支援或目的地已存在,就照舊複製。
+        shutil.copy2(source, destination)
+
+
+def copy(source: Path, destination: Path, *, link: bool = False) -> None:
+    """``link``:能建硬連結就不寫新的檔案內容。
+
+    Windows 上組裝一次要寫好幾 GB 的新檔案,寫完之後有系統元件(2026-11-12 懷疑是即時掃描)
+    花十幾分鐘處理它們,期間吃掉約 50 GB 不屬於任何程序的記憶體,建置的記憶體上限管不到,
+    兩次讓整台電腦當住。硬連結不寫新內容,就不會觸發。之後只會被讀取(Inno Setup),
+    原地改寫的話兩邊會一起變,所以 Mac(要改 Info.plist 再 codesign)不用。
+    """
+    function = _link_or_copy if link else shutil.copy2
     if source.is_dir():
-        shutil.copytree(source, destination, symlinks=True, dirs_exist_ok=True)
+        shutil.copytree(
+            source, destination, symlinks=True, dirs_exist_ok=True, copy_function=function
+        )
     else:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
+        if link and destination.exists():
+            destination.unlink()
+        function(str(source), str(destination))
 
 
 
@@ -249,16 +270,18 @@ def main() -> int:
     if args.only and args.only != "assemble":
         return 0
     destination = args.out / target / "MIA"
+    # Windows 用硬連結組裝(見 copy 的說明);Mac 組完還要改檔與簽章,照舊複製。
+    place = functools.partial(copy, link=target == "windows-x64")
     destination.mkdir(parents=True, exist_ok=True)
     stage = args.out / target / f".stage-{uuid.uuid4().hex}"
     stage.mkdir()
     if target == "macos-arm64":
         program = stage / "MIA.app"
-        copy(args.out / "frozen/MIA.app", program)
+        place(args.out / "frozen/MIA.app", program)
         resources = program / "Contents/Resources/resources"
     else:
         program = stage / "program"
-        copy(args.out / "frozen/MIA", program)
+        place(args.out / "frozen/MIA", program)
         resources = program / "_internal/resources"
     if json.loads((resources / "release.json").read_text(encoding="utf-8")) != config:
         raise SystemExit("主程式版本／更新金鑰與組裝參數不同，請以相同參數重建")
@@ -271,7 +294,7 @@ def main() -> int:
         )
         if worker_config != config:
             raise SystemExit(f"{role} 的版本／更新金鑰不同，請以相同參數重建")
-        copy(source, resources / "engines" / role)
+        place(source, resources / "engines" / role)
     for filename in (
         "mortal_298k.pth",
         "style_call_high.pth",
@@ -279,7 +302,7 @@ def main() -> int:
         "style_reach_high.pth",
         "style_reach_low.pth",
     ):
-        copy(args.asset_source / "models" / filename, resources / "models" / filename)
+        place(args.asset_source / "models" / filename, resources / "models" / filename)
     yolo_models = args.asset_source / "models/yolo"
     for filename in (
         "region_model_best.pt",
@@ -290,20 +313,20 @@ def main() -> int:
         "meld_model_v32_1280.infer.json",
         "meld_model_v32_1280.crop_meta.json",
     ):
-        copy(yolo_models / filename, resources / "models/yolo" / filename)
+        place(yolo_models / filename, resources / "models/yolo" / filename)
     for path in args.browser_root.iterdir():
         if path.name.startswith(("chromium-", "ffmpeg-")):
-            copy(path, resources / "browsers" / path.name)
+            place(path, resources / "browsers" / path.name)
     if not list((resources / "browsers").glob("chromium-*")):
         raise SystemExit("缺少離線 Chromium")
     for filename in ("LICENSE", "NOTICE"):
-        copy(ROOT / filename, resources / filename)
+        place(ROOT / filename, resources / filename)
     if target == "windows-x64":
         # GPU 加速的下載清單(tools/lock_gpu.py 產生)。Mac 的 GPU(MPS)本來就在基本包裡。
         gpu = ROOT / "packaging/gpu"
         if not (gpu / "windows-x64.json").is_file():
             raise SystemExit("缺少 GPU 下載清單，請先執行 tools/lock_gpu.py")
-        copy(gpu, resources / "gpu")
+        place(gpu, resources / "gpu")
         if not (resources / "engines/yolo/_internal/yolo.py").is_file():
             raise SystemExit("MIA-yolo 缺少給 GPU 元件用的原始碼入口，請重建 yolo")
     if target == "macos-arm64":
