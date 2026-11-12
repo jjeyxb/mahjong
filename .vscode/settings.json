@@ -1,0 +1,31 @@
+{
+    // 2026-11-12:Windows 上打包時整台電腦當住的原因。Python Environments 擴充套件
+    // (ms-python.vscode-python-envs 1.42.0)每看到一個 .py 新增或刪除,就對整個專案跑一次
+    // findFiles(一個 rg.exe),沒有合併也不會取消前一個。PyInstaller 輸出與組裝會寫入、刪除上萬個
+    // .py,實測同時開到上千個 rg,吃光 32 GB 記憶體。
+    // 它的監看不受 files.watcherExclude 限制(實測),只能在這個專案停用它(要重新載入視窗才生效);
+    // Python 擴充套件會改回原本的環境偵測方式。
+    "python.useEnvironmentsExtension": false,
+    "files.watcherExclude": {
+        "**/.git/objects/**": true,
+        "**/.git/subtree-cache/**": true,
+        "**/node_modules/**": true,
+        "**/dist/**": true,
+        "**/out/**": true,
+        "**/downloads/**": true,
+        "**/.venv/**": true,
+        "**/.venv-*/**": true,
+        "**/__pycache__/**": true,
+        "**/.mypy_cache/**": true,
+        "**/.pytest_cache/**": true,
+        "**/.ruff_cache/**": true
+    },
+    // 萬一還是有搜尋,也不要掃這些大資料夾。
+    "search.exclude": {
+        "**/dist": true,
+        "**/out": true,
+        "**/downloads": true,
+        "**/.venv": true,
+        "**/.venv-*": true
+    }
+}

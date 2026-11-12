@@ -88,7 +88,7 @@ desktop.ini
 # 個人覆寫則不要。
 .claude/settings.local.json
 .claude/*.local.json
-.vscode/
+.vscode/*
 !.vscode/settings.json
 !.vscode/extensions.json
 .idea/
