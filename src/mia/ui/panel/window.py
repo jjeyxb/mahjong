@@ -1219,6 +1219,15 @@ class PanelWindow(QMainWindow):
             return
         self._yolo_device.set_yolo_device(str(value))
 
+    def open_gpu_setup(self) -> None:
+        """「說明 → GPU 加速…」:跟設定頁的「YOLO 運算裝置」選 GPU 同一條路,過了就設成 GPU。"""
+        if self._yolo_device is not None and self._yolo_device.can_pick_yolo_device():
+            self._yolo_device_picker.select("gpu")
+            self._on_yolo_device_picked("gpu")
+        elif self._gpu_setup is not None:
+            # 沒有即時辨識(例如只開了介面):還是可以先裝好,之後選 GPU 就直接能用。
+            _run_gpu_setup(self, self._gpu_setup, lambda: False)
+
     def _on_platform_picked(self, value: object) -> None:
         """換版本 —— **會關掉新版本撐不起的功能,並重啟畫面辨識**。
 

@@ -61,8 +61,9 @@ BACKEND_NAMES: dict[str, str] = {
     "cpu": "CPU",
 }
 
-#: 下載大小(MB),2026-11-12 從各來源的檔案大小加總。顯示在「要下載嗎」的確認框。
-_DOWNLOAD_MB: dict[str, int] = {"cuda": 2900, "rocm": 2000, "xpu": 1400}
+#: 下載大小(MB),2026-11-12 從各來源的檔案大小加總(packaging/gpu/windows-x64.json)。
+#: 顯示在「要下載嗎」的確認框;打包版直接讀安裝檔附的清單。
+_DOWNLOAD_MB: dict[str, int] = {"cuda": 3000, "rocm": 2100, "xpu": 1500}
 
 #: Windows 上 ROCm 7.2.1 支援的 AMD 顯示卡。AMD 官方清單(2026-11-12)列的是 gfx1201 / 1200 / 1100 /
 #: 1101 四個架構上的 RX 9070 / 9070 XT / 9060 XT、AI PRO R9700、RX 7900 XTX、PRO W7900、RX 7700;
@@ -93,7 +94,13 @@ class Plan:
 
     @property
     def download_mb(self) -> int:
-        """要下載多少。``mps`` 是 0:基本環境就有。"""
+        """要下載多少。``mps`` 是 0:基本環境就有。打包版照安裝檔附的清單算。"""
+        if LAYOUT.packaged and self.backend in _DOWNLOAD_MB:
+            from mia.yolo import component
+
+            size = component.download_size(self.backend)
+            if size is not None:
+                return round(size / 1000**2)
         return _DOWNLOAD_MB.get(self.backend or "", 0)
 
 
@@ -187,10 +194,15 @@ def _environment() -> tuple[Path, Path]:
 def can_install() -> bool:
     """這個 MIA 能不能自己裝 GPU 版 torch。
 
-    只有原始碼版本可以:它會在 ``engines/yolo/.venv`` 跑 pip。打包版不在使用者電腦上跑 pip
-    (``docs/packaging.md``「可選 GPU 加速包」),要等發布方提供簽過名的加速元件。
+    原始碼版本:在 ``engines/yolo/.venv`` 跑 ``tools/setup_yolo.py --gpu``。
+    Windows 打包版:照安裝檔附的清單從官方來源下載一份獨立的 GPU 環境(:mod:`mia.yolo.component`)。
+    Mac 打包版不需要:基本包的 torch 就有 MPS。
     """
-    return not LAYOUT.packaged and (PROJECT_ROOT / "tools/setup_yolo.py").is_file()
+    if LAYOUT.packaged:
+        from mia.yolo import component
+
+        return component.available()
+    return (PROJECT_ROOT / "tools/setup_yolo.py").is_file()
 
 
 def probe(timeout: float = 180.0) -> EnvStatus:
@@ -276,6 +288,10 @@ def install(
     回 ``(成功與否, 最後一行說明)``。``cancelled`` 被設起來時,只要 pip 還沒開始裝
     (見 :data:`INSTALL_PHASE`)就停掉子程序;開始裝之後不停 —— 裝到一半的 torch 是壞的環境。
     """
+    if LAYOUT.packaged:
+        from mia.yolo import component
+
+        return component.install(backend, on_line, cancelled)
     command = [sys.executable, str(PROJECT_ROOT / "tools/setup_yolo.py"), "--gpu", backend]
     env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
     try:

@@ -1102,7 +1102,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from mia.distribution.ui import install_menu
 
-    preferences.updates = install_menu(window, app, runtime)
+    preferences.updates = install_menu(window, app, runtime, gpu=window.open_gpu_setup)
 
     if runtime is not None:
         from mia.ui.permissions import install_permission_prompt

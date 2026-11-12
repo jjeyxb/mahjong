@@ -139,9 +139,10 @@ class TestDialog:
         setup.release.set()
         qtbot.waitUntil(lambda: dialog.close_button.text() == "完成", timeout=5000)
 
-    def test_a_packaged_build_points_to_the_component_menu(self, qtbot) -> None:
+    def test_a_build_that_cannot_install_says_so_and_stays_on_cpu(self, qtbot) -> None:
         dialog = _open(qtbot, FakeSetup(installable=False))
-        assert "加速元件" in dialog.message.text()
+        assert "沒辦法自動安裝" in dialog.message.text()
+        assert "CPU" in dialog.message.text()
         assert dialog.install_button.isHidden()
 
     def test_closing_while_still_checking_does_not_crash(self, qtbot) -> None:

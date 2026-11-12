@@ -80,6 +80,55 @@ def test_frozen_yolo_first_run_keeps_import_messages_off_protocol(
     assert "Creating new Ultralytics Settings" in output.err
 
 
+def test_the_gpu_component_runs_the_bundled_entry_as_source(tmp_path, monkeypatch, capsys):
+    """Windows 的 GPU 元件用下載來的 Python 直接跑 MIA-yolo/_internal/yolo.py(不是 exe)。
+
+    這時沒有 ``sys._MEIPASS``:設定、模型與資源位置要從檔案本身的位置推,而且要能用顯示卡
+    (exe 在 Windows 只有 CPU 版 torch,所以 exe 預設 CPU;這裡預設 auto)。
+    """
+    import multiprocessing
+    import shutil
+
+    resources = tmp_path / "program/_internal/resources"
+    internal = resources / "engines/yolo/_internal"
+    (internal / "resources").mkdir(parents=True)
+    (internal / "resources/release.json").write_text('{"platform":"windows-x64"}')
+    entry = internal / "yolo.py"
+    shutil.copy2(Path(__file__).resolve().parents[2] / "packaging/entrypoints/yolo.py", entry)
+    monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+    monkeypatch.setattr(sys, "argv", [str(entry)])
+    monkeypatch.setattr(multiprocessing, "freeze_support", lambda: None)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    for key in ("MIA_RESOURCE_ROOT", "MIA_YOLO_MODELS", "MJ_DEVICE", "YOLO_CONFIG_DIR"):
+        monkeypatch.delenv(key, raising=False)
+    if sys.platform == "win32":
+        import ctypes
+
+        # 跑完要放回 pytest 自己的 DLL 搜尋設定(入口會把它清掉)。
+        monkeypatch.setattr(ctypes.windll.kernel32, "SetDllDirectoryW", lambda _path: True)
+
+    worker = ModuleType("worker")
+    vars(worker)["main"] = lambda: print('{"ready":true,"protocol":1}')
+    compat = ModuleType("platform_compat")
+    vars(compat)["pick_device"] = lambda: "cuda"
+    model = ModuleType("ultralytics.engine.model")
+    vars(model)["Model"] = type("Model", (), {"predict": lambda _self: None})
+    for name, module in {
+        "worker": worker,
+        "platform_compat": compat,
+        "ultralytics.engine.model": model,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    runpy.run_path(str(entry))
+    assert json.loads(capsys.readouterr().out) == {"ready": True, "protocol": 1}
+    import os
+
+    assert Path(os.environ["MIA_YOLO_MODELS"]) == resources / "models/yolo"
+    assert Path(os.environ["YOLO_CONFIG_DIR"]) == tmp_path / "userdata/yolo"
+    assert os.environ["MJ_DEVICE"] == "auto"
+    assert sys.path[0] == str(internal)
+
+
 def test_the_released_capture_entry_only_allows_browser_capture() -> None:
     """自動打牌、開電腦場與 MITM 都不隨發布版提供。"""
     import pytest

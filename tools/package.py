@@ -20,6 +20,8 @@ import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+#: 更新簽章的公鑰。私鑰由發布者自己保管,不在專案裡(packaging/README.md「發布金鑰」)。
+PUBLIC_KEY = ROOT / "packaging/release-public-key.txt"
 
 #: 不隨發布版提供的模組:自動打牌、牌譜與自打工具、MITM。見 mia.distribution.capture。
 _NOT_SHIPPED = (
@@ -77,7 +79,13 @@ def main() -> int:
     parser.add_argument("--mortal-python", type=Path, required=True)
     parser.add_argument("--yolo-python", type=Path, required=True)
     parser.add_argument("--browser-root", type=Path, required=True)
-    parser.add_argument("--public-key", type=Path)
+    # 公鑰進版控(它本來就是公開的),Windows 與 Mac 建置自動用同一把。私鑰不在專案裡,
+    # 見 packaging/README.md「發布金鑰」。
+    parser.add_argument(
+        "--public-key",
+        type=Path,
+        default=PUBLIC_KEY if PUBLIC_KEY.is_file() else None,
+    )
     parser.add_argument("--version")
     parser.add_argument("--only", choices=("mortal", "yolo", "updater", "gui", "assemble"))
     parser.add_argument("--out", type=Path, default=ROOT / "dist")
@@ -97,7 +105,6 @@ def main() -> int:
         platform=target,
         public_key=args.public_key.read_text(encoding="utf-8").strip() if args.public_key else "",
         feed_url=f"https://github.com/jjeyxb/mahjong/releases/latest/download/update-{target}.json",
-        components={},
     )
     generated = args.out / "build-config"
     generated.mkdir(parents=True, exist_ok=True)
@@ -185,6 +192,15 @@ def main() -> int:
             # Their __file__-relative assets must resolve beside the copied source.
             for module in agent.rglob("*.py"):
                 command += ["--exclude-module", module.stem]
+            if target == "windows-x64":
+                # GPU 加速元件(mia.yolo.component)用下載來的 Python 直接跑這兩個檔,
+                # 搭配上面已經以原始碼放進來的 agent/。跟 exe 跑的是同一份程式。
+                command += [
+                    "--add-data",
+                    f"{ROOT / 'engines/yolo/worker.py'}:.",
+                    "--add-data",
+                    f"{ROOT / 'packaging/entrypoints/yolo.py'}:.",
+                ]
         elif role == "gui":
             command += [
                 "--windowed",
@@ -282,6 +298,14 @@ def main() -> int:
         raise SystemExit("缺少離線 Chromium")
     for filename in ("LICENSE", "NOTICE"):
         copy(ROOT / filename, resources / filename)
+    if target == "windows-x64":
+        # GPU 加速的下載清單(tools/lock_gpu.py 產生)。Mac 的 GPU(MPS)本來就在基本包裡。
+        gpu = ROOT / "packaging/gpu"
+        if not (gpu / "windows-x64.json").is_file():
+            raise SystemExit("缺少 GPU 下載清單，請先執行 tools/lock_gpu.py")
+        copy(gpu, resources / "gpu")
+        if not (resources / "engines/yolo/_internal/yolo.py").is_file():
+            raise SystemExit("MIA-yolo 缺少給 GPU 元件用的原始碼入口，請重建 yolo")
     if target == "macos-arm64":
         info_path = program / "Contents/Info.plist"
         info = plistlib.loads(info_path.read_bytes())

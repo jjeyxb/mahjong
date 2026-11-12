@@ -49,13 +49,11 @@ class _Task(QThread):
 
 
 class UpdateDialog(QDialog):
-    def __init__(
-        self, parent: QMainWindow, runtime: Any = None, *, feed: str | None = None
-    ) -> None:
+    def __init__(self, parent: QMainWindow, runtime: Any = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle(tr("MIA 更新") if feed is None else tr("MIA GPU 加速元件"))
+        self.setWindowTitle(tr("MIA 更新"))
         self.resize(480, 300)
-        self.runtime, self.feed = runtime, feed
+        self.runtime = runtime
         self.config = configuration()
         self.cancel = threading.Event()
         self.task: _Task | None = None
@@ -127,7 +125,7 @@ class UpdateDialog(QDialog):
             self._run(action, self._downloaded)
         else:
             self.label.setText(tr("正在檢查…"))
-            self._run(lambda: check(self.config, feed=self.feed), self._checked)
+            self._run(lambda: check(self.config), self._checked)
 
     def _checked(self, result: Any) -> None:
         if result is None:
@@ -160,9 +158,18 @@ class UpdateDialog(QDialog):
 
 
 def install_menu(
-    window: QMainWindow, app: QApplication, runtime: Any = None
+    window: QMainWindow,
+    app: QApplication,
+    runtime: Any = None,
+    *,
+    gpu: Callable[[], None] | None = None,
 ) -> Callable[[], None]:
-    """「說明」選單。回傳打開更新視窗的函式,設定頁的「檢查更新」也用它,兩邊開的是同一種視窗。"""
+    """「說明」選單。回傳打開更新視窗的函式,設定頁的「檢查更新」也用它,兩邊開的是同一種視窗。
+
+    Args:
+        gpu: 「GPU 加速…」要做的事 —— 跟設定頁的「YOLO 運算裝置」選 GPU 同一條路
+            (檢查顯示卡、需要的話下載安裝)。``None`` 時不放這一項。
+    """
     from mia.distribution.launcher import HEALTH
 
     config = configuration()
@@ -170,18 +177,14 @@ def install_menu(
     update = menu.addAction(tr("檢查更新…"))
     dialogs: list[UpdateDialog] = []
 
-    def show(feed: str | None = None) -> None:
-        dialog = UpdateDialog(window, runtime, feed=feed)
+    def show() -> None:
+        dialog = UpdateDialog(window, runtime)
         dialogs.append(dialog)
         dialog.show()
 
-    update.triggered.connect(lambda: show())
-    components = menu.addMenu(tr("GPU 加速元件"))
-    feeds = config.get("components", {})
-    if not feeds:
-        components.addAction(tr("此版本尚未提供額外加速元件")).setEnabled(False)
-    for name, feed in feeds.items():
-        components.addAction(name).triggered.connect(lambda _checked=False, url=feed: show(url))
+    update.triggered.connect(show)
+    if gpu is not None:
+        menu.addAction(tr("GPU 加速…")).triggered.connect(lambda _checked=False: gpu())
     about = menu.addAction(tr("關於 MIA"))
     about.triggered.connect(
         lambda: QMessageBox.information(

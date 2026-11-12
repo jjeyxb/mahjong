@@ -63,7 +63,8 @@ def verified_release(envelope: bytes, public_key: str, target: str) -> Release:
             raise ReleaseError("不是相容的 MIA 發布資訊")
         release = Release(**data)
         Version(release.version)
-        if release.platform != target or release.kind not in ("app", "component"):
+        # 只有整個 App 的更新。GPU 加速不走這裡:它從官方來源下載(mia.yolo.component)。
+        if release.platform != target or release.kind != "app":
             raise ReleaseError("更新的平台或類型不相容")
         if type(release.size) is not int or not 0 < release.size <= 32 * 1024**3:
             raise ReleaseError("不合法的下載大小")
@@ -71,10 +72,6 @@ def verified_release(envelope: bytes, public_key: str, target: str) -> Release:
             raise ReleaseError("不合法的解壓大小")
         if not re.fullmatch(r"[a-f0-9]{64}", release.sha256):
             raise ReleaseError("不合法的檔案雜湊")
-        if release.kind == "component":
-            if not re.fullmatch(r"yolo-(cuda|rocm)", release.component):
-                raise ReleaseError("不支援的加速元件")
-            Version(release.app_version)
         https_url(release.url)
         return release
     except (InvalidSignature, KeyError, TypeError, ValueError, binascii.Error) as exc:

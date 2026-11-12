@@ -72,23 +72,16 @@ def main() -> int:
     release.add_argument("--platform", choices=("windows-x64", "macos-arm64"), required=True)
     release.add_argument("--url", required=True)
     release.add_argument("--notes", default="")
-    release.add_argument("--component", choices=("yolo-cuda", "yolo-rocm"))
-    release.add_argument("--app-version", default="")
     args = parser.parse_args()
     if args.command == "keygen":
         keygen(args.private, args.public)
         print("金鑰已建立；私鑰請另外備份，勿打包或提交。")
         return 0
     https_url(args.url)
-    expected = (
-        "component"
-        if args.component
-        else ("MIA.app" if args.platform == "macos-arm64" else "program")
-    )
+    # 只發布整個 App。GPU 加速不自己發布:App 照清單從官方來源下載(mia.yolo.component)。
+    expected = "MIA.app" if args.platform == "macos-arm64" else "program"
     if args.source.name != expected:
         parser.error(f"來源應是 {expected} 目錄，不能包含 userdata")
-    if args.component and not args.app_version:
-        parser.error("加速元件必須指定 --app-version")
     args.out.mkdir(parents=True, exist_ok=True)
     archive = args.out / "payload.zip"
     unpacked = package(args.source, archive)
@@ -99,14 +92,12 @@ def main() -> int:
     info = Release(
         args.version,
         args.platform,
-        "component" if args.component else "app",
+        "app",
         args.url,
         archive.stat().st_size,
         digest,
         unpacked,
         args.notes,
-        args.component or "",
-        args.app_version,
     )
     payload = json.dumps(info.to_dict(), sort_keys=True, separators=(",", ":")).encode()
     key = serialization.load_pem_private_key(args.private.read_bytes(), password=None)

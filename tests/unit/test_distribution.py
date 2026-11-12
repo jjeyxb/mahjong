@@ -14,7 +14,6 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from mia.distribution import APP_ID
 from mia.distribution.archive import extract
-from mia.distribution.components import yolo_worker
 from mia.distribution.download import download
 from mia.distribution.installer import install
 from mia.distribution.layout import Layout
@@ -344,13 +343,6 @@ def test_unconfigured_update_never_fetches(monkeypatch):
         check({"public_key": "", "feed_url": ""})
 
 
-def test_missing_or_invalid_component_falls_back(tmp_path):
-    layout = Layout(tmp_path / "resources", tmp_path, True)
-    assert yolo_worker(layout) == layout.worker("yolo")
-    atomic_json(layout.components / "active.json", {"component": "../../elsewhere", "version": "1"})
-    assert yolo_worker(layout) == layout.worker("yolo")
-
-
 def test_archive_root_cannot_be_symlink(tmp_path):
     archive = tmp_path / "root.zip"
     with zipfile.ZipFile(archive, "w") as z:
@@ -397,13 +389,13 @@ def test_failed_gpu_worker_starts_base_worker(tmp_path, monkeypatch):
     for path in (bad, good):
         path.chmod(0o755)
     monkeypatch.setattr("mia.yolo.client.LAYOUT", layout)
-    monkeypatch.setattr("mia.distribution.components.yolo_worker", lambda _layout: bad)
+    monkeypatch.setattr("mia.yolo.component.worker_command", lambda _layout: [str(bad)])
     client = YoloClient(timeout=3)
     try:
         client.start()
         assert client.device == "cpu"
         assert client.python == good
-        assert gpu_environment.read_text() == "cuda"
+        assert gpu_environment.read_text() == "auto"
     finally:
         client.close()
 

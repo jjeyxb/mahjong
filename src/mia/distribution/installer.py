@@ -161,8 +161,6 @@ def install(
     lock = root / "updates" / "install.lock"
     lock.mkdir()  # An existing installation is never overwritten by a second helper.
     try:
-        if release.kind == "component":
-            return _component(plan_path, archive, release, config, wait)
         from packaging.version import Version
 
         if Version(release.version) <= Version(info["version"]):
@@ -213,62 +211,6 @@ def install(
         lock.rmdir()
 
 
-def _component(
-    plan_path: Path,
-    archive: Path,
-    release: Any,
-    config: dict[str, Any],
-    wait: Callable[[int], None],
-) -> Path:
-    if release.app_version != config["version"]:
-        raise ReleaseError("加速元件與 App 版本不相容")
-    plan = json.loads(plan_path.read_text(encoding="utf-8"))
-    root = Path(plan["root"]).resolve()
-    staged = extract(archive, plan_path.parent / "staged", "component", release.unpacked_size)
-    name = "MIA-yolo.exe" if config["platform"] == "windows-x64" else "MIA-yolo"
-    worker = staged / name
-    if worker.is_symlink() or not worker.is_file():
-        raise ReleaseError("加速元件缺少推論程序")
-    app = _app_target(plan, root, config["platform"])
-    resources = (
-        app / "Contents/Resources/resources"
-        if config["platform"] == "macos-arm64"
-        else app / "_internal/resources"
-    )
-    check = subprocess.run(
-        [str(worker), "--self-check"],
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=True,
-        env={
-            **os.environ,
-            "PYINSTALLER_RESET_ENVIRONMENT": "1",
-            "MIA_RESOURCE_ROOT": str(resources),
-            "MJ_DEVICE": "cuda",
-        },
-    )
-    result = json.loads(check.stdout)
-    backend = release.component.split("-", 1)[1]
-    if result.get("backend") != backend or not result.get("ok"):
-        raise ReleaseError("加速元件無法在這台電腦上執行")
-    wait(int(plan["parent_pid"]))
-    target = root / "components" / release.platform / release.component / release.version
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists():
-        raise ReleaseError("此版本元件已存在")
-    staged.rename(target)
-    (target / "release.json").write_bytes((plan_path.parent / "release.json").read_bytes())
-    atomic_json(
-        root / "components" / "active.json",
-        {
-            "component": release.component,
-            "version": release.version,
-        },
-    )
-    return target
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--plan", type=Path, required=True)
@@ -278,22 +220,6 @@ def main() -> int:
     try:
         config = json.loads(config_path.read_text(encoding="utf-8"))
         target = install(args.plan, config)
-        envelope = verified_release(
-            (args.plan.parent / "release.json").read_bytes(),
-            config["public_key"],
-            config["platform"],
-        )
-        if envelope.kind == "component":
-            plan = json.loads(args.plan.read_text(encoding="utf-8"))
-            app = _app_target(plan, Path(plan["root"]).resolve(), config["platform"])
-            exe = (
-                app / "Contents/MacOS/MIA"
-                if config["platform"] == "macos-arm64"
-                else app / "MIA.exe"
-            )
-            subprocess.Popen(
-                [str(exe), "--live"], env={**os.environ, "PYINSTALLER_RESET_ENVIRONMENT": "1"}
-            )
         print(f"已安裝:{target}")
         return 0
     except Exception as exc:  # noqa: BLE001

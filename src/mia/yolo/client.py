@@ -38,10 +38,16 @@ class YoloClient:
         base = PROJECT_ROOT / "engines/yolo"
         executable = "Scripts/python.exe" if sys.platform == "win32" else "bin/python"
         self._packaged = LAYOUT.packaged and python is None
+        #: 打包版的完整指令。GPU 元件是「下載來的 Python + 原始碼入口」,不是單一個 exe。
+        self._command: list[str] | None = None
         if self._packaged:
-            from mia.distribution.components import yolo_worker
+            from mia.yolo.component import worker_command
 
-            self.python = yolo_worker(LAYOUT)
+            # 選 CPU 就直接用 MIA-yolo.exe:GPU 元件的 torch 也能跑 CPU,但要先載入
+            # 好幾 GB 的顯示卡函式庫,白白慢。
+            command = None if device == "cpu" else worker_command(LAYOUT)
+            self._command = command or [str(LAYOUT.worker("yolo"))]
+            self.python = Path(self._command[0])
         else:
             self.python = python or Path(
                 os.environ.get("MIA_YOLO_PYTHON", base / ".venv" / executable)
@@ -68,9 +74,11 @@ class YoloClient:
             base = LAYOUT.worker("yolo")
             if not self._packaged or self.python == base or self._shutdown.is_set():
                 raise
+            # GPU 元件起不來(驅動被換掉、檔案被防毒刪了……):退回打包版自帶的 CPU 推論程序。
             self._dispose_process()
             self._lines = queue.Queue()
             self.python = base
+            self._command = [str(base)]
             self._start_process()
 
     def _start_process(self) -> None:
@@ -84,13 +92,13 @@ class YoloClient:
                 # auto:有哪張用哪張(CUDA / ROCm / Intel XPU / Apple MPS),都沒有就 CPU。
                 child_env["MJ_DEVICE"] = "cpu" if self._device == "cpu" else "auto"
             if self._packaged and self.python != LAYOUT.worker("yolo"):
-                # ROCm also uses PyTorch's cuda device API. Preserve an explicit CPU override.
-                child_env.setdefault("MJ_DEVICE", "cuda")
+                # GPU 元件:有哪張顯示卡用哪張(CUDA、ROCm 都走 cuda 裝置,Intel 是 xpu)。
+                child_env.setdefault("MJ_DEVICE", "auto")
             try:
                 self._process = subprocess.Popen(
                     (
-                        [str(self.python)]
-                        if self._packaged
+                        self._command
+                        if self._command is not None
                         else [str(self.python), "-u", str(self._base / "worker.py")]
                     ),
                     stdin=subprocess.PIPE,

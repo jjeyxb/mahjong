@@ -9,7 +9,8 @@
 - 新增 `tools/package.py`、`tools/package_dmg.py`、`tools/release.py`，以及 Windows 的建置與 Inno Setup 腳本。發布工具只產生本機檔案，不會上傳。
 - Mac 原型保留獨立的主程式／Mortal／YOLO／更新程序，內含模型及 Chromium。Mortal、MPS 模型推論與介面已進行本機檢查。
 - 實作先採共用的獨立更新 helper，而非 Sparkle；封裝只替換 `MIA.app`／`program`，成功啟動才更新版本紀錄。正常失敗可復原，突然斷電的自動恢復仍需進一步驗收。
-- 無正式發布公鑰時，更新入口會明確告知尚未設定，不會接受未驗證的更新。GPU 加速包的安裝與回退介面已備妥，尚未建置或發布 CUDA／ROCm 元件，也未宣稱 AMD 已支援。
+- 無正式發布公鑰時，更新入口會明確告知尚未設定，不會接受未驗證的更新。2026-11-12 起正式公鑰在 `packaging/release-public-key.txt`,打包時自動放入。
+- 2026-11-12:Windows 打包版的 GPU 加速改為照清單從官方來源下載(見下方「可選 GPU 加速包」);AMD RX 9070 實機驗證，NVIDIA／Intel 尚未實機驗證。
 - 保留既有資料的相對布局，例如登入資料實際位於 `userdata/live/chrome-profile`。下方目錄樹為規劃示意；自有資料都留在同一安裝根目錄。
 
 建置、簽署更新及目前限制見 [packaging/README.md](../packaging/README.md)。原型以獨立 worktree 開發，已同步 Claude 最後提交的 `7294e9f`；沒有回復或刪除它的辨識修改。
@@ -45,7 +46,7 @@
 | `src/mia/ui/theme.py` | 產生圖示至系統暫存目錄 | App 自有快取改用安裝根目錄下的快取位置 |
 | Playwright | 瀏覽器通常位於使用者的共用快取 | 建置時收集指定版本 Chromium，執行時指定包內瀏覽器路徑與自己的 profile |
 | 版本資訊 | `pyproject.toml` 目前為 `0.1.0` | 發布版本、程式識別、架構及模型／執行環境相容資訊集中管理 |
-| 可選 GPU 加速 | 尚未實作元件下載、安裝或切換；AMD 未完成整合 | 以版本化的完整推論元件提供對應 PyTorch 與加速函式庫，驗證成功後才啟用 |
+| 可選 GPU 加速 | Windows:照清單從官方來源下載、驗證、自我檢查後啟用(AMD 已實機驗證);Mac 用包內 MPS | NVIDIA／Intel 實機驗證 |
 
 PyInstaller 提供 frozen 狀態、包內資源位置與執行檔位置等資訊，路徑層需明確區分這些概念。[執行期路徑文件](https://pyinstaller.org/en/stable/runtime-information.html)
 
@@ -118,9 +119,9 @@ Mac 若使用 Sparkle 的標準單一 archive 流程，也必須先確認更新�
 
 下載內容應是一套**與 App 相容的 GPU 推論環境**，包括推論 worker、對應 PyTorch／torchvision 與必要的加速函式庫，不是只把 CUDA DLL 放到 CPU 版 PyTorch 旁邊。這也適合目前將 AI 保持在獨立子程序的架構：基礎 worker 與可選 GPU worker 各自封裝，由啟動層選擇，避免改寫 frozen 主程式內的套件。[PyTorch 平台與計算後端選擇](https://pytorch.org/get-started/locally/)
 
-例如可安裝於 `components/yolo/windows-x64/cuda/<元件版本>/`；實際元件需記錄支援的 App／IPC 版本、模型組、OS、架構、GPU／驅動條件、Python 與 torch 版本。Mortal 目前仍走 CPU；YOLO 的 GPU 元件不自動套用到 Mortal。
+**2026-11-12 定案：從官方來源下載，不自己建置或發布 GPU 元件。** 安裝檔附一份清單(`packaging/gpu/`,`tools/lock_gpu.py` 產生):python.org 的 embeddable Python 3.12、PyPI 的 pip,以及每種顯示卡要的全部套件 —— torch／torchvision 來自 download.pytorch.org(NVIDIA、Intel)或 repo.radeon.com(AMD),其餘來自 PyPI。每個檔案都釘死網址、版本與 SHA-256。玩家電腦上的 pip 只照清單裝(`--require-hashes --no-deps --no-index`),不會挑版本、也不會升到最新版。這樣不需要自己架下載站、不受 GitHub 單檔 2 GB 限制，也不必為 GPU 元件管理簽章；清單本身在已簽署的安裝檔裡。
 
-先下載至 `updates/`，驗證發布簽章與各檔案完整性，完成解包及實際模型推論檢查，再於停止相關 worker 後切換啟用。若驗證或啟用失敗，繼續使用原來的 worker。更新 App 時重新核對已下載元件的相容性；不相容的舊元件不強行載入，也不在使用者電腦執行 pip 將套件升到最新版。
+元件裝在 `components/gpu/<後端>-<清單 id>/`,先在 `components/gpu/.stage-*` 完成下載、安裝與實際模型推論檢查，通過才搬過去並寫入 `components/gpu/active.json`。驗證或啟用失敗只刪暫存，繼續使用原來的 worker。清單 id 由清單內容算出：App 更新後清單變了，舊元件不再被載入(退回 CPU),玩家再選一次 GPU 就照新清單重裝。Mortal 目前仍走 CPU;YOLO 的 GPU 元件不套用到 Mortal。實作見 `src/mia/yolo/component.py`。
 
 ROCm 元件需另外完成整合與硬體驗收；不能只偵測到 AMD 品牌就下載。其支援範圍取決於 OS、GPU、驅動與框架組合，應按發布時的官方支援表與專案測試結果建立可用清單。不支援的機器仍提供 CPU。首版 Apple Silicon Mac 的 GPU 使用包內 MPS，不需要 CUDA／ROCm。[AMD Windows 支援表](https://rocm.docs.amd.com/projects/radeon-ryzen/en/latest/docs/compatibility/compatibilityrad/windows/windows_compatibility.html)
 

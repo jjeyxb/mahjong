@@ -54,7 +54,12 @@ YOLO 使用獨立的 Python 3.12 環境，不把 PyTorch 裝進 MIA 的 Python 3
 - 換成別的版本時，舊版本帶進來的執行環境(ROCm 的 `rocm-sdk-*`、XPU 的 `intel-*`、`mkl` 等)最後才移除，而且只移除沒有別的套件需要的那些。`--gpu cpu` 會換回 CPU 版。
 - 只支援 Windows + Python 3.12(各家只提供這一種 wheel)。Windows 上沒指定 `--python` 時用 `py -3.12` 建環境。版本與雜湊釘在 `engines/yolo/requirements-<版本>.txt`,這幾個檔必須存成 UTF-8 含 BOM,理由寫在 `requirements-rocm.txt` 開頭。
 - 選 CPU 時，就算環境裡是 GPU 版 torch 也真的跑 CPU。以前做不到：ultralytics 只要看得到 CUDA 就會用，`MJ_DEVICE=cpu` 擋不住，見 `engines/yolo/README.md` 的本地修改表。
-- 打包版不在使用者電腦上跑 pip(`docs/packaging.md`),選 GPU 時會請使用者去「說明 → GPU 加速元件」找發布方提供的元件。
+- Windows 打包版沒有 `engines/yolo/.venv`:選 GPU(或「說明 → GPU 加速…」)時,照安裝檔附的清單
+  從官方來源(python.org、download.pytorch.org、repo.radeon.com、PyPI)下載一份獨立的 Python 3.12
+  加 GPU 版 torch,每個檔案都核對 SHA-256,在顯示卡上跑過推論自我檢查才啟用。跟上表同一組 torch。
+  實作在 `src/mia/yolo/component.py`,清單由 `tools/lock_gpu.py` 產生,說明見 `packaging/README.md`
+  「GPU 加速(Windows)」。下載與安裝隨時可以取消:都在暫存資料夾裡做，取消就整個刪掉。
+- 打包版選 CPU 時直接用自帶的 `MIA-yolo.exe`,不啟動 GPU 元件(省下載入好幾 GB 顯示卡函式庫的時間)。
 
 RX 9070 實測(同一張牌桌截圖、30 幀):
 

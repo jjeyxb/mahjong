@@ -38,15 +38,13 @@ def configuration(layout: Layout = LAYOUT) -> dict[str, Any]:
     return dict(app_id=APP_ID, version=VERSION, platform=platform_key(), public_key="", feed_url="")
 
 
-def check(config: dict[str, Any], *, feed: str | None = None) -> tuple[Release, bytes] | None:
-    if not config.get("public_key") or not (feed or config.get("feed_url")):
+def check(config: dict[str, Any]) -> tuple[Release, bytes] | None:
+    if not config.get("public_key") or not config.get("feed_url"):
         raise ReleaseError("這個版本尚未設定更新來源與驗證金鑰")
-    envelope = fetch_metadata(feed or config["feed_url"])
+    envelope = fetch_metadata(config["feed_url"])
     release = verified_release(envelope, config["public_key"], config["platform"])
     if release.kind == "app" and Version(release.version) <= Version(config["version"]):
         return None
-    if release.kind == "component" and release.app_version != config["version"]:
-        raise ReleaseError("加速元件與目前 App 版本不相容")
     return release, envelope
 
 
@@ -56,8 +54,6 @@ def prepare_update(
     release = verified_release(envelope, config["public_key"], config["platform"])
     if release.kind == "app" and Version(release.version) <= Version(config["version"]):
         raise ReleaseError("不接受較舊的程式更新")
-    if release.kind == "component" and release.app_version != config["version"]:
-        raise ReleaseError("加速元件與目前 App 版本不相容")
     if release.kind == "app" and (blocker := layout.update_blocker()) is not None:
         raise ReleaseError(blocker)
     folder = layout.updates / uuid.uuid4().hex

@@ -1,0 +1,26 @@
+{
+  "backends": {
+    "cuda": {
+      "lock": "windows-x64-cuda.txt",
+      "size": 3015015846
+    },
+    "rocm": {
+      "lock": "windows-x64-rocm.txt",
+      "size": 2101055602
+    },
+    "xpu": {
+      "lock": "windows-x64-xpu.txt",
+      "size": 1515395598
+    }
+  },
+  "pip": {
+    "sha256": "fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70",
+    "size": 1819850,
+    "url": "https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl"
+  },
+  "python": {
+    "sha256": "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3",
+    "size": 11133606,
+    "url": "https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip"
+  }
+}
