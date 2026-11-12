@@ -58,8 +58,14 @@ vendored 的兩處修改都記在 `engines/yolo/README.md` 的本地修改表。
 ### Windows 打包版(安裝檔與 GPU 加速)
 
 - 建置:`packaging/windows/build.ps1 -Python312 <3.12.1 以上>`,再用 Inno Setup 編
-  `packaging/windows/mia.iss`,產出單一個 Setup.exe。**這台電腦建置時一定要套記憶體上限**
-  (之前不設上限當機過兩次)。
+  `packaging/windows/mia.iss`,產出單一個 Setup.exe。
+- **⚠ 打包時整台電腦當住的原因(2026-11-12 查到):不是建置本身**(四個角色的記憶體峰值最高 1.43 GB),
+  而是 VS Code 的 Python Environments 擴充套件(`ms-python.vscode-python-envs` 1.42.0):專案裡每新增或
+  刪除一個 `.py` 就跑一次 `rg.exe` 掃整個專案,不合併也不取消。PyInstaller 與組裝寫入、刪除上萬個 `.py`,
+  同時開到上千個 rg,吃光 32 GB(RAMMap:Process Private 26.6 GB)。`files.watcherExclude` 擋不住,
+  所以 `.vscode/settings.json` 用 `"python.useEnvironmentsExtension": false` 在這個專案停用它
+  (改完要 Reload Window)。在 VS Code 外面建置也能避開。Defender 排除專案資料夾沒有用。
+- 組裝(`tools/package.py`)在 Windows 改用硬連結,不重寫好幾 GB 檔案,也快很多;Mac 照舊複製。
 - 打包版選 GPU(或「說明 → GPU 加速…」)會照 `packaging/gpu/` 的清單**從官方來源**下載:
   python.org 的 embeddable Python、PyTorch / AMD 官方的 torch、其餘從 PyPI,每個檔核對網址、
   SHA-256 與大小。裝在 `components/gpu/<backend>-<id>/`,由 `MIA-yolo/_internal/yolo.py` 執行,
@@ -67,8 +73,9 @@ vendored 的兩處修改都記在 `engines/yolo/README.md` 的本地修改表。
 - 清單用 `tools/lock_gpu.py` 產生,版本跟 `engines/yolo/.venv` 實測過的一致;升級 torch 或
   ultralytics 時要重跑它並重新打包。
 - RX 9070 實測(在打包版的資料夾結構裡,但由原始碼版 MIA 啟動):下載 + 安裝 + 自我檢查 131 秒,
-  每幀 50~120 ms。**由打包好的 MIA.exe 啟動元件還沒實機跑過**(入口有清掉 PyInstaller 繼承的
-  DLL 搜尋路徑);CUDA、XPU 沒有卡可以測。
+  每幀 50~120 ms。第一次用真的安裝檔測時自我檢查回報 cpu:入口把 `MIA-yolo/_internal` 放在
+  `sys.path` 最前面,那裡有 exe 用的 CPU 版 torch,蓋過元件的 GPU 版(已改成放最後面)。修正後用
+  安裝好的檔案驗過回報 rocm,**完整的安裝流程還要再點一次確認**;CUDA、XPU 沒有卡可以測。
 
 ### 到 Mac 上打包前要知道的
 
