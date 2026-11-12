@@ -15,6 +15,8 @@ dist/
 venv/
 env/
 engines/*/.venv/
+# 早期試 ROCm 留下的舊環境(engines/yolo/.venv-gpu),沒用了,可以整個刪掉。
+engines/*/.venv-*/
 engines/yolo/.cache/
 
 # ---- 測試與型別檢查快取 ----
