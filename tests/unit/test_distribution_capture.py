@@ -126,7 +126,8 @@ def test_the_gpu_component_runs_the_bundled_entry_as_source(tmp_path, monkeypatc
     assert Path(os.environ["MIA_YOLO_MODELS"]) == resources / "models/yolo"
     assert Path(os.environ["YOLO_CONFIG_DIR"]) == tmp_path / "userdata/yolo"
     assert os.environ["MJ_DEVICE"] == "auto"
-    assert sys.path[0] == str(internal)
+    # _internal 裡有 exe 用的 CPU 版 torch,只能排在元件自己的套件後面。
+    assert sys.path[-1] == str(internal)
 
 
 def test_the_released_capture_entry_only_allows_browser_capture() -> None:

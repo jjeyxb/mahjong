@@ -28,7 +28,10 @@ else:
     # 這個檔在 resources/engines/yolo/_internal/ 底下。GPU 元件的 Python 以 -I 執行,
     # 不會自動把這個資料夾放進 sys.path,worker.py 就在這裡。
     default_resources = here.parents[2]
-    sys.path.insert(0, str(here))
+    # ⚠ 只能放最後面:_internal 裡還有 PyInstaller 替 exe 收的 CPU 版 torch、numpy、ultralytics,
+    # 放前面的話 import torch 會拿到它而不是元件裡的 GPU 版,自我檢查就回報 cpu
+    # (2026-11-12 打包版實測撞到;手擺的測試資料夾沒有這些套件,所以之前沒測出來)。
+    sys.path.append(str(here))
     if sys.platform == "win32":
         # 打包版 MIA 的 PyInstaller 啟動器呼叫過 SetDllDirectoryW(指向 MIA 自己的 _internal),
         # 子程序會繼承。不清掉的話,torch 載入 DLL 時可能先找到 MIA 帶的同名檔(版本不同)。
