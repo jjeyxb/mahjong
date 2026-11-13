@@ -39,7 +39,7 @@ MIA（Mahjong Intelligence Assistant）是一個在你打雀魂時，從旁給�
 
 ### Windows
 
-1. 下載 `MIA-<版本>-windows-x64-setup.exe`。如果同一版還有幾個 `.bin` 檔，**全部下載到同一個資料夾**，安裝時會一起用到。
+1. 下載 `MIA-<版本>-windows-x64-setup.exe`（只有這一個檔）。
 2. 執行安裝檔。如果出現「Windows 已保護您的電腦」，按「其他資訊」→「仍要執行」。
 3. 選擇安裝位置。預設是 `%LOCALAPPDATA%\Programs\MIA`，不需要系統管理員權限。請選一個 MIA 專用的空資料夾。
 4. 從開始功能表或桌面捷徑開啟 MIA。
@@ -110,7 +110,8 @@ MIA 開啟後，側邊視窗會出現在螢幕右側。三個功能預設都是�
 ### 效能
 
 - Mac 的 YOLO 使用 Apple GPU。
-- Windows 安裝版的 YOLO 目前只用 CPU，GPU 加速元件還沒提供。畫面辨識選「樣板比對」比較輕。
+- Windows 的 YOLO 預設用 CPU，比較慢。到「一般設定 → YOLO 運算裝置」選 GPU，MIA 會依顯示卡從官方來源下載對應的加速元件（NVIDIA、AMD RX 7700 以上與 RX 9000 系列、Intel Arc；約 1.4~2.8 GB），每個檔都核對雜湊。目前只在 AMD RX 9070 上實測過。
+- 不想下載的話，畫面辨識選「樣板比對」比較輕。
 
 ### 隱私與資料
 

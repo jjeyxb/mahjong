@@ -39,7 +39,7 @@ Download the installer for your system from [Releases](https://github.com/jjeyxb
 
 ### Windows
 
-1. Download `MIA-<version>-windows-x64-setup.exe`. If the release also has `.bin` files, **download all of them into the same folder**; the installer needs them.
+1. Download `MIA-<version>-windows-x64-setup.exe` (it is the only file you need).
 2. Run the installer. If you see "Windows protected your PC", click "More info", then "Run anyway".
 3. Choose where to install. The default is `%LOCALAPPDATA%\Programs\MIA` and does not need administrator rights. Pick an empty folder used only for MIA.
 4. Open MIA from the Start menu or the desktop shortcut.
@@ -112,7 +112,8 @@ The first time you turn on a feature that reads the screen, macOS asks for Scree
 ### Performance
 
 - On a Mac, YOLO runs on the Apple GPU.
-- The Windows installer currently runs YOLO on the CPU only; GPU acceleration packages are not available yet. Template matching is the lighter option.
+- On Windows, YOLO runs on the CPU by default, which is slow. Choose GPU under General > YOLO compute device and MIA downloads the matching acceleration package for your graphics card from the official sources (NVIDIA, AMD RX 7700 and up or RX 9000 series, Intel Arc; about 1.4–2.8 GB), checking every file's hash. So far it has only been tested on an AMD RX 9070.
+- If you don't want the download, template matching is the lighter option.
 
 ### Privacy and your data
 
