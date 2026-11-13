@@ -74,8 +74,9 @@ vendored 的兩處修改都記在 `engines/yolo/README.md` 的本地修改表。
   ultralytics 時要重跑它並重新打包。
 - RX 9070 實測(在打包版的資料夾結構裡,但由原始碼版 MIA 啟動):下載 + 安裝 + 自我檢查 131 秒,
   每幀 50~120 ms。第一次用真的安裝檔測時自我檢查回報 cpu:入口把 `MIA-yolo/_internal` 放在
-  `sys.path` 最前面,那裡有 exe 用的 CPU 版 torch,蓋過元件的 GPU 版(已改成放最後面)。修正後用
-  安裝好的檔案驗過回報 rocm,**完整的安裝流程還要再點一次確認**;CUDA、XPU 沒有卡可以測。
+  `sys.path` 最前面,那裡有 exe 用的 CPU 版 torch,蓋過元件的 GPU 版(已改成放最後面)。修正後
+  2026-11-13 用新的安裝檔在 RX 9070 上走完整個流程(選 GPU → 下載 → 自我檢查 → 用 GPU 辨識)沒問題;
+  CUDA、XPU 沒有卡可以測。
 
 ### 到 Mac 上打包前要知道的
 
