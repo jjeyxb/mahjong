@@ -51,9 +51,11 @@ __all__ = [
     "OVERFLOW",
     "ROWS",
     "SEARCH_ABOVE",
+    "SEARCH_ABOVE_LAST",
     "SEARCH_BELOW",
     "SEATS",
     "SIDEWAYS_FACE",
+    "SIDEWAYS_LEFT",
     "SIDEWAYS_SHIFT",
     "SLOTS",
     "River",
@@ -69,6 +71,7 @@ __all__ = [
     "row_end",
     "search_window",
     "settle_river_five",
+    "side_spill",
     "slot",
     "tile_masks",
 ]
@@ -146,13 +149,6 @@ FACE = (0.71, 0.77)
 #: 0.67 → 0.80,Steam 有把握的格子 387 → 523 / 600。用 92 時實測四萬被認成中。
 _TALLER = {"toimen": 1.13}
 
-#: 這些列的牌面另外量,``(寬, 高)``,佔一格的比例。
-#:
-#: 自己第三列離鏡頭最近,攤平之後牌面反而矮:照 :data:`FACE` 的 64 x 92,靜止的 149 張只對 7 成,
-#: 分數 0.5 上下,整排讀不出來。掃出來是 66 x 78,140 張對,有信心的 123 張只錯 1 張。立直之後的
-#: 摸切只看得到河,這一排讀錯就變成摸錯牌。
-_ROW_FACE = {("own", 2): (66 / 90, 78 / 120)}
-
 #: 認牌時搜尋窗往格子**下方**多看幾像素(以 :data:`CELL` 的高度為準)。
 #:
 #: 見 :data:`FACE`。牌面在格子裡的落點每一列不同(第一列約 30、第二列約 12、
@@ -177,6 +173,28 @@ SEARCH_BELOW = 30
 #: 它也讓第三列不再對角點敏感:角點稍微一動,第三列的落點就會變成負的。
 #: 上一列的牌在一整格(120 像素)之外,模板對不到它。
 SEARCH_ABOVE = 8
+
+#: 第三列往上多看幾像素,認牌時用(:func:`search_window` 的 ``row``)。
+#:
+#: 第三列的牌面頂端其實在格子上面:往上只看 8 像素時,正確高度的模板(92)塞不進去,
+#: 只有矮的塞得下。自己第三列曾經因此另外用 66 x 78 的模板,以為是那一排的牌面比較矮,
+#: 而矮的模板對不到最上面那一筆:二萬讀成一萬、三萬讀成二萬。
+#:
+#: 28 場錄影,每張捨牌落地 2 秒後照即時路徑認、對封包(2026-11-15,14152 張):
+#:
+#: ==================  ======  ============  ============  ==========
+#: 第三列              張數    有把握且對    有把握卻錯    讀錯
+#: ==================  ======  ============  ============  ==========
+#: 自己,66x78、往上 8   637     532           9             33
+#: 自己,64x92、往上 24  637     632           0             1
+#: 上家,64x92、往上 8   484     447           0             4
+#: 上家,64x92、往上 24  484     481           0             0
+#: ==================  ======  ============  ============  ==========
+#:
+#: 下家、對家的第三列與其他兩列不受影響(讀對改錯 0 張)。往上 20 ~ 28 結果相同,16 就開始
+#: 變差;高度 90 ~ 94、寬 62 ~ 68 都在同一個高原上,所以不再替自己第三列另外設尺寸。
+#: 錄影分成兩半各自看,結論一樣(讀錯 20 → 1、13 → 0)。
+SEARCH_ABOVE_LAST = 24
 
 #: 「這一格有沒有牌」看的那一塊,佔一格的比例。與 :data:`FACE` 分開的理由
 #: 見那裡。數值就是 :data:`FACE` 改之前的值,有無判斷的所有量測都建立在它上面。
@@ -457,7 +475,7 @@ DEFAULT_CORNERS: dict[str, RiverView] = {
         ((0.5866, 0.2720), (0.4088, 0.2699), (0.4174, 0.1350), (0.5747, 0.1422)),
         sideways_scale=0.9,
         left_slack=8,
-        sideways_size=(88, 63),
+        sideways_size=(96, 63),
     ),
     # 上家最後一欄的牌比格線偏左,模板滑不到正確的位置。實打兩場逐欄量:這一欄只有 26/33,其他
     # 位置 94~100%。往左放寬 8 像素變成 31/33,有信心的 24 → 31,有信心的錯 0,其他欄不變。
@@ -465,24 +483,18 @@ DEFAULT_CORNERS: dict[str, RiverView] = {
     "kamicha": RiverView(
         ((0.4160, 0.2667), (0.4077, 0.4920), (0.2488, 0.5002), (0.2847, 0.2667)),
         left_slack=8,
-        sideways_size=(92, 55),
+        sideways_size=(100, 55),
     ),
 }
 
 
-def face_size(
-    cell: tuple[int, int] = CELL, *, seat: str | None = None, row: int | None = None
-) -> tuple[int, int]:
+def face_size(cell: tuple[int, int] = CELL, *, seat: str | None = None) -> tuple[int, int]:
     """模板該縮到多大。傳給 :func:`~mia.vision.tiles.classify.classify` 的 ``size``。
 
     Args:
         cell: 一格多大。
         seat: 哪一家。對家攤平之後牌面比較高,見 :data:`_TALLER`。
-        row: 第幾列,從 0 算。見 :data:`_ROW_FACE`。
     """
-    face = _ROW_FACE.get((seat or "", row or 0))
-    if face is not None:
-        return round(face[0] * cell[0]), round(face[1] * cell[1])
     height = round(FACE[1] * cell[1]) * _TALLER.get(seat or "", 1.0)
     return round(FACE[0] * cell[0]), round(height)
 
@@ -492,15 +504,25 @@ def _below(cell: tuple[int, int]) -> int:
 
 
 def search_window(
-    flat: np.ndarray, rect: Rect, cell: tuple[int, int] = CELL, *, left: int = 0, right: int = 0
+    flat: np.ndarray,
+    rect: Rect,
+    cell: tuple[int, int] = CELL,
+    *,
+    left: int = 0,
+    right: int = 0,
+    row: int | None = None,
 ) -> np.ndarray:
     """認一格牌要看的那一塊:格子本身,往下延伸 :data:`SEARCH_BELOW`、
     往上延伸 :data:`SEARCH_ABOVE`(到影像頂端為止)。
 
     **認牌一律從這裡取,不要自己切 ``flat[rect.as_slice()]``。** 切格子本身的話
     第一列的牌面底部在窗外,模板滑不到正確的位置 —— 那正是二萬讀成一萬的原因。
+
+    ``row`` 是這一格在第幾列(從 0 算)。給了而且是最後一列時,往上改看
+    :data:`SEARCH_ABOVE_LAST`。不給就照舊,橫放牌的搜尋與評測工具量的時候都是照舊的範圍。
     """
-    top = max(rect.y - round(SEARCH_ABOVE * cell[1] / CELL[1]), 0)
+    above = SEARCH_ABOVE_LAST if row is not None and row >= ROWS - 1 else SEARCH_ABOVE
+    top = max(rect.y - round(above * cell[1] / CELL[1]), 0)
     start = max(rect.x - left, 0)
     return flat[top : rect.y + rect.height + _below(cell), start : rect.x + rect.width + right]
 
@@ -830,9 +852,35 @@ def find_sideways(
     return best[1] if _shift_helps(flat, river, best[1], templates, cell, scale) else None
 
 
-def _sideways_patch(flat: np.ndarray, index: int, cell: tuple[int, int]) -> np.ndarray:
+#: 認宣言牌是哪一張時,搜尋窗往格子左邊多看幾像素(以 :data:`CELL` 的寬度為準)。
+#:
+#: 橫放的牌左緣比格線偏左,窗從格線開始的話旋轉模板滑不到正確的位置。28 場錄影、沒有被鳴走的
+#: 宣言牌 211 張,打出來 2.5 秒後照即時路徑認、對封包(2026-11-15):
+#:
+#: ==========  ======================  ==================================
+#: 家          從格線開始              往左 12
+#: ==========  ======================  ==================================
+#: 自己        49/49(104 x 55)        49/49(不變)
+#: 下家        56/61(104 x 55)        58/61(不變)
+#: 對家        41/51(88 x 63)         46/51(96 x 63)
+#: 上家        45/50(92 x 55)         50/50(100 x 55)
+#: 合計        191/211                 203/211
+#: ==========  ======================  ==================================
+#:
+#: 對家、上家的尺寸跟著重掃:窗放寬之後,寬 92 ~ 104(對家)、92 ~ 108(上家)都在同一個高原上,
+#: 取中間。往左 24 與 12 結果相同。錄影分兩半各自看都變好;對家 7 張錯改對、2 張對改錯。
+#: 剩下讀錯的多半是立繪或角色的手還蓋在牌上。打出來 1.5 秒後是 153 → 165(那時立繪常常還在)。
+#:
+#: 只給 :func:`classify_sideways` 用。:func:`find_sideways` 找哪一格是橫放時照舊從格線開始,
+#: 沒有重量過。
+SIDEWAYS_LEFT = 12
+
+
+def _sideways_patch(
+    flat: np.ndarray, index: int, cell: tuple[int, int], *, left: int = 0
+) -> np.ndarray:
     """比對橫放牌的那一塊:往右寬到 :data:`_SIDEWAYS_WINDOW` 格,上下與
-    :func:`search_window` 一樣延伸。
+    :func:`search_window` 一樣延伸。``left`` 是往左多看幾像素。
 
     理由與 :data:`SEARCH_ABOVE` 相同:第三列的宣言牌一樣會被切頂。兩份素材
     對封包真值逐幀比過,換成這個窗之後立直偵測的命中、漏判、誤判**完全不變**。
@@ -841,7 +889,7 @@ def _sideways_patch(flat: np.ndarray, index: int, cell: tuple[int, int]) -> np.n
     column, row = slot(index)
     x = column * width
     rect = Rect(x, row * height, min(round(width * _SIDEWAYS_WINDOW), flat.shape[1] - x), height)
-    return search_window(flat, rect, cell)
+    return search_window(flat, rect, cell, left=left)
 
 
 def sideways_face_size(cell: tuple[int, int] = CELL, scale: float = 1.0) -> tuple[int, int]:
@@ -903,7 +951,7 @@ def classify_sideways(
         設成與最高分相同,差距因此是 0。標籤與分數照樣留著 —— 診斷輸出看得到
         「它以為是什麼」,而上層拿不到「可以採信」。
     """
-    patch = _sideways_patch(flat, index, cell)
+    patch = _sideways_patch(flat, index, cell, left=round(SIDEWAYS_LEFT * cell[0] / CELL[0]))
     face = size or sideways_face_size(cell, scale)
     best = classify(patch, templates.rotated(), size=face)
     if best.label == "1m" and _has_two_man_strokes(patch, templates, face):
@@ -1116,6 +1164,66 @@ def _call_glow(
     hue, saturation = hsv[:, :, 0], hsv[:, :, 1]
     glow = bright & (hue >= _GLOW_HUE[0]) & (hue <= _GLOW_HUE[1]) & (saturation >= _GLOW_SATURATION)
     return float(glow.sum()) / float(bright.sum()) >= _GLOW_SHARE
+
+
+#: 牌的側面:橘色(OpenCV 的 HSV)。比 :data:`_BACK_HUE` 窄,牌面上的紅字不算。
+_SIDE = ((8, 100, 100), (28, 255, 255))
+
+#: 一欄裡至少這麼多是橘色,才算側面的直條;連續至少這麼多欄。
+_SIDE_COLUMN = 0.7
+_SIDE_WIDTH = 4
+
+#: 直條右邊的牌面佔比低於這個,才算「後面沒有牌」。
+_SIDE_PAPER = 0.5
+
+
+def side_spill(flat: np.ndarray, cell: Rect) -> bool:
+    """這一格亮,是因為前一格那張牌被抬起來、側面溢進來,不是有牌。
+
+    兩種時候牌會被抬起來,露出右邊橘色的側面,連同外圍的光壓到下一格:
+
+    * 自己可以吃碰的那張牌,等自己決定的那段時間(外圍一圈淡綠色的光框)。吃只能吃上家的,
+      所以幾乎都發生在上家。
+    * 滑鼠停在手牌上時,河裡同一種牌會放大、染成淡藍。
+
+    下一格因此被判成有牌,認出來是分數 0.4 ~ 0.6 的雜訊(綠色的直邊最像二索),停了一輪就被當成
+    一張讀不出來的捨牌收下。之後那一家真的打牌時序號已經被佔掉:實測 selfplay-20261102-053001
+    東三局一本場,上家的七筒從事件流裡消失,換成填進去的二索。:func:`_call_glow` 只認得
+    「亮的像素大半是淡綠色」的格子,被抬起來的牌連白色的側面一起溢進來時認不出來。
+
+    溢進來的那一格有一條從上到下的橘色直條,直條右邊是桌布(或光框),沒有牌面;真的牌的
+    牌面那一塊沒有橘色的直條(側面在牌面以外)。十場錄影(2026-11-15):對局中別家「封包沒有
+    對應、3 秒內又消失」的 68 格擋掉 53 格(剩下的是角色的手與立繪),收下當下的 6093 張真牌
+    誤擋 1 張(分數 0.42、猜二索,本身就像溢出),停穩的 14152 張真牌 0 張。
+
+    只給「要不要收下新的一格」用,不改 :func:`read_river` 的有無判斷:滑鼠停著的時候河中間的
+    牌也會被抬起來,壓到的是後面真的牌,那一格不能變成洞。
+    """
+    patch = flat[_face_of(cell, CELL).as_slice()]
+    if patch.shape[0] < 2 or patch.shape[1] <= _SIDE_WIDTH:
+        return False
+    hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+    side = cv2.inRange(hsv, *_SIDE) > 0
+    columns = side.mean(axis=0) >= _SIDE_COLUMN
+    width = start = 0
+    run: int | None = None
+    for index, on in enumerate([*columns, False]):
+        if on and run is None:
+            run = index
+        elif not on and run is not None:
+            if index - run > width:
+                width, start = index - run, run
+            run = None
+    if width < _SIDE_WIDTH:
+        return False
+    after = start + width
+    if after >= patch.shape[1] - 3:
+        return False
+    hue, saturation = hsv[:, after:, 0], hsv[:, after:, 1]
+    glow = (hue >= _GLOW_HUE[0]) & (hue <= _GLOW_HUE[1]) & (saturation >= _GLOW_SATURATION)
+    grey = cv2.cvtColor(patch[:, after:], cv2.COLOR_BGR2GRAY)
+    paper = (grey > _OCCUPIED_MEDIAN) & ~glow & ~side[:, after:]
+    return float(paper.mean()) < _SIDE_PAPER
 
 
 def is_face_up(patch: np.ndarray) -> bool:

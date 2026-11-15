@@ -63,6 +63,7 @@ SIDEWAYS = 1.4
 
 #: 直放的牌在牌河平面上寬幾像素,依座位。十四份錄影搜到的落在 60 ~ 105。
 _PITCH: dict[str, tuple[int, int]] = {
+    "own": (50, 130),
     "shimocha": (75, 125),
     "toimen": (65, 115),
     "kamicha": (50, 90),

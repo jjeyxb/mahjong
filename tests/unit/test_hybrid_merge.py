@@ -17,6 +17,7 @@ from mia.hybrid.merge import (
 )
 from mia.mjai.events import (
     Ankan,
+    Chi,
     Dahai,
     Dora,
     MjaiEvent,
@@ -92,6 +93,32 @@ def test_a_phantom_call_with_other_draws_inside_is_dropped():
 def test_own_moves_stay_with_the_template():
     yolo_misread = [*OPENING, *turn(0, "C", "3s"), *turn(1, "7m")]
     assert merge(side([*OPENING, *NEXT]), side(yolo_misread)) == (*OPENING, *NEXT)
+
+
+def test_an_agreed_own_call_can_correct_the_source_and_remove_a_phantom_turn():
+    head = [start(), *turn(0, "W", "C"), *turn(1, "N")]
+    tail = [Dahai(0, "C", False), *turn(1, "2p"), *turn(2, "3p")]
+    template = [*head, *turn(2, "N"), Pon(0, 2, "N", ["N", "N"]), *tail]
+    yolo = [*head, Pon(0, 1, "N", ["N", "N"]), *tail]
+    assert merge(side(template), side(yolo)) == tuple(yolo)
+
+
+def test_invalid_own_chi_is_not_protected_as_an_own_action():
+    head = [*OPENING]
+    tail = [Dahai(0, "C", False), *turn(1, "7m"), *turn(2, "8m")]
+    template = [*head, Chi(0, 2, "6s", ["4s", "5s"]), *tail]
+    yolo = [*head, *turn(0, "C", "2s"), *turn(1, "7m"), *turn(2, "8m")]
+    assert merge(side(template), side(yolo)) == tuple(yolo)
+
+
+def test_no_backend_may_publish_an_impossible_triplet_even_when_they_agree():
+    published = []
+    merger = StreamMerger(lambda _k, stream: published.append(stream))
+    bad = [start(), *turn(1, "P"), Pon(2, 1, "P", ["P", "E"])]
+    merger.offer("template", 1, Stream(tuple(bad)))
+    merger.offer("yolo", 1, Stream(tuple(bad)))
+    assert published[-1].events == tuple(bad[:-1])
+    assert published[-1].stalled and published[-1].doubt
 
 
 def test_a_call_of_an_own_discard_is_an_opponent_move():

@@ -141,6 +141,79 @@ class TestReplay:
         assert _rows(tmp_path / "v.jsonl")[0]["wall"] == pytest.approx(1005.0)
 
 
+class TestExactReplay:
+    """``--exact``:時鐘由重播推進,背景工作照固定的延遲交回,每次的結果才會相同。"""
+
+    def test_the_backend_follows_the_stepped_clock(self, selfplay) -> None:
+        clock = selfplay.StepClock()
+        backend = selfplay.ReplayBackend(_session([0.0, 10.0, 20.0]), 1000.0, 1020.0, clock=clock)
+        assert backend.capture(WINDOW).image[0, 0, 0] == 0
+        clock.now = 10.5
+        assert backend.capture(WINDOW).image[0, 0, 0] == 1
+        assert backend.wall == pytest.approx(1010.5)
+        assert not backend.finished
+        clock.now = 20.0
+        assert backend.finished
+
+    def test_background_work_comes_back_after_a_fixed_delay(self, selfplay) -> None:
+        clock = selfplay.StepClock()
+        pool = selfplay.SteppedExecutor(clock, 0.15)
+        ran: list[str] = []
+        first = pool.submit(lambda: ran.append("a") or "a")
+        clock.now = 0.1
+        second = pool.submit(lambda: ran.append("b") or "b")
+        pool.release()
+        assert not first.done() and not ran
+
+        clock.now = 0.15
+        pool.release()
+        assert first.result() == "a" and not second.done()
+
+        clock.now = 0.3
+        pool.release()
+        assert second.result() == "b" and ran == ["a", "b"]
+
+    def test_the_done_callback_fires_when_released(self, selfplay) -> None:
+        """牌桌靠這個通知提早讀一輪。"""
+        clock = selfplay.StepClock()
+        pool = selfplay.SteppedExecutor(clock, 0.5)
+        told: list[int] = []
+        pool.submit(lambda: 7).add_done_callback(lambda job: told.append(job.result()))
+        assert told == []
+        clock.now = 0.5
+        pool.release()
+        assert told == [7]
+
+    def test_a_cancelled_job_never_runs(self, selfplay) -> None:
+        clock = selfplay.StepClock()
+        pool = selfplay.SteppedExecutor(clock, 0.1)
+        ran: list[int] = []
+        job = pool.submit(lambda: ran.append(1))
+        assert job.cancel()
+        clock.now = 1.0
+        pool.release()
+        assert ran == [] and job.cancelled()
+
+    def test_an_error_stays_in_the_future(self, selfplay) -> None:
+        clock = selfplay.StepClock()
+        pool = selfplay.SteppedExecutor(clock, 0.0)
+
+        def broken() -> None:
+            raise ValueError("比不成")
+
+        job = pool.submit(broken)
+        pool.release()
+        with pytest.raises(ValueError, match="比不成"):
+            job.result()
+
+    def test_shutdown_cancels_what_is_still_waiting(self, selfplay) -> None:
+        clock = selfplay.StepClock()
+        pool = selfplay.SteppedExecutor(clock, 1.0)
+        job = pool.submit(lambda: 1)
+        pool.shutdown(wait=False, cancel_futures=True)
+        assert job.cancelled()
+
+
 class TestSpan:
     TRUTH = (SimpleNamespace(start=1100.0), SimpleNamespace(start=1200.0))
 

@@ -53,6 +53,7 @@ from mia.mjai.events import (
     StartKyoku,
     Tsumo,
 )
+from mia.mjai.melds import valid_meld
 from mia.mjai.tiles import normalize_red
 from mia.tracker import Stream
 
@@ -229,7 +230,13 @@ def merge(
             pieces.append((_yolo_cuts(t.events, y.events, i1, i2, j1, ruled, stats), None))
             continue
         if i2 == len(t.tokens) or j2 == len(y.tokens):
-            pieces.append((t.events[i1:i2], None))
+            mine, theirs = t.events[i1:i2], y.events[j1:j2]
+            repair = (
+                any(not valid_meld(event) for event in mine)
+                and all(valid_meld(event) for event in theirs)
+                and theirs and y.seen[-1] - t.seen[-1] <= lag_ok
+            )
+            pieces.append((mine, theirs if repair else None))
             continue
         mine, theirs = t.events[i1:i2], y.events[j1:j2]
         if found is not None:
@@ -249,7 +256,15 @@ def merge(
         # 立直棒放上桌之前 YOLO 不送立直成立,樣板已經有了:YOLO 是還沒看到,不是看到沒有。
         flash = flash or (not theirs and all(isinstance(event, ReachAccepted) for event in mine))
         late = y.seen[j2] - t.seen[i2] > lag_ok
-        if own or flash or late:
+        repaired = (
+            any(not valid_meld(event) for event in mine)
+            and all(valid_meld(event) for event in theirs)
+        )
+        same_own_call = own and _same_own_call(mine, theirs)
+        if not late and (repaired or same_own_call):
+            pieces.append((mine, theirs))
+            reason = "meld_repair" if repaired else "own_source"
+        elif own or flash or late:
             pieces.append((mine, None))
             reason = "own" if own else "flash" if flash else "late"
         else:
@@ -275,6 +290,26 @@ def merge(
     if found is not None and differing:
         found.extend(_disagreements(pieces, use, merged, differing))
     return merged
+
+
+def _same_own_call(mine: Sequence[MjaiEvent], theirs: Sequence[MjaiEvent]) -> bool:
+    """The hand's call agrees; only the claimed source/other players differ.
+
+    Keep every own tile/action identical, but allow YOLO to remove phantom turns
+    before an otherwise identical call. A different draw or consumed pair still
+    stays with the template.
+    """
+    def actions(events: Sequence[MjaiEvent]) -> tuple[Token, ...]:
+        return tuple(
+            (event.TYPE, event.actor, event.pai, tuple(sorted(event.consumed)))
+            if isinstance(event, (Chi, Pon, Daiminkan)) else _token(event)
+            for event in events if _own(event)
+        )
+
+    return (
+        any(isinstance(event, (Chi, Pon, Daiminkan)) and _own(event) for event in mine)
+        and actions(mine) == actions(theirs)
+    )
 
 
 def _differing_discards(mine: Sequence[MjaiEvent], theirs: Sequence[MjaiEvent]) -> list[int]:
@@ -424,6 +459,8 @@ def plausible(events: Sequence[MjaiEvent]) -> bool:
     kan = False
     reached: set[int] = set()
     for event in events:
+        if not valid_meld(event):
+            return False
         if isinstance(event, (*_CALLS, Kakan)) and event.actor in reached:
             return False
         match event:
@@ -536,6 +573,11 @@ class StreamMerger:
         """重新合併。回傳局數、變了的事件流與變了的待選,沒變的是 ``None``。"""
         found: list[Disagreement] = []
         events, base = self._merged(wall, found)
+        invalid = next((i for i, event in enumerate(events) if not valid_meld(event)), None)
+        if invalid is not None:
+            events = events[:invalid]
+            base = replace(base, stalled=True, doubt="副露牌面或來源不合法，等待畫面更正")
+            found = [d for d in found if d.index < invalid]
         start = tokens(events[:1])[0] if events else None
         if events and start != self._out_start:
             self._out_kyoku += 1

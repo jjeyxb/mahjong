@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Protocol
 
 import numpy as np
@@ -152,6 +152,11 @@ class TableSink(Protocol):
     def offer_hand(self, tiles: Sequence[str], drawn: str | None = None) -> None: ...
 
 
+def _monotonic() -> float:
+    """預設的時鐘。每次都去問 :mod:`time`,不在定義時把函式綁死。"""
+    return time.monotonic()
+
+
 class VisionWorker(threading.Thread):
     """定速擷取遊戲視窗,認出自己的手牌,投進 :class:`~mia.live.bus.UpdateBus`。
 
@@ -182,8 +187,11 @@ class VisionWorker(threading.Thread):
         table_rect: TableRectChoice | None = None,
         sink: TableSink | None = None,
         recognize_hand: bool = True,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         super().__init__(name="vision", daemon=True)
+        # 重播時換成由畫面時間戳推進的時鐘,見 ``tools/selfplay.py`` 的 ``--exact``。
+        self._clock = clock if clock is not None else _monotonic
         #: 要找瀏覽器視窗還是原生客戶端。兩版同時開著時這是唯一分得開的判據
         #: —— 見 :data:`~mia.capture.base.HOST_REQUIRE`。
         self._host = HOST_REQUIRE if platform == WEB else HOST_EXCLUDE
@@ -231,7 +239,7 @@ class VisionWorker(threading.Thread):
         self.reads = 0
         self.skipped = 0
         #: 上一次把畫面交出去的時間,與是不是已經為這次中斷記過警告。見 _watch。
-        self._delivered = time.monotonic()
+        self._delivered = self._clock()
         self._stalled = False
         #: 上次交出畫面之後狀態列說過的最後一句話。重找視窗會把狀態清成空的,原因不能跟著不見。
         self._why = ""
@@ -254,45 +262,62 @@ class VisionWorker(threading.Thread):
                 self._backend.close()
 
     def _run(self) -> None:
+        if not self.prepare():
+            return
+        interval = self.interval
+        next_tick = self._clock()
+        while not self._stop_event.is_set():
+            now = self._clock()
+            if now < next_tick:
+                # 用 Event.wait 而不是 sleep:停止訊號才不用等滿一個週期
+                self._stop_event.wait(next_tick - now)
+                continue
+            next_tick = max(now, next_tick + interval)
+            self.step()
+
+    @property
+    def interval(self) -> float:
+        """兩次擷取之間隔多久,秒。"""
+        return 1.0 / self._config.capture.target_fps
+
+    def prepare(self) -> bool:
+        """開始擷取之前的準備:載模板、建擷取後端。不能跑回 ``False``,原因寫在狀態列。
+
+        與 :meth:`_run` 分開,是為了讓重播工具不開執行緒、自己一幀一幀叫 :meth:`step`。
+        """
         if self._recognize_hand and self._config.roi.own_hand is None:
             self.status.say("設定裡沒有 own_hand ROI,畫面辨識停用(先跑 tools/roi_annotate.py)")
-            return
+            return False
 
         if self._recognize_hand:
             try:
                 self._templates = TemplateSet.load(self._skin)
             except (OSError, ValueError) as exc:
                 self.status.say(f"載入牌面模板失敗:{exc}")
-                return
+                return False
 
         if self._backend is None:
             from mia.capture.factory import create_backend
 
             self._backend = create_backend(self._config.capture)
+        return True
 
-        interval = 1.0 / self._config.capture.target_fps
-        next_tick = time.monotonic()
-        while not self._stop_event.is_set():
-            now = time.monotonic()
-            if now < next_tick:
-                # 用 Event.wait 而不是 sleep:停止訊號才不用等滿一個週期
-                self._stop_event.wait(next_tick - now)
-                continue
-            next_tick = max(now, next_tick + interval)
-            self._tick()
-            self._watch()
+    def step(self) -> None:
+        """擷取一幀、認一次。"""
+        self._tick()
+        self._watch()
 
     def _watch(self) -> None:
         """很久沒有畫面交出去就記一筆,原因是狀態列最後說的那句話。"""
         self._why = self.status.read() or self._why
-        idle = time.monotonic() - self._delivered
+        idle = self._clock() - self._delivered
         if idle > _STALL_WARN and not self._stalled:
             self._stalled = True
             logger.warning("擷取 {:.1f} 秒沒有交出畫面:{}", idle, self._why or "沒有說明")
 
     def _deliver(self) -> None:
         """這一幀交出去了。之前記過中斷的話,記一筆停了多久。"""
-        now = time.monotonic()
+        now = self._clock()
         if self._stalled:
             self._stalled = False
             logger.warning("擷取恢復,中斷 {:.1f} 秒", now - self._delivered)
@@ -306,7 +331,7 @@ class VisionWorker(threading.Thread):
             return
 
         assert self._backend is not None
-        began = time.monotonic()
+        began = self._clock()
         try:
             frame = self._backend.capture(window)
         except CaptureFailedError as exc:
@@ -318,7 +343,7 @@ class VisionWorker(threading.Thread):
                 self._failures = 0
             return
         finally:
-            took = time.monotonic() - began
+            took = self._clock() - began
             if took > _SLOW_CAPTURE:
                 logger.warning("擷取一次花了 {:.1f} 秒", took)
         self._failures = 0

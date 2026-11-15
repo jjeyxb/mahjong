@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from mia.mjai.events import MjaiEvent, StartKyoku, parse_event
+from mia.mjai.melds import valid_meld
 from mia.mjai.tiles import normalize_red
 from mia.tracker import Stream
 
@@ -303,6 +304,8 @@ def validate_inventory(events: Sequence[MjaiEvent]) -> str | None:
     """Check own hand and visible physical copies before feeding an engine."""
     if not events or not isinstance(events[0], StartKyoku):
         return "等待開局資訊"
+    if any(not valid_meld(event) for event in events):
+        return "副露牌面或來源不合法，等待事件更正"
     hand = Counter(events[0].tehais[0])
     visible = Counter(hand)
     visible[events[0].dora_marker] += 1

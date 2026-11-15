@@ -46,7 +46,7 @@ import threading
 import time
 from collections import Counter
 from collections.abc import Callable, Sequence
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 
 import cv2
@@ -120,6 +120,7 @@ from mia.vision.tiles.river import (
     row_end,
     search_window,
     settle_river_five,
+    side_spill,
     slot,
 )
 from mia.vision.tiles.skin import is_skin
@@ -268,6 +269,16 @@ class _OwnTold:
         return fresh
 
 
+def _monotonic() -> float:
+    """預設的時鐘。每次都去問 :mod:`time`,不在定義時把函式綁死。"""
+    return time.monotonic()
+
+
+def _pool(name: str) -> Executor:
+    """背景比對用的執行緒,一條。"""
+    return ThreadPoolExecutor(max_workers=1, thread_name_prefix=name)
+
+
 @dataclass(frozen=True, slots=True)
 class _PendingFaces:
     """一組還在認牌面的副露:認好之後填到 ``table`` 的那一家第 ``index`` 組。
@@ -291,7 +302,7 @@ class _MeldLook:
 
     def __init__(
         self,
-        pool: ThreadPoolExecutor,
+        pool: Executor,
         picture: MeldPicture,
         templates: TemplateSet,
         on_ready: Callable[[], None] | None = None,
@@ -426,9 +437,14 @@ class TableWorker(threading.Thread):
         link: TableLink | None = None,
         templates: TemplateSet | None = None,
         on_stream: Callable[[int, Stream], None] | None = None,
+        clock: Callable[[], float] | None = None,
+        executor: Callable[[str], Executor] | None = None,
     ) -> None:
         super().__init__(name="table", daemon=True)
         self._on_stream = on_stream
+        # 時鐘與背景執行緒可以換掉:重播時由畫面的時間戳推進、比對照固定的延遲交回,同一份錄影
+        # 每次跑出來的事件流才會相同。見 ``tools/selfplay.py`` 的 ``--exact``。
+        self._clock = clock if clock is not None else _monotonic
         self._link = link
         self._bus = bus
         self._config = config
@@ -481,9 +497,9 @@ class TableWorker(threading.Thread):
         self._readings: dict[tuple[int, int], tuple[str | None, str | None]] = {}
         self._melds = MeldWatcher(units=tuple(GROUP_LENGTH[seat] for seat in SEATS))
         # 認牌面慢(一組約 1 秒),放到另一條執行緒。見 _read_melds。
-        self._faces = ThreadPoolExecutor(max_workers=1, thread_name_prefix="meld-faces")
+        self._faces = _pool("meld-faces") if executor is None else executor("meld-faces")
         # 候選比對決定鳴牌後的建議,不該排在完整牌面掃描(幾百毫秒)後面。
-        self._fits = ThreadPoolExecutor(max_workers=1, thread_name_prefix="meld-fit")
+        self._fits = _pool("meld-fit") if executor is None else executor("meld-fit")
         self._faces_ready = threading.Event()
         self._pending_faces: list[_PendingFaces] = []
         self._meld_reds: dict[tuple[int, int], frozenset[str]] = {}
@@ -562,8 +578,38 @@ class TableWorker(threading.Thread):
     # ------------------------------------------------------------------ 主迴圈
 
     def run(self) -> None:
+        if not self.prepare():
+            return
+        try:
+            while not self._stop.is_set():
+                started = self._clock()
+                self.safe_tick()
+                self._wake.wait(max(0.0, self.poll - (self._clock() - started)))
+                self._wake.clear()
+        finally:
+            self.close()
+
+    @property
+    def poll(self) -> float:
+        """兩次 :meth:`tick` 之間最多隔多久。"""
+        return min(self._interval, _POLL)
+
+    def take_wake(self) -> bool:
+        """有沒有人要它提早讀(手牌變了、副露比完了)。問過就清掉。
+
+        給自己推進時鐘的呼叫端用,:meth:`run` 是直接等這個訊號。
+        """
+        woken = self._wake.is_set()
+        self._wake.clear()
+        return woken
+
+    def prepare(self) -> bool:
+        """開始讀之前的準備:記下起點、載模板。載不到回 ``False``。
+
+        與 :meth:`run` 分開,是為了讓重播工具不開執行緒、自己一輪一輪叫 :meth:`safe_tick`。
+        """
         self.status.alive = True
-        self._began = time.monotonic()
+        self._began = self._clock()
         if self._templates is None:
             try:
                 self._templates = TemplateSet.load(self._skin)
@@ -571,26 +617,26 @@ class TableWorker(threading.Thread):
             except (FileNotFoundError, ValueError) as exc:
                 self.status.say(f"載不到牌面模板:{exc}")
                 self.status.alive = False
-                return
+                return False
+        return True
+
+    def safe_tick(self) -> None:
+        """讀一次,出錯只記下來:執行緒裡漏出來的例外只會被吞掉。"""
         try:
-            while not self._stop.is_set():
-                started = time.monotonic()
-                try:
-                    self.tick()
-                except Exception as exc:  # noqa: BLE001 - 執行緒裡漏出來的例外只會被吞掉
-                    logger.warning("牌桌辨識這一輪失敗:{!r}", exc)
-                    self.status.say(f"這一輪讀不成:{exc}")
-                poll = min(self._interval, _POLL)
-                self._wake.wait(max(0.0, poll - (time.monotonic() - started)))
-                self._wake.clear()
-        finally:
-            self.status.alive = False
-            for look in self._meld_looks.values():
-                look.cancel()
-            self._faces.shutdown(wait=False, cancel_futures=True)
-            self._fits.shutdown(wait=False, cancel_futures=True)
-            if self._link is not None:
-                self._link.detach(self)
+            self.tick()
+        except Exception as exc:  # noqa: BLE001 - 見上
+            logger.warning("牌桌辨識這一輪失敗:{!r}", exc)
+            self.status.say(f"這一輪讀不成:{exc}")
+
+    def close(self) -> None:
+        """收掉背景的比對。:meth:`run` 結束時會叫,自己叫 :meth:`prepare` 的也要叫。"""
+        self.status.alive = False
+        for look in self._meld_looks.values():
+            look.cancel()
+        self._faces.shutdown(wait=False, cancel_futures=True)
+        self._fits.shutdown(wait=False, cancel_futures=True)
+        if self._link is not None:
+            self._link.detach(self)
 
     def tick(self) -> None:
         """讀一次。平常由 :meth:`run` 自己叫,測試可以直接叫。"""
@@ -693,7 +739,7 @@ class TableWorker(threading.Thread):
         確認槓要多讀的那一次,靠的就是一秒的間隔等動畫演完。
         """
         landed = self._watch_landing(flats, rivers)
-        now = time.monotonic()
+        now = self._clock()
         held = self._turns is not None and self._turns.held(self._turn_clock())
         if self._began is not None and not (
             urgent or landed or held or now - self._last_round >= self._interval
@@ -706,7 +752,7 @@ class TableWorker(threading.Thread):
         """量三家手牌的牌背,每次看河都量:手切的樣子只維持一秒左右。三家約 3 毫秒。"""
         if self._kyoku.empty:
             return
-        now = time.monotonic()
+        now = self._clock()
         for position, seat in enumerate(SEATS[1:], 1):
             shape = read_backs(image, table, seat, self._melds.groups[position])
             self._tedashi.observe(position, now, shape)
@@ -722,7 +768,7 @@ class TableWorker(threading.Thread):
 
     def _decide_tsumogiri(self, steps: Sequence[Step]) -> None:
         """別家的捨牌排進事件流的這一刻,決定是不是摸切,之後不改:改了引擎就要整局重送。"""
-        now = time.monotonic()
+        now = self._clock()
         for step in steps:
             if step.action is not Action.DAHAI or step.actor == 0:
                 continue
@@ -773,7 +819,7 @@ class TableWorker(threading.Thread):
         if known == self._sideways[position] or known in river.clipped:
             return False
         river = self._shifted(position, flat, river)
-        if is_skin(face_patch(flat, river.cells[known])):
+        if is_skin(face_patch(flat, river.cells[known])) or side_spill(flat, river.cells[known]):
             return False
         pai, _ = self._read_cell(position, flat, river, known)
         return pai not in (UNKNOWN, _HAKU)
@@ -850,6 +896,10 @@ class TableWorker(threading.Thread):
             if is_skin(face_patch(flat, river.cells[cell])):
                 # 角色的手蓋在這一格上。等手收回去再讀,見 mia.vision.tiles.skin。
                 break
+            if side_spill(flat, river.cells[cell]):
+                # 前一張牌被抬起來(叫牌提示、滑鼠停在同種牌上),側面溢進這一格。不是牌,
+                # 等它放下來。見 mia.vision.tiles.river.side_spill。
+                break
             steady = self._steady(position, cell)
             if not steady and not urgent and not self._clear[position]:
                 break
@@ -885,7 +935,7 @@ class TableWorker(threading.Thread):
             if not steady or pai == UNKNOWN:
                 self._unsteady[position].add(cell)
             if pai == UNKNOWN:
-                self._uncertain_until[position][cell] = time.monotonic() + _UNCERTAIN_RETRY
+                self._uncertain_until[position][cell] = self._clock() + _UNCERTAIN_RETRY
 
         self._emit(position, known)
 
@@ -901,7 +951,7 @@ class TableWorker(threading.Thread):
             return False
         if cell - 1 not in self._leaning[position]:
             return False
-        now = time.monotonic()
+        now = self._clock()
         wait = self._lean_wait[position]
         # 中間斷過(那半截不見了、之後同一格才又出現)就重新算:錄影 043327 東3局2本場
         # 後半截 2 秒後消失,7 秒後那一家真的打出下一張到這一格,舊的起點讓它直接放行。
@@ -933,13 +983,15 @@ class TableWorker(threading.Thread):
         assert self._templates is not None and self._river_templates is not None
         view = DEFAULT_CORNERS[SEATS[position]]
         rect = river.cells[cell]
-        window = search_window(flat, rect, left=view.left_slack, right=view.right_slack)
+        window = search_window(
+            flat, rect, left=view.left_slack, right=view.right_slack, row=slot(cell)[1]
+        )
         key = (position, rect.x, rect.y)
         pixels = hashlib.blake2b(window.tobytes(), digest_size=16).digest()
         memo = self._cells.get(key)
         if memo is not None and memo[0] == pixels:
             return memo[1], memo[2]
-        size = face_size(seat=SEATS[position], row=slot(cell)[1])
+        size = face_size(seat=SEATS[position])
         templates = self._templates
         match = classify_river_tile(window, templates, size=size)
         # 只有沒把握的才比第二份,86% 的格子用不到:一格 56 → 38 毫秒,讀對的張數一樣,有信心的
@@ -978,7 +1030,7 @@ class TableWorker(threading.Thread):
         if turned.score <= upright.score + _TURNED:
             return None
         self._leaning[position].add(cell)
-        self._leaning_at[position].setdefault(cell, time.monotonic())
+        self._leaning_at[position].setdefault(cell, self._clock())
         return ms_to_mjai(turned.label)
 
     def _revisit(
@@ -988,7 +1040,7 @@ class TableWorker(threading.Thread):
         river = self._shifted(position, flat, river)
         for cell in sorted(self._unsteady[position]):
             until = self._uncertain_until[position].get(cell)
-            if until is not None and time.monotonic() > until:
+            if until is not None and self._clock() > until:
                 self._unsteady[position].discard(cell)
                 del self._uncertain_until[position][cell]
                 continue
@@ -999,7 +1051,7 @@ class TableWorker(threading.Thread):
                 # 停了:真人東一局上家橫放的 6 索被讀成 8 筒。所以與讀不出來的牌一樣,幾秒內每輪
                 # 再讀,留最後一次。
                 self._uncertain_until[position].setdefault(
-                    cell, time.monotonic() + _UNCERTAIN_RETRY
+                    cell, self._clock() + _UNCERTAIN_RETRY
                 )
                 if known[cell] == UNKNOWN:
                     self._guess[position][cell] = self._read_sideways(position, flat, cell)
@@ -1015,7 +1067,7 @@ class TableWorker(threading.Thread):
                 if known[cell] == UNKNOWN:
                     self._guess[position][cell] = guess
                 self._uncertain_until[position].setdefault(
-                    cell, time.monotonic() + _UNCERTAIN_RETRY
+                    cell, self._clock() + _UNCERTAIN_RETRY
                 )
                 continue
             self._unsteady[position].discard(cell)
@@ -1076,9 +1128,9 @@ class TableWorker(threading.Thread):
             if red_ink(face_patch(flat, river.cells[cell])) < WHOLE_RED:
                 continue
             match = classify(
-                search_window(flat, river.cells[cell]),
+                search_window(flat, river.cells[cell], row=slot(cell)[1]),
                 self._reds,
-                size=face_size(seat=SEATS[position], row=slot(cell)[1]),
+                size=face_size(seat=SEATS[position]),
             )
             if match.margin >= CONFIDENT[1]:
                 known[cell] = ms_to_mjai(match.label)
@@ -1092,7 +1144,7 @@ class TableWorker(threading.Thread):
             # 不能等排進事件流時才拿已恢復完整的手牌推成摸切。
             key = (position, fresh[0].serial)
             self._seen_tsumogiri[key] = (
-                time.monotonic(), self._tedashi.tsumogiri(position, time.monotonic())
+                self._clock(), self._tedashi.tsumogiri(position, self._clock())
             )
         for discard in fresh:
             self._turn_discards.append(
@@ -1278,8 +1330,12 @@ class TableWorker(threading.Thread):
                 # 組數**現在**就算數(副露威脅不等牌面),牌面認好了再填進來。
                 melds.append(guess_meld(()))
                 if position == 0:
-                    # 自己鳴了什麼看手牌少了哪幾張,事件流不用這裡的牌面。認一組要一秒,
-                    # 會跟牌河搶核心,而那時正要給鳴牌之後的建議。
+                    # 自己的牌面仍用手牌；只有來源夾著未觀測的補牌時，才比少量
+                    # 橫放位置候選。不啟動完整牌面掃描，也不讓一般吃碰多等一次。
+                    picture = MeldPicture(image, table, seat, end=start + (index + 1) * step)
+                    self._meld_looks[(position, len(melds) - 1)] = _MeldLook(
+                        self._fits, picture, self._river_templates, self._on_meld_ready,
+                    )
                     continue
                 future = self._faces.submit(
                     read_meld_faces,
@@ -1591,7 +1647,7 @@ class TableWorker(threading.Thread):
         self._joined_since = None
         growing = [position for position in range(1, len(SEATS)) if self._melds.growing(position)]
         # 上家不等:上家打完就輪到自己。見 mia.tracker.tedashi。
-        now = time.monotonic()
+        now = self._clock()
         undecided = [p for p in (1, 2) if not self._tedashi.tegiri_seen(p, now)]
         self._turns.hold = HOLD / max(self._interval, 0.001) if self._began is not None else 0.0
         steps = self._turns.tick(
@@ -1616,7 +1672,7 @@ class TableWorker(threading.Thread):
         """
         if self._began is None:
             return float(self.reads)
-        return (time.monotonic() - self._began) / max(self._interval, 0.001)
+        return (self._clock() - self._began) / max(self._interval, 0.001)
 
     @property
     def own_moves(self) -> tuple[OwnMove, ...]:

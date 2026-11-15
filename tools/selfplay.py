@@ -31,6 +31,17 @@
 不是一次跑完的離線重算:延遲與當下讀到什麼都跟著時間走,加速就不是同一件事了。所以一場
 要跑一場的時間,``--kyoku`` 只播某一局,不給就全部。
 
+照原本的時間播有一個代價:**同一局重播兩次結果不一樣**(執行緒誰先誰後、電腦當時多忙),改一個
+門檻前後差一兩張牌時分不出是改動還是時機。要比前後就加 ``--exact``::
+
+    .venv/bin/python tools/selfplay.py --replay data/recordings/selfplay-x --kyoku 3 --exact
+
+``--exact`` 不開執行緒:時鐘由這支工具推進,擷取照幀率、牌桌照它的輪詢間隔一步一步叫,副露的
+背景比對照固定的延遲交回(:data:`_EXACT_LATENCY`)。同一份錄影、同一份程式每次的事件流完全相同,
+而且不必等真實時間。它量的是「運算不花時間的電腦」上的結果:**延遲的數字不能用**,運算太慢而
+漏看畫面的錯也不會出現,那些仍然要照原本的時間播或實打。只支援樣板比對,也不跑即時的引擎
+(報告裡的同答案率是事後拿事件流算的,照樣有)。
+
 規則
 ----
 * 自動打牌只在全電腦的桌上動手,見 :func:`autoplay.cpu_table`。這支工具與
@@ -61,7 +72,8 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from concurrent.futures import Executor, Future
 from pathlib import Path
 from typing import Any
 
@@ -89,7 +101,7 @@ from mia.eval.streamdiff import (
 )
 from mia.live.advice import VisionAdviceWorker
 from mia.live.bus import Advices, Update, UpdateBus, WorkerStatus
-from mia.live.table import TableLink
+from mia.live.table import TableLink, TableWorker
 from mia.live.vision import VisionWorker
 from mia.recorder import SessionReader, SessionWriter
 from mia.tracker import Stream
@@ -349,12 +361,25 @@ class YoloTee:
         self._worker.offer_hand(tiles, drawn)
 
 
+def _monotonic() -> float:
+    """預設的時鐘。每次都去問 :mod:`time`,不在定義時把函式綁死。"""
+    return time.monotonic()
+
+
 class ReplayBackend:
     """把錄好的畫面照原本的時間播回去,對 :class:`VisionWorker` 來說就是一個擷取後端。"""
 
     name = "replay"
 
-    def __init__(self, session: SessionReader, start: float, end: float) -> None:
+    def __init__(
+        self,
+        session: SessionReader,
+        start: float,
+        end: float,
+        *,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        self._clock = clock if clock is not None else _monotonic
         self._session = session
         self._records = session.manifest.frames
         self._stamps = [record.timestamp for record in self._records]
@@ -376,11 +401,11 @@ class ReplayBackend:
     def _position(self) -> float:
         if self._began is None:
             return self._start
-        return self._start + time.monotonic() - self._began
+        return self._start + self._clock() - self._began
 
     def capture(self, window: WindowInfo) -> Frame:
         if self._began is None:
-            self._began = time.monotonic()
+            self._began = self._clock()
         at = bisect.bisect_right(self._stamps, self._position()) - 1
         record = self._records[max(at, 0)]
         if self._image is None or self._image[0] != record.image:
@@ -656,6 +681,128 @@ def _tap_raw(vision: Any, log: RunLog) -> None:
     vision._offer = tapped  # noqa: SLF001
 
 
+#: ``--exact`` 時背景比對交進去之後多久交回,秒。照實測取:副露候選比對中位 60 毫秒、p95 148 毫秒,
+#: 取一個輪詢間隔;完整牌面掃描幾百毫秒。固定的數字才能每次相同。
+_EXACT_LATENCY = {"meld-fit": 0.15, "meld-faces": 0.5}
+
+
+#: 一件排著的背景工作:什麼時候交回、結果放哪、要算什麼。
+_Job = tuple[float, "Future[Any]", Callable[..., Any], tuple[Any, ...], dict[str, Any]]
+
+
+class StepClock:
+    """由重播推進的時鐘,秒。取代 :func:`time.monotonic`。"""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class SteppedExecutor(Executor):
+    """不開執行緒的背景工作:交進來先記著,時鐘走過固定的延遲之後才算、才交回。
+
+    直接當場算完的話,結果在同一輪就看得到,實際上要等一兩輪;「還在比」那段時間的行為
+    (事件流先照舊的推法、比完再改)就走不到了。
+    """
+
+    def __init__(self, clock: Callable[[], float], latency: float) -> None:
+        self._clock = clock
+        self._latency = latency
+        self._jobs: list[_Job] = []
+
+    def submit(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Future[Any]:
+        future: Future[Any] = Future()
+        self._jobs.append((self._clock() + self._latency, future, fn, args, kwargs))
+        return future
+
+    def release(self) -> None:
+        """時間到了的工作照交進來的順序算完,完成的通知在這裡發出。"""
+        now = self._clock()
+        due = [job for job in self._jobs if job[0] <= now]
+        self._jobs = [job for job in self._jobs if job[0] > now]
+        for _, future, fn, args, kwargs in due:
+            if not future.set_running_or_notify_cancel():
+                continue
+            try:
+                future.set_result(fn(*args, **kwargs))
+            except Exception as exc:  # noqa: BLE001 - 與執行緒池一樣,例外留在 future 裡
+                future.set_exception(exc)
+
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:  # noqa: ARG002
+        if cancel_futures:
+            for _, future, *_rest in self._jobs:
+                future.cancel()
+        self._jobs = []
+
+
+def replay_exact(args: argparse.Namespace, config: AppConfig) -> None:
+    """``--exact``:不開執行緒、不看真實時間的重播,見模組說明的「修完怎麼驗」。"""
+    session = SessionReader(args.replay)
+    truth = load_truth(args.replay / "ws.jsonl")
+    start, end = _span(truth, args.kyoku, session)
+    clock = StepClock()
+    backend = ReplayBackend(session, start, end, clock=clock)
+    log = ReplayLog(args.replay / REPLAY_LOG, backend)
+    pools: list[SteppedExecutor] = []
+
+    def executor(name: str) -> Executor:
+        pools.append(SteppedExecutor(clock, _EXACT_LATENCY[name]))
+        return pools[-1]
+
+    def record(kyoku: int, stream: Stream) -> None:
+        log.stream(
+            kyoku,
+            stream,
+            moves=[(move.move.value, *move.tiles) for move in table.own_moves],
+            steps=[
+                (step.action.value, step.actor, step.pai or step.guess, step.serial)
+                for step in table.steps
+            ],
+        )
+
+    link = TableLink()
+    table = TableWorker(
+        UpdateBus(), config=config.roi, link=link, on_stream=record, clock=clock, executor=executor
+    )
+    vision = VisionWorker(
+        TapBus(log),
+        config=config,
+        backend=backend,  # type: ignore[arg-type]
+        window=session.manifest.window,
+        canvas=CanvasChoice(Canvas.parse(CANVAS)),
+        sink=link,
+        clock=clock,
+    )
+    vision.status = LoggedStatus("畫面", log)
+    if not vision.prepare():
+        raise SystemExit(f"畫面辨識起不來:{vision.status.read()}")
+    if not table.prepare():
+        raise SystemExit(f"牌桌辨識起不來:{table.status.read()}")
+    link.attach(table)
+    print(f"重播 {end - start:.0f} 秒(--exact,不照真實時間)", flush=True)
+    began = time.monotonic()
+    next_frame = next_table = 0.0
+    try:
+        while not backend.finished:
+            clock.now = min(next_frame, next_table)
+            for pool in pools:
+                pool.release()
+            if clock.now >= next_frame:
+                vision.step()
+                next_frame += vision.interval
+            # 手牌變了、副露比完了都會提早叫醒牌桌,跟執行緒版等的是同一個訊號。
+            woken = table.take_wake()
+            if woken or clock.now >= next_table:
+                table.safe_tick()
+                next_table = clock.now + table.poll
+    finally:
+        table.close()
+        log.close()
+    print(f"實際花了 {time.monotonic() - began:.0f} 秒", flush=True)
+
+
 def _span(
     truth: Sequence[TruthKyoku], kyoku: int | None, session: SessionReader
 ) -> tuple[float, float]:
@@ -754,9 +901,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--report", type=Path, metavar="DIR", help="不打,只重新比對這個 session")
     parser.add_argument("--replay", type=Path, metavar="DIR", help="把這個 session 重播一次再比對")
     parser.add_argument("--kyoku", type=int, metavar="N", help="--replay 只播第 N 局,從 1 算")
+    parser.add_argument(
+        "--exact",
+        action="store_true",
+        help="--replay 不照真實時間播:每次結果相同、比較快,但延遲的數字不能用。只支援樣板比對",
+    )
     parser.add_argument("--no-engine", action="store_true", help="比對時不跑引擎,快很多")
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args(argv)
+    if args.replay and args.exact and "PYTHONHASHSEED" not in os.environ:
+        # 字串的雜湊每次啟動都不同,集合的走訪順序跟著變。固定下來重新啟動一次,結果才保證每次
+        # 相同。要在開始記錄之前做:記錄用的佇列建了之後再換掉行程,結束時會被警告沒收乾淨。
+        os.execve(
+            sys.executable, [sys.executable, *sys.argv], {**os.environ, "PYTHONHASHSEED": "0"}
+        )
     setup_logging(args.log_level)
     signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
 
@@ -765,7 +923,12 @@ def main(argv: list[str] | None = None) -> int:
         print(report(args.report, weights))
         return 0
     if args.replay:
-        replay(args, load_config())
+        if args.exact and args.vision != "template":
+            parser.error("--exact 只支援樣板比對")
+        if args.exact:
+            replay_exact(args, load_config())
+        else:
+            replay(args, load_config())
         print(report(args.replay, weights, log=REPLAY_LOG, kyoku=args.kyoku))
         return 0
     if args.name and args.games > 1:

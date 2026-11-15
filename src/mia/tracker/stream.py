@@ -88,6 +88,7 @@ from mia.mjai.events import (
     StartKyoku,
     Tsumo,
 )
+from mia.mjai.melds import valid_meld
 from mia.mjai.tiles import HONOR_ORDER, UNKNOWN, normalize_red
 from mia.tracker.hand import Move, OwnMove
 from mia.tracker.turns import Action, Step
@@ -338,6 +339,8 @@ class _Composer:
         )
         self.left = self._budget()
         self.events: list[MjaiEvent] = []
+        self._observed_discards: set[int] = set()
+        self._certain_discards: set[int] = set()
         self.moves = list(log.moves)
         self.calls = [0 for _ in range(_SEATS)]
         self.own_drops = 0
@@ -443,7 +446,7 @@ class _Composer:
         if step.action is Action.TSUMO:
             return self._tsumo(step, index)
         if step.action is Action.CALL:
-            return self._call(step)
+            return self._call(step, index)
         return self._dahai(step)
 
     def _tail(self) -> None:
@@ -456,6 +459,7 @@ class _Composer:
                 continue
             call = self._own_call(move)
             if call is None:
+                self.stalled = True
                 return
             self.moves.pop(0)
             self.events.append(call)
@@ -551,11 +555,17 @@ class _Composer:
                 return False
             move = self.moves.pop(0)
             self.events.append(Dahai(actor=0, pai=move.tiles[0], tsumogiri=move.tsumogiri))
+            self._observed_discards.add(len(self.events) - 1)
+            self._certain_discards.add(len(self.events) - 1)
         else:
             pai = self._discarded(step)
             self.sure = step.pai is not None and normalize_red(step.pai) == normalize_red(pai)
             tsumogiri = self._tsumogiri(step, reached=reached)
             self.events.append(Dahai(actor=step.actor, pai=pai, tsumogiri=tsumogiri))
+            if step.serial is not None or step.pai is not None or step.guess is not None:
+                self._observed_discards.add(len(self.events) - 1)
+            if self.sure:
+                self._certain_discards.add(len(self.events) - 1)
         if reached:
             self.events.append(ReachAccepted(actor=step.actor))
         return True
@@ -584,8 +594,11 @@ class _Composer:
             and len(self.moves[0].tiles) in (1, _COPIES)
             and self.moves[1].move is Move.DRAW
         ):
-            call = self._own_call(self.moves.pop(0))
-            assert call is not None
+            call = self._own_call(self.moves[0])
+            if call is None:
+                self.stalled = True
+                return
+            self.moves.pop(0)
             self.early_kans += isinstance(call, Ankan)
             self.events += [call, Tsumo(actor=0, pai=self.moves.pop(0).tiles[0])]
 
@@ -613,7 +626,7 @@ class _Composer:
 
     # -------------------------------------------------------------------- 鳴牌
 
-    def _call(self, step: Step) -> bool:
+    def _call(self, step: Step, position: int) -> bool:
         if step.actor == 0:
             called = bool(self.moves) and self.moves[0].move is Move.CALL
             if step.kan and self.early_kans and not called:
@@ -648,6 +661,12 @@ class _Composer:
             return False
         last = self.events[self._last_dahai()]
         assert isinstance(last, Dahai)
+        if self._unconfirmed_pon_is_draw(step, position, index, last):
+            # 排序器曾把副露動畫/余牌延遲當成碰牌,但沒有真的多出一組。
+            # 不消耗副露序號:之後真正確認的第一組仍然是第一組。
+            self.calls[step.actor] -= 1
+            self.events.append(Tsumo(actor=step.actor, pai=UNKNOWN))
+            return True
         if (
             index >= len(groups)
             and step.actor in self.log.meld_growing
@@ -663,12 +682,20 @@ class _Composer:
             self.events.append(Tsumo(actor=step.actor, pai=UNKNOWN))
             self.events.append(self._ankan(step.actor, known))
             return True
+        look = self.log.meld_looks.get((step.actor, index))
+        if not step.kan:
+            recovered = self._recover_pon_source(step, known, look)
+            if recovered is None:
+                return False
+            step = recovered
         step = self._unseen_call(step, known)
         known = self._agreeing(known)
         if step.kan:
-            self.events.append(self._open_kan(step, known))
+            kan = self._open_kan(step, known)
+            if kan is None:
+                return False
+            self.events.append(kan)
             return True
-        look = self.log.meld_looks.get((step.actor, index))
         meld = self._looked(step, look)
         if meld is None:
             if look is not None and look.pending:
@@ -677,9 +704,112 @@ class _Composer:
                 return False
             red_suits = self.log.meld_reds.get((step.actor, index), frozenset())
             sideways = (step.actor, index) in self.log.meld_sideways
-            meld = self._with_red(self._open_meld(step, known, sideways=sideways), red_suits)
+            meld = self._open_meld(step, known, sideways=sideways)
+            if meld is None:
+                return False
+            meld = self._with_red(meld, red_suits)
         self.events.append(meld)
         return True
+
+    def _unconfirmed_pon_is_draw(
+        self, step: Step, position: int, index: int, last: Dahai
+    ) -> bool:
+        """撤銷沒有畫面支持、且確定牌張數已排除的相鄰字牌碰。
+
+        屬於這一步的副露已確認時仍等畫面更正;跳家與數牌也不能只補一次摸牌。
+        只用確定的牌佔用名額,猜測把名額用光不能當成撤銷碰牌的證據。
+        20261024 東二局的假碰中曾在此擋住後面整整 23 張捨牌。
+        """
+        plain = normalize_red(last.pai)
+        excluded = (
+            not step.kan
+            and step.target == last.actor
+            and step.actor == (last.actor + 1) % _SEATS
+            and self._last_dahai() in self._certain_discards
+            and plain in HONOR_ORDER
+            and 0 <= self._budget()[plain] < 2
+        )
+        if not excluded:
+            return False
+        groups = self.log.melds[step.actor]
+        if index >= len(groups):
+            return (
+                (step.actor, index) not in self.log.meld_looks
+                and step.actor not in self.log.meld_growing
+            )
+        # 後來才確認的真碰不能倒灌到之前的假碰。下一次同家的鳴牌,若明確
+        # 鳴的是這組同牌、而非目前這張字牌,這組就是留給下一次的。
+        faces = groups[index]
+        if len(faces) != 3 or UNKNOWN in faces or _same_tile(list(faces), last.pai):
+            return False
+        for future in range(position + 1, len(self.steps)):
+            call = self.steps[future]
+            if call.action is not Action.CALL or call.actor != step.actor:
+                continue
+            source = self.steps[future - 1]
+            return (
+                not call.kan
+                and source.action is Action.DAHAI
+                and call.target == source.actor
+                and source.pai is not None
+                and _same_tile(list(faces), source.pai)
+            )
+        return False
+
+    def _recover_pon_source(
+        self, step: Step, known: list[str], look: MeldLook | None
+    ) -> Step | None:
+        """Repair a blocked pon only when its picture confirms an earlier source.
+
+        A guessed river cell can be a false observation, even with a serial.
+        Keep confident discards and every own action; only discard up to two
+        untrusted opponent turns between a matching certain tile and this call.
+        """
+        if look is None or len(known) != 3:
+            return step
+        tile = normalize_red(known[0])
+        if any(normalize_red(pai) != tile for pai in known):
+            return step
+        at = self._last_dahai()
+        if at in self._certain_discards or self._matching_copies(at, known, 2) is not None:
+            return step
+        source = None
+        for index in range(at - 1, max(0, at - 2 * (_SEATS - 2) - 1), -1):
+            event = self.events[index]
+            if isinstance(event, Dahai) and index in self._certain_discards:
+                if event.actor != step.actor and normalize_red(event.pai) == tile:
+                    source = index
+                break
+            if not isinstance(event, (Tsumo, Dahai)) or event.actor == 0:
+                break
+        if source is None:
+            return step
+        original, earlier = self.events[at], self.events[source]
+        assert isinstance(original, Dahai) and isinstance(earlier, Dahai)
+        if original.actor == step.actor:
+            return step
+        shapes = tuple(
+            MeldShape((tile,) * 3, _PON_SIDEWAYS[(event.actor - step.actor) % _SEATS])
+            for event in (original, earlier)
+        )
+        picked = look.pick(shapes)
+        if picked is None:
+            return None if look.pending else step
+        if picked.index != 1:
+            return step
+        released = Counter(
+            normalize_red(event.pai)
+            for event in self.events[source + 1:]
+            if isinstance(event, Dahai)
+        )
+        if self.left[tile] + released[tile] < 2:
+            return step
+        self.left.update(released)
+        self._observed_discards.difference_update(range(source + 1, len(self.events)))
+        self._certain_discards.difference_update(range(source + 1, len(self.events)))
+        del self.events[source + 1:]
+        self.sure = True
+        return replace(step, target=earlier.actor)
 
     def _looked(self, step: Step, look: MeldLook | None) -> Chi | Pon | None:
         """畫面比過候選的吃碰。還沒比完、差距不夠、沒什麼好選的,回 ``None``。
@@ -807,7 +937,8 @@ class _Composer:
         """自己的鳴牌。手上拿出去幾張就是哪一種;別人的牌要接在那張牌後面。"""
         tiles = list(move.tiles)
         if len(tiles) == _COPIES:
-            return Ankan(actor=0, consumed=sorted(tiles))
+            kan = Ankan(actor=0, consumed=sorted(tiles))
+            return kan if valid_meld(kan) else None
         if len(tiles) == 1:
             return Kakan(actor=0, pai=tiles[0], consumed=[normalize_red(tiles[0])] * 3)
         # 鳴的是宣言牌時,它後面還接著 reach_accepted。
@@ -815,24 +946,87 @@ class _Composer:
         last = self.events[at]
         if not isinstance(last, Dahai) or last.actor == 0:
             return None
+        if len(tiles) == 2 and normalize_red(tiles[0]) == normalize_red(tiles[1]):
+            source = self._own_pon_source(at, normalize_red(tiles[0]))
+            if source is None:
+                return None
+            at = source
+            last = self.events[at]
+            assert isinstance(last, Dahai)
         if len(tiles) == 3:
+            if len({normalize_red(tile) for tile in tiles}) != 1:
+                return None
             pai = self._called_by_me(at, [normalize_red(tiles[0])])
-            return Daiminkan(actor=0, target=last.actor, pai=pai, consumed=tiles)
+            return (
+                None if pai is None
+                else Daiminkan(actor=0, target=last.actor, pai=pai, consumed=tiles)
+            )
+        if len(tiles) != 2:
+            return None
         if normalize_red(tiles[0]) == normalize_red(tiles[1]):
             pai = self._called_by_me(at, [normalize_red(tiles[0])])
-            return Pon(actor=0, target=last.actor, pai=pai, consumed=tiles)
+            return None if pai is None else Pon(actor=0, target=last.actor, pai=pai, consumed=tiles)
         low, high = sorted(normalize_red(tile) for tile in tiles)
+        if (
+            last.actor != 3 or low in HONOR_ORDER or high in HONOR_ORDER
+            or low[1:] != high[1:]
+        ):
+            return None
         fitting = [t for run in _runs_with(low) if high in run for t in run if t not in (low, high)]
         pai = self._called_by_me(at, fitting)
-        return Chi(actor=0, target=last.actor, pai=pai, consumed=tiles)
+        return None if pai is None else Chi(actor=0, target=last.actor, pai=pai, consumed=tiles)
 
-    def _called_by_me(self, at: int, fitting: list[str]) -> str:
+    def _own_pon_source(self, at: int, tile: str) -> int | None:
+        """Resolve a fabricated intervening discard using the own meld's sideways tile.
+
+        Never remove an observed turn. Only an unobserved filler after an actual
+        matching discard is ambiguous; a normal last discard still needs no fit.
+        """
+        if at in self._observed_discards:
+            return at
+        options = [at]
+        for i in range(at - 1, 0, -1):
+            event = self.events[i]
+            if not isinstance(event, (Tsumo, Dahai)) or event.actor == 0:
+                break
+            if isinstance(event, Dahai) and i in self._observed_discards:
+                if normalize_red(event.pai) == tile:
+                    options.append(i)
+                break
+        if len(options) == 1:
+            return at
+        count = sum(
+            isinstance(e, (Chi, Pon, Daiminkan, Ankan)) and e.actor == 0
+            for e in self.events
+        )
+        look = self.log.meld_looks.get((0, count))
+        if look is None:
+            return None
+        shapes = []
+        for i in options:
+            event = self.events[i]
+            assert isinstance(event, Dahai)
+            shapes.append(MeldShape((tile, tile, tile), _PON_SIDEWAYS[event.actor]))
+        picked = look.pick(tuple(shapes))
+        if picked is None:
+            return None if look.pending else at
+        source = options[picked.index]
+        if source != at:
+            for event in self.events[source + 1:]:
+                if isinstance(event, Dahai):
+                    self.left[normalize_red(event.pai)] += 1
+            del self.events[source + 1:]
+        return source
+
+    def _called_by_me(self, at: int, fitting: list[str]) -> str | None:
         """自己鳴的那張牌。手上拿出去的牌來自手牌,比河裡那張可靠,對不上就聽手牌的。"""
         pai = self.events[at].pai  # type: ignore[attr-defined]
         if normalize_red(pai) in fitting:
             return pai
-        tile = max(fitting, key=lambda t: self.left[t])
-        return self._replace(at, tile) if self.left[tile] > 0 else pai
+        available = [tile for tile in fitting if self.left[tile] > 0]
+        if not available:
+            return None
+        return self._replace(at, max(available, key=lambda t: self.left[t]))
 
     def _ankan(self, actor: int, known: list[str]) -> Ankan:
         tile = known[0] if known else None
@@ -842,17 +1036,20 @@ class _Composer:
         self.left[normalize_red(tile)] -= _COPIES
         return Ankan(actor=actor, consumed=self._red_in_kan([tile] * _COPIES))
 
-    def _open_kan(self, step: Step, known: list[str]) -> Daiminkan:
+    def _open_kan(self, step: Step, known: list[str]) -> Daiminkan | None:
         """別家的大明槓。四張一樣,所以認到一張就夠了。"""
         assert step.target is not None
         at = self._last_dahai()
-        plain = normalize_red(self.events[at].pai)  # type: ignore[attr-defined]
-        tile = known[0] if known else plain
+        tile = self._matching_copies(at, known, _COPIES - 1)
+        if tile is None:
+            return None
         pai = self._replace(at, tile)
         consumed = self._red_in_kan([self._pick(tile) for _ in range(_COPIES - 1)], pai)
         return Daiminkan(actor=step.actor, target=step.target, pai=pai, consumed=consumed)
 
-    def _open_meld(self, step: Step, known: list[str], *, sideways: bool = False) -> Chi | Pon:
+    def _open_meld(
+        self, step: Step, known: list[str], *, sideways: bool = False
+    ) -> Chi | Pon | None:
         """別家的吃碰。``pai`` 是剛打出來的牌;牌面說不是的話聽牌面的。
 
         ``sideways`` 表示唯一認到的那張是橫放的,見 :attr:`KyokuLog.meld_sideways`。
@@ -879,13 +1076,28 @@ class _Composer:
             or plain in HONOR_ORDER
             or (known and known[0] in HONOR_ORDER)
         ):
-            tile = known[0] if known else plain
+            tile = self._matching_copies(at, known, 2)
+            if tile is None:
+                return None
             pai = self._replace(at, tile)
             consumed = [self._pick(tile), self._pick(tile)]
             return Pon(actor=step.actor, target=step.target, pai=pai, consumed=consumed)
-        pai, others = self._run(at, plain, known)
+        run = self._run(at, plain, known)
+        if run is None:
+            return None
+        pai, others = run
         consumed = [self._pick(tile) for tile in others]
         return Chi(actor=step.actor, target=step.target, pai=pai, consumed=consumed)
+
+    def _matching_copies(self, at: int, known: list[str], count: int) -> str | None:
+        """Reserve an entire matching meld; _pick's arbitrary fillers cannot be used."""
+        event = self.events[at]
+        assert isinstance(event, Dahai)
+        plain = normalize_red(event.pai)
+        wanted = [normalize_red(known[0]), plain] if known and event.actor != 0 else [plain]
+        return next(
+            (tile for tile in wanted if self.left[tile] >= count + (tile != plain)), None
+        )
 
     def _with_red(self, meld: Chi | Pon, red_suits: frozenset[str]) -> Chi | Pon:
         """畫面看到這組有赤五:把組裡的五換成赤的。
@@ -946,18 +1158,26 @@ class _Composer:
         self.events[at] = replace(event, pai=pai)
         return pai
 
-    def _run(self, at: int, plain: str, known: list[str]) -> tuple[str, list[str]]:
+    def _run(self, at: int, plain: str, known: list[str]) -> tuple[str, list[str]] | None:
         """吃的那一組:要含打出來的牌、也要含認到的牌面。"""
         shapes = _runs_with(plain)
         fitting = [run for run in shapes if set(known) <= set(run)]
         if not fitting and known:
             # 河裡的牌猜錯了。順子有一張是打出來的,剩下的認到了。
             whole = _run_of(known)
-            if whole is not None:
+            event = self.events[at]
+            if whole is not None and getattr(event, "actor", None) != 0 and all(
+                self.left[tile] > 0 for tile in whole
+            ):
                 tile = next(t for t in whole if t not in known[:2])
                 self._replace(at, tile)
                 return self.events[at].pai, [t for t in whole if t != tile]  # type: ignore[attr-defined]
-        run = max(fitting or shapes, key=lambda r: sum(self.left[t] for t in r if t != plain))
+        feasible = [run for run in fitting or shapes if all(
+            self.left[t] > 0 for t in run if t != plain
+        )]
+        if not feasible:
+            return None
+        run = max(feasible, key=lambda r: sum(self.left[t] for t in r if t != plain))
         return self.events[at].pai, [t for t in run if t != plain]  # type: ignore[attr-defined]
 
 
@@ -1043,6 +1263,8 @@ def _legal_length(events: list[MjaiEvent]) -> int:
         return all(hand[normalize_red(tile)] >= 0 for tile in tiles)
 
     for index, event in enumerate(events):
+        if not valid_meld(event):
+            return index
         drawn += isinstance(event, Tsumo)
         if drawn > _WALL:
             return index
@@ -1086,6 +1308,12 @@ def _runs_with(tile: str) -> list[tuple[str, str, str]]:
 
 def _run_of(tiles: list[str]) -> tuple[str, str, str] | None:
     """認到的牌湊出的那個順子,湊不出來回 ``None``。"""
-    if len(tiles) < 3:
+    if len(tiles) != 3:
         return None
-    return (tiles[0], tiles[1], tiles[2])
+    plain = sorted(normalize_red(tile) for tile in tiles)
+    if any(tile in HONOR_ORDER for tile in plain) or len({tile[1:] for tile in plain}) != 1:
+        return None
+    if any(len(tile) != 2 or tile[0] not in "123456789" for tile in plain):
+        return None
+    ranks = [int(tile[0]) for tile in plain]
+    return (plain[0], plain[1], plain[2]) if ranks == list(range(ranks[0], ranks[0] + 3)) else None

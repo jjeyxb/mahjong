@@ -26,11 +26,13 @@ def templates() -> TemplateSet:
     return TemplateSet.load_river()
 
 
-def _picture(templates: TemplateSet, tiles: list[str], sideways: int) -> MeldPicture:
+def _picture(
+    templates: TemplateSet, tiles: list[str], sideways: int, seat: str = SEAT
+) -> MeldPicture:
     """一組畫在桌布上的副露,由左而右 ``tiles``(雀魂記法),第 ``sideways`` 張橫放。"""
-    picture = MeldPicture(np.zeros((1440, 2560, 3), np.uint8), TABLE, SEAT, end=6.0)
+    picture = MeldPicture(np.zeros((1440, 2560, 3), np.uint8), TABLE, seat, end=6.0)
     picture.image[:] = FELT
-    size = _SIZES[SEAT][0]
+    size = _SIZES[seat][0]
     centres = picture.layout(len(tiles), sideways, (0.0, PITCH, 20.0))
     for index, (label, (cx, cy)) in enumerate(zip(tiles, centres, strict=True)):
         face = next(face for name, face in templates.scaled(size) if name == label)
@@ -43,6 +45,13 @@ def _picture(templates: TemplateSet, tiles: list[str], sideways: int) -> MeldPic
 
 
 class TestPick:
+    def test_own_pon_source_is_identified_by_the_sideways_tile(
+        self, templates: TemplateSet
+    ) -> None:
+        picture = _picture(templates, ["4z"] * 3, 2, seat="own")
+        found = pick(picture, [(["4z"] * 3, 1), (["4z"] * 3, 2)], templates)
+        assert found is not None and found.index == 1
+
     def test_the_opposite_seat_uses_five_and_seven_to_chi_six(
         self, templates: TemplateSet
     ) -> None:

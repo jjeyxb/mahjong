@@ -711,3 +711,27 @@ class TestStallWarnings:
         finally:
             logger.remove(sink)
         assert any("擷取一次花了" in m for m in messages)
+
+
+class TestSteppingByHand:
+    """重播工具不開執行緒,自己一幀一幀叫。見 ``tools/selfplay.py`` 的 ``--exact``。"""
+
+    def test_one_step_captures_one_frame(self, window: WindowInfo) -> None:
+        hand = _hand_image("hand_14_with_draw.png")
+        frame, roi = _frame_with_hand(window, hand)
+        backend = FakeBackend(window, [frame])
+        now = [10.0]
+        worker = VisionWorker(
+            UpdateBus(),
+            config=_config(roi),
+            backend=backend,
+            window=window,
+            recognize_hand=False,
+            sink=_Sink(),
+            clock=lambda: now[0],
+        )
+        assert worker.prepare()
+        assert worker.interval == pytest.approx(1.0 / _config(roi).capture.target_fps)
+        worker.step()
+        worker.step()
+        assert backend.calls == 2

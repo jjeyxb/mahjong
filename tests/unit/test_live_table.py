@@ -1374,3 +1374,53 @@ class TestHoldBehindALeaningTile:
         worker._leaning[3].clear()  # noqa: SLF001
         assert not self._held(worker)
 
+
+class TestSteppingByHand:
+    """重播工具不開執行緒,自己推進時鐘、一輪一輪叫。見 ``tools/selfplay.py`` 的 ``--exact``。"""
+
+    def test_the_injected_clock_is_the_one_it_reads(self, templates: TemplateSet) -> None:
+        now = [50.0]
+        worker = TableWorker(
+            UpdateBus(), config=load_config().roi, templates=templates, clock=lambda: now[0]
+        )
+        assert worker.prepare()
+        try:
+            assert worker._began == 50.0  # noqa: SLF001
+            now[0] = 53.0
+            assert worker._turn_clock() == pytest.approx(3.0)  # noqa: SLF001
+        finally:
+            worker.close()
+        assert not worker.status.alive
+
+    def test_a_new_hand_asks_for_an_early_read_once(self, templates: TemplateSet) -> None:
+        worker, _ = _worker(templates)
+        assert not worker.take_wake()
+        worker.offer_hand(["1m"] * 13)
+        assert worker.take_wake()
+        assert not worker.take_wake()
+
+    def test_background_work_goes_to_the_given_executor(self, templates: TemplateSet) -> None:
+        made: list[str] = []
+
+        class Pool(ThreadPoolExecutor):
+            def __init__(self, name: str) -> None:
+                super().__init__(max_workers=1)
+                made.append(name)
+
+        worker = TableWorker(
+            UpdateBus(), config=load_config().roi, templates=templates, executor=Pool
+        )
+        worker.close()
+        assert made == ["meld-faces", "meld-fit"]
+
+    def test_a_failed_round_does_not_escape(
+        self, templates: TemplateSet, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        worker, _ = _worker(templates)
+
+        def broken() -> None:
+            raise RuntimeError("壞了")
+
+        monkeypatch.setattr(worker, "tick", broken)
+        worker.safe_tick()
+        assert "壞了" in worker.status.read()

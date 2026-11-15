@@ -225,6 +225,151 @@ class TestOwn:
 class TestLegality:
     """引擎報錯一次就整場被移除,所以不合法的事件不能送出去。"""
 
+    def test_own_chi_cannot_take_the_opposite_players_discard(self) -> None:
+        moves = [OwnMove(Move.CALL, ("1m", "2m"))]
+        stream = compose(log(steps=[Step(T, 2), Step(D, 2, "3m")], moves=moves))
+        assert not any(isinstance(e, Chi) for e in stream.events)
+        assert stream.stalled
+
+    def test_a_malformed_own_kan_does_not_crash_composition(self) -> None:
+        moves = [OwnMove(Move.CALL, ("E", "E", "S", "S")), OwnMove(Move.DRAW, ("9p",))]
+        stream = compose(log(steps=[Step(D, 0, "9p")], moves=moves))
+        assert stream.stalled
+        assert not any(isinstance(e, Ankan) for e in stream.events)
+
+    def test_a_pon_without_two_available_copies_waits_instead_of_filling_honours(self) -> None:
+        steps = [Step(T, 1), Step(D, 1, "E"), Step(C, 2, target=1)]
+        melds = [[], [], [("E", "E", "E")], []]
+        stream = compose(log(steps=steps, melds=melds))
+        # Two E are already in TEHAI; three more visible E cannot form a pon.
+        assert stream.stalled
+        assert not any(isinstance(e, Pon) for e in stream.events)
+
+    def test_own_meld_sideways_position_can_remove_an_unobserved_intervening_turn(self) -> None:
+        class Look:
+            pending = False
+
+            def pick(self, shapes):
+                assert [s.sideways for s in shapes] == [1, 2]
+                return MeldPick(1, (False, False, False))
+
+        steps = [Step(T, 1), Step(D, 1, "N", serial=11), Step(T, 2), Step(D, 2)]
+        kyoku = log(steps=steps, moves=[OwnMove(Move.CALL, ("N", "N"))],
+                    meld_looks={(0, 0): Look()})
+        kyoku.tehai = (*TEHAI[:-2], "N", "N")
+        stream = compose(kyoku)
+        assert not stream.stalled
+        assert body(stream.events) == [Tsumo(1, "?"), Dahai(1, "N", False),
+                                       Pon(0, 1, "N", ["N", "N"])]
+
+    def test_own_pon_never_deletes_an_observed_intervening_turn(self) -> None:
+        class Look:
+            pending = False
+
+            def pick(self, _shapes):
+                raise AssertionError("an observed last discard needs no ambiguity fit")
+
+        steps = [Step(T, 1), Step(D, 1, "N", serial=11),
+                 Step(T, 2), Step(D, 2, "N", serial=11)]
+        kyoku = log(steps=steps, moves=[OwnMove(Move.CALL, ("N", "N"))],
+                    meld_looks={(0, 0): Look()})
+        kyoku.tehai = (*TEHAI[:-2], "N", "N")
+        stream = compose(kyoku)
+        assert len([e for e in stream.events if isinstance(e, Dahai)]) == 2
+        assert stream.events[-1] == Pon(0, 2, "N", ["N", "N"])
+
+    @pytest.mark.parametrize("guess", ["N", "F"])
+    def test_a_blocked_opponent_pon_recovers_its_picture_confirmed_source(self, guess) -> None:
+        class Look:
+            pending = False
+
+            def pick(self, shapes):
+                assert [s.sideways for s in shapes] == [2, 1]
+                assert all(s.tiles == ("F", "F", "F") for s in shapes)
+                return MeldPick(1, (False, False, False))
+
+        kyoku = self._blocked_opponent_pon(guess, Look())
+        stream = compose(kyoku)
+        assert not stream.stalled
+        assert body(stream.events) == [
+            Tsumo(0, "9p"), Dahai(0, "F", False),
+            Pon(2, 0, "F", ["F", "F"]), Dahai(2, "8s", False),
+            Tsumo(3, "?"), Dahai(3, "6s", False), Tsumo(0, "F"),
+        ]
+        # Composition must not rewrite the observations it was given.
+        assert kyoku.steps[6].target == 3
+        assert kyoku.steps[5].guess == guess
+
+    @staticmethod
+    def _blocked_opponent_pon(guess, look):
+        return KyokuLog(
+            hud=HUD, doras=[(0, "9m")],
+            tehai=(*TEHAI[:9], "N", "N", "N", "F"),
+            steps=[Step(T, 0), Step(D, 0, "F", serial=0),
+                   Step(T, 1), Step(D, 1),
+                   Step(T, 3), Step(D, 3, guess=guess, serial=1),
+                   Step(C, 2, target=3), Step(D, 2, "8s", serial=0),
+                   Step(T, 3), Step(D, 3, "6s", serial=2)],
+            moves=[OwnMove(Move.DRAW, ("9p",)), OwnMove(Move.DISCARD, ("F",)),
+                   OwnMove(Move.DRAW, ("F",))],
+            melds=[[], [], [("F", "F", "F")], []],
+            meld_looks={(2, 0): look},
+        )
+
+    @pytest.mark.parametrize("pending", [False, True])
+    def test_opponent_source_recovery_requires_a_picture_answer(self, pending) -> None:
+        class Look:
+            def pick(self, _shapes):
+                return None
+
+        look = Look()
+        look.pending = pending
+        stream = compose(self._blocked_opponent_pon("N", look))
+        assert stream.stalled
+        assert not any(isinstance(event, Pon) for event in stream.events)
+
+    def test_opponent_source_recovery_respects_the_original_source_when_chosen(self) -> None:
+        class Look:
+            pending = False
+
+            def pick(self, _shapes):
+                return MeldPick(0, (False, False, False))
+
+        stream = compose(self._blocked_opponent_pon("N", Look()))
+        assert stream.stalled
+        assert not any(isinstance(event, Pon) for event in stream.events)
+        assert sum(isinstance(event, Dahai) for event in stream.events) == 3
+
+    @pytest.mark.parametrize("confident_index", [3, 5])
+    def test_opponent_source_recovery_keeps_confident_intervening_discards(
+        self, confident_index
+    ) -> None:
+        class Look:
+            pending = False
+
+            def pick(self, _shapes):
+                raise AssertionError("a confident intervening discard must not be removed")
+
+        kyoku = self._blocked_opponent_pon("N", Look())
+        old = kyoku.steps[confident_index]
+        kyoku.steps[confident_index] = Step(D, old.actor, "6s", serial=1)
+        stream = compose(kyoku)
+        assert sum(isinstance(event, Dahai) for event in stream.events) >= 3
+        assert not any(isinstance(event, Pon) and event.target == 0 for event in stream.events)
+
+    def test_opponent_source_recovery_does_not_trust_an_incomplete_triplet(self) -> None:
+        class Look:
+            pending = False
+
+            def pick(self, _shapes):
+                raise AssertionError("one face is not evidence for changing the source")
+
+        kyoku = self._blocked_opponent_pon("N", Look())
+        kyoku.melds[2] = [("F", "?", "?")]
+        stream = compose(kyoku)
+        assert stream.stalled
+        assert not any(isinstance(event, Pon) for event in stream.events)
+
     def test_a_fifth_copy_in_own_tiles_stops_the_stream(self) -> None:
         """自己摸到的牌是確定的,換不掉 —— 只能停在這裡,等手牌修正。"""
         moves = [OwnMove(Move.DRAW, ("9m",))]
@@ -309,6 +454,100 @@ class TestOwnKans:
         stream = compose(kyoku)
         assert not stream.stalled
         assert [type(e) for e in body(stream.events)] == [Tsumo, Kakan, Tsumo, Dahai, Dora]
+
+
+class TestUnconfirmedPonRecovery:
+    """普通摸打被推成碰字牌後,晚到的確定牌面能恢復後段。"""
+
+    @staticmethod
+    def _log() -> KyokuLog:
+        return KyokuLog(
+            hud=HUD,
+            doras=[(0, "9m")],
+            tehai=("C", *TEHAI[1:]),
+            steps=[
+                Step(T, 3), Step(D, 3, "C", serial=0),
+                Step(T, 0), Step(D, 0, "C", serial=0),
+                Step(C, 1, target=0), Step(D, 1, "1s", serial=0),
+                Step(T, 2), Step(D, 2, "2p", serial=0),
+                Step(T, 3), Step(D, 3, "3p", serial=1),
+                Step(T, 0), Step(D, 0, "E", serial=1),
+                Step(T, 1), Step(D, 1, "C", serial=1),
+                Step(T, 2), Step(D, 2, "C", serial=1),
+            ],
+            moves=[
+                OwnMove(Move.DRAW, ("9p",)), OwnMove(Move.DISCARD, ("C",)),
+                OwnMove(Move.DRAW, ("9s",)), OwnMove(Move.DISCARD, ("E",)),
+            ],
+        )
+
+    def test_later_certain_tiles_retract_an_unconfirmed_pon_and_restore_the_tail(self) -> None:
+        kyoku = self._log()
+        stream = compose(kyoku)
+        assert not stream.stalled
+        assert not any(isinstance(e, Pon) for e in stream.events)
+        assert sum(isinstance(e, Dahai) for e in stream.events) == 8
+        assert [e.pai for e in stream.events if isinstance(e, Tsumo) and e.actor == 0] == [
+            "9p", "9s"
+        ]
+        assert stream.events[5:7] == (Tsumo(actor=1, pai="?"), Dahai(1, "1s", False))
+
+    @pytest.mark.parametrize("evidence", ["confirmed", "growing", "picture"])
+    def test_a_visible_or_growing_meld_is_never_reclassified(self, evidence: str) -> None:
+        kyoku = self._log()
+        if evidence == "confirmed":
+            kyoku.melds[1].append(("?", "?", "?"))
+        elif evidence == "growing":
+            kyoku.meld_growing.add(1)
+        else:
+            kyoku.meld_looks[1, 0] = _Look(None)
+        stream = compose(kyoku)
+        assert stream.stalled
+        assert stream.events[-1] == Dahai(0, "C", False)
+
+    def test_guessing_a_third_copy_is_not_evidence_against_the_call(self) -> None:
+        kyoku = self._log()
+        kyoku.readings[2, 1] = (None, "C")
+        kyoku.readings[1, 1] = (None, "C")
+        stream = compose(kyoku)
+        # Only two certain C are known. The other copies could still be in the pon.
+        assert Pon(1, 0, "C", ["C", "C"]) in stream.events
+
+    def test_a_jump_to_another_seat_cannot_be_repaired_with_one_draw(self) -> None:
+        kyoku = self._log()
+        kyoku.steps[4] = Step(C, 2, target=0)
+        stream = compose(kyoku)
+        assert stream.stalled
+        assert stream.events[-1] == Dahai(0, "C", False)
+
+    def test_a_numbered_tile_can_still_be_chi_when_pon_is_impossible(self) -> None:
+        kyoku = self._log()
+        kyoku.tehai = tuple("1m" if t == "C" else t for t in kyoku.tehai)
+        kyoku.steps = [
+            Step(s.action, s.actor, "1m" if s.pai == "C" else s.pai,
+                 s.guess, s.target, s.serial, s.kan)
+            for s in kyoku.steps
+        ]
+        kyoku.moves[1] = OwnMove(Move.DISCARD, ("1m",))
+        stream = compose(kyoku)
+        assert Chi(1, 0, "1m", ["2m", "3m"]) in stream.events
+
+    def test_a_later_real_pon_does_not_revive_the_earlier_false_call(self) -> None:
+        kyoku = self._log()
+        kyoku.tehai = (kyoku.tehai[0], "P", *kyoku.tehai[2:])
+        kyoku.steps += [
+            Step(T, 3), Step(D, 3, "3m", serial=2),
+            Step(T, 0), Step(D, 0, "P", serial=2),
+            Step(C, 1, target=0), Step(D, 1, "4p", serial=2),
+        ]
+        kyoku.moves += [OwnMove(Move.DRAW, ("2m",)), OwnMove(Move.DISCARD, ("P",))]
+        # This group belongs to the later call of P, not the impossible call of C.
+        kyoku.melds[1] = [("P", "P", "P")]
+        kyoku.meld_looks[1, 0] = _Look(None)
+        stream = compose(kyoku)
+        assert not stream.stalled
+        assert [e for e in stream.events if isinstance(e, Pon)] == [Pon(1, 0, "P", ["P", "P"])]
+        assert sum(isinstance(e, Dahai) for e in stream.events) == 11
 
 
 class TestNextUp:
@@ -728,7 +967,7 @@ class TestOtherMelds:
             Step(C, 2, target=1),
             Step(D, 2, "1p"),
             Step(T, 3),
-            Step(D, 3, "E"),
+            Step(D, 3, "N"),  # Two E in TEHAI cannot coexist with another player's E quad.
             Step(C, 1, target=3, kan=True),
             Step(T, 1),
             Step(D, 1, "3p"),

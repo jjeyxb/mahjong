@@ -23,13 +23,17 @@ from mia.vision.tiles.river import (
     CELL,
     CHECK_FACE_HEIGHT,
     COLUMNS,
+    CONFIDENT,
     DEFAULT_CORNERS,
     FACE,
     OVERFLOW,
     ROWS,
+    SEARCH_ABOVE,
+    SEARCH_ABOVE_LAST,
     SEARCH_BELOW,
     SEATS,
     SIDEWAYS_FACE,
+    SIDEWAYS_LEFT,
     SIDEWAYS_ROOM,
     SIDEWAYS_SHIFT,
     SLOTS,
@@ -44,6 +48,7 @@ from mia.vision.tiles.river import (
     row_end,
     search_window,
     settle_river_five,
+    side_spill,
     sideways_face_size,
     sideways_shift,
     slot,
@@ -675,7 +680,7 @@ def test_a_five_of_bamboo_leaning_right_on_the_lower_seat(templates: TemplateSet
     實際畫面裁下來的一格,已經含往右放寬的 6 像素。"""
     fixtures = Path(__file__).resolve().parents[1] / "fixtures"
     window = cv2.imread(str(fixtures / "river_5s_shimocha_right_edge.png"))
-    size = face_size(seat="shimocha", row=0)
+    size = face_size(seat="shimocha")
     slack = DEFAULT_CORNERS["shimocha"].right_slack
     assert classify_river_tile(window, templates, size=size).label == "5s"
     assert classify_river_tile(window[:, :-slack], templates, size=size).label != "5s"
@@ -699,6 +704,35 @@ class TestSidewaysSizes:
         flat = np.zeros((390, 580, 3), np.uint8)
         classify_sideways(flat, 0, _Rotated(), size=(88, 63))
         assert seen == [(88, 63)]
+
+
+class TestSidewaysLooksLeft:
+    """橫放的牌左緣比格線偏左,認是哪一張時搜尋窗要往左多看。見 ``SIDEWAYS_LEFT``。"""
+
+    def test_a_declared_three_man_on_the_upper_seat(self) -> None:
+        """實測上家第一列最後一格的宣言牌:窗從格線開始時讀成一萬(0.55)。
+
+        圖是攤平後的河,只留第一列那一段。
+        """
+        flat = cv2.imread(str(FIXTURES / "river_sideways_3m_kamicha.png"))
+        assert flat is not None
+        templates = TemplateSet.load_river()
+        size = DEFAULT_CORNERS["kamicha"].sideways_size
+        assert classify_sideways(flat, 5, templates, size=size).label == "3m"
+
+    def test_the_window_starts_left_of_the_cell(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        widths: list[int] = []
+
+        def spy(patch: np.ndarray, __: object, *, size: tuple[int, int]) -> Match:  # noqa: ARG001
+            widths.append(patch.shape[1])
+            return Match("3m", 0.8, "2m", 0.2)
+
+        monkeypatch.setattr("mia.vision.tiles.river.classify", spy)
+        flat = np.zeros((390, 580, 3), np.uint8)
+        classify_sideways(flat, 2, _Rotated())
+        classify_sideways(flat, 0, _Rotated())
+        full = round(CELL[0] * 1.4)
+        assert widths == [full + SIDEWAYS_LEFT, full]  # 第一欄左邊沒有東西可以看
 
 
 class TestSidewaysTwoMan:
@@ -747,21 +781,21 @@ class TestSidewaysTwoMan:
 
 
 @pytest.mark.parametrize(
-    ("filename", "seat", "row", "label", "use_river"),
+    ("filename", "size", "label", "use_river"),
     [
-        ("river_red_5m_kamicha_window.png", "kamicha", 0, "0m", True),
-        ("river_plain_5m_own_window.png", "own", 2, "5m", False),
-        ("river_red_5p_shimocha_window.png", "shimocha", 0, "0p", True),
+        ("river_red_5m_kamicha_window.png", face_size(seat="kamicha"), "0m", True),
+        # 自己第三列的這張是往上只看 8 像素時切的,牌面頂端不在圖裡,照當時的 66 x 78 比。
+        ("river_plain_5m_own_window.png", (66, 78), "5m", False),
+        ("river_red_5p_shimocha_window.png", face_size(seat="shimocha"), "0p", True),
     ],
 )
 def test_red_five_uses_the_matched_face(
-    filename: str, seat: str, row: int, label: str, use_river: bool
+    filename: str, size: tuple[int, int], label: str, use_river: bool
 ) -> None:
     """真實牌河的固定框曾經把赤五變普通五,也把普通五變成赤五。"""
     window = cv2.imread(str(FIXTURES / filename))
     assert window is not None
     templates = TemplateSet.load_river() if use_river else TemplateSet.load()
-    size = face_size(seat=seat, row=row)
     match = classify_river_tile(window, templates, size=size)
     assert settle_river_five(window, match, templates, size=size) == label
 
@@ -777,10 +811,88 @@ class _Rotated:
 
 
 class TestFaceSize:
-    def test_the_nearest_row_of_ones_own_river_is_shorter(self) -> None:
-        """自己第三列離鏡頭最近,攤平之後牌面反而矮。照一般尺寸讀只對七成。"""
-        assert face_size(seat="own", row=2) == (66, 78)
+    def test_only_the_far_seat_is_taller(self) -> None:
+        assert face_size(seat="own") == face_size(seat="kamicha") == face_size() == (64, 92)
+        assert face_size(seat="toimen") == (64, 104)
 
-    def test_other_rows_and_seats_are_unchanged(self) -> None:
-        assert face_size(seat="own", row=1) == face_size(seat="own")
-        assert face_size(seat="kamicha", row=2) == face_size(seat="kamicha")
+
+class TestLastRowSearch:
+    """第三列的牌面頂端在格子上面,往上要多看一點。見 ``SEARCH_ABOVE_LAST``。"""
+
+    def test_the_last_row_looks_further_up(self) -> None:
+        flat = np.zeros((ROWS * CELL[1] + SEARCH_BELOW, COLUMNS * CELL[0], 3), np.uint8)
+        last = Rect(CELL[0], 2 * CELL[1], *CELL)
+        plain = search_window(flat, last)
+        taller = search_window(flat, last, row=2)
+        assert taller.shape[0] - plain.shape[0] == SEARCH_ABOVE_LAST - SEARCH_ABOVE
+        assert taller.shape[1] == plain.shape[1]
+
+    def test_other_rows_are_unchanged(self) -> None:
+        flat = np.zeros((ROWS * CELL[1] + SEARCH_BELOW, COLUMNS * CELL[0], 3), np.uint8)
+        for row in (0, 1):
+            rect = Rect(CELL[0], row * CELL[1], *CELL)
+            assert search_window(flat, rect, row=row).shape == search_window(flat, rect).shape
+
+    def test_two_man_in_ones_own_last_row_is_not_read_as_one(self) -> None:
+        """實測的一格:往上只看 8 像素、用矮的模板時,有把握地讀成一萬。
+
+        圖是即時路徑切出來的搜尋窗(往上 24 像素),只有一張牌。
+        """
+        window = cv2.imread(str(FIXTURES / "river_own_row3_2m.png"))
+        assert window is not None
+        templates = TemplateSet.load()
+        match = classify_river_tile(window, templates, size=face_size(seat="own"))
+        assert match.label == "2m"
+        assert match.score >= CONFIDENT[0] and match.margin >= CONFIDENT[1]
+
+        before = classify_river_tile(
+            window[SEARCH_ABOVE_LAST - SEARCH_ABOVE :], templates, size=(66, 78)
+        )
+        assert before.label == "1m"
+        assert before.score >= CONFIDENT[0] and before.margin >= CONFIDENT[1]
+
+
+class TestSideSpill:
+    """前一張牌被抬起來時,側面與光框溢進下一格,那一格不是牌。圖都是攤平後的一整格。"""
+
+    CELL = Rect(0, 0, *CELL)
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "river_spill_glow.png",  # 自己能鳴的那張,外圍有淡綠色的光框
+            "river_spill_hover.png",  # 滑鼠停在同種牌上,那張牌放大、染成淡藍
+            "river_spill_lifted.png",  # 只看得到白色與橘色的側面
+        ],
+    )
+    def test_the_side_of_a_lifted_neighbour_is_not_a_tile(self, filename: str) -> None:
+        cell = cv2.imread(str(FIXTURES / filename))
+        assert cell is not None
+        assert side_spill(cell, self.CELL)
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "river_cell_8p.png",  # 畫滿圈的牌,牌面一半以上是深色
+            "river_cell_chun.png",  # 紅字不是橘色的側面
+            "river_cell_red5m.png",
+        ],
+    )
+    def test_a_real_tile_is_kept(self, filename: str) -> None:
+        cell = cv2.imread(str(FIXTURES / filename))
+        assert cell is not None
+        assert not side_spill(cell, self.CELL)
+
+    def test_cloth_and_a_plain_face_are_not_spill(self) -> None:
+        cloth = np.full((CELL[1], CELL[0], 3), _hsv(112, 139, 84), np.uint8)
+        paper = np.full((CELL[1], CELL[0], 3), 225, np.uint8)
+        assert not side_spill(cloth, self.CELL)
+        assert not side_spill(paper, self.CELL)
+
+    def test_a_side_with_a_tile_behind_it_is_kept(self) -> None:
+        """河中間的牌被抬起來時,壓到的是後面真的牌:直條右邊是牌面,那一格照樣要讀。"""
+        cell = np.full((CELL[1], CELL[0], 3), 225, np.uint8)
+        cell[:, 14:26] = _hsv(15, 200, 220)
+        assert not side_spill(cell, self.CELL)
+        cell[:, 26:] = _hsv(112, 139, 84)
+        assert side_spill(cell, self.CELL)
