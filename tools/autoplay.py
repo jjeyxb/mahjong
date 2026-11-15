@@ -772,6 +772,12 @@ _PAPER_LOW = (215, 230, 230)
 _CONFIRM_LOW, _CONFIRM_HIGH = (180, 150, 105), (240, 215, 170)
 #: 大廳的彈窗關了還在就再關,最多這麼多次,之後照常往下走、由各步的顏色檢查擋住。
 _POPUP_TRIES = 4
+#: 按了「簽到」之後一定接著「確認」,最多等這麼久。中間會演一段「獲得獎勵」,一條深色的帶子
+#: 橫過彈窗,這時兩種都認不出來。2026-11-16 第 7 天就是在帶子上判成「大廳沒有彈窗」,
+#: 接著在彈窗上按「友人場」。實測帶子演約 2.5 秒。
+_SIGNED_IN_WAIT = 10.0
+#: 等「確認」時多久看一次。
+_POPUP_POLL = 0.5
 
 #: 橘色按鈕,BGR 的範圍。實測選中的選項是 (70, 175, 255),「創建」是 (58, 154, 239),
 #: 沒選中的是藍灰色 (104, 77, 51),大廳同一個位置是 (54, 31, 142) 與 (203, 204, 221)。
@@ -928,6 +934,8 @@ class CpuRoomPilot:
     _deadline: float | None = field(default=None, repr=False)
     _retry_at: float | None = field(default=None, repr=False)
     _popup_tries: int = field(default=0, repr=False)
+    #: 按了「簽到」,在這之前還沒看到「確認」就繼續等,不往下按。
+    _confirm_until: float | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.schema is None:
@@ -1034,13 +1042,21 @@ class CpuRoomPilot:
         size = viewport(page)
         if image is None or size is None:
             return False
+        now = time.monotonic()
         for name, seen, (fx, fy) in _POPUPS:
             if seen(image):
                 self._popup_tries += 1
                 logger.info("開房間:大廳蓋著{},先關掉", name)
                 _press(page, int(size[0] * fx), int(size[1] * fy))
-                self._wait_until = time.monotonic() + _STEP_DELAY
+                self._wait_until = now + _STEP_DELAY
+                self._confirm_until = now + _SIGNED_IN_WAIT if seen is sign_in_open else None
                 return True
+        if self._confirm_until is not None:
+            if now < self._confirm_until:
+                self._wait_until = now + _POPUP_POLL
+                return True
+            logger.warning("開房間:簽到之後等不到「確認」,照常往下走")
+            self._confirm_until = None
         return False
 
     def _press_again(self, page: Page, stage: _Stage) -> None:

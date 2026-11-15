@@ -998,6 +998,85 @@ class TestOpeningARoom:
         self._go(pilot, page)
         assert pilot.failed
 
+    class _Screens(FakePage):
+        """依序回這些畫面,用完就停在最後一張。"""
+
+        def __init__(self, screens) -> None:
+            super().__init__()
+            self.screens = list(screens)
+
+        def screenshot(self, path=None):
+            import cv2
+
+            image = self.screens.pop(0) if len(self.screens) > 1 else self.screens[0]
+            data = cv2.imencode(".png", image)[1].tobytes()
+            if path is not None:
+                Path(path).write_bytes(data)
+            return data
+
+    @staticmethod
+    def _sign_in_screen(autoplay, button):
+        """米白底的簽到彈窗,``button`` 是下方按鈕的顏色。"""
+        import numpy as np
+
+        image = np.zeros((720, 1280, 3), np.uint8)
+        image[:] = (104, 77, 51)
+        spots = [(point, (240, 250, 250)) for point in autoplay._SIGN_IN_PAPER]  # noqa: SLF001
+        spots += [(point, button) for point in autoplay._SIGN_IN_ORANGE]  # noqa: SLF001
+        for (fx, fy), color in spots:
+            x, y = int(1280 * fx), int(720 * fy)
+            image[y - 8 : y + 8, x - 8 : x + 8] = color
+        return image
+
+    def _signing_in(self, autoplay, *, banner):
+        """簽到 → ``banner`` 張認不出來的「獲得獎勵」→ 確認 → 大廳。"""
+        import numpy as np
+
+        sign_in = self._sign_in_screen(autoplay, (70, 175, 255))
+        confirm = self._sign_in_screen(autoplay, (212, 183, 136))
+        dark = np.full((720, 1280, 3), 40, np.uint8)
+        lobby = np.zeros((720, 1280, 3), np.uint8)
+        lobby[:] = (70, 175, 255)
+        assert autoplay.sign_in_open(sign_in) and not autoplay.signed_in_open(sign_in)
+        assert autoplay.signed_in_open(confirm) and not autoplay.sign_in_open(confirm)
+        return self._Screens([sign_in, *[dark] * banner, confirm, lobby])
+
+    def test_the_reward_banner_is_not_the_lobby(self, autoplay, tmp_path) -> None:
+        """2026-11-16:簽到第 7 天,「獲得獎勵」的帶子上兩種彈窗都認不出來,就在彈窗上按了友人場。"""
+        pilot = self._pilot(autoplay, tmp_path)
+        page = self._signing_in(autoplay, banner=3)
+        self._go(pilot, page)
+        assert len(page.clicks) == 1, "按簽到"
+        for _ in range(3):
+            self._go(pilot, page)
+        assert len(page.clicks) == 1, "帶子還在演,不可以往下按"
+        self._go(pilot, page)
+        assert len(page.clicks) == 2, "按確認"
+        assert page.clicks[1] == page.clicks[0]
+        assert pilot._index == 0  # noqa: SLF001
+        self._go(pilot, page)
+        assert len(page.clicks) == 3
+        assert pilot._index == 1, "大廳乾淨了才按友人場"  # noqa: SLF001
+        assert not pilot.failed
+
+    def test_a_confirm_that_never_comes_does_not_hang(
+        self, autoplay, tmp_path, monkeypatch
+    ) -> None:
+        """等不到「確認」就照常往下走,由各步的顏色檢查擋住。"""
+        pilot = self._pilot(autoplay, tmp_path)
+        page = self._signing_in(autoplay, banner=50)
+        self._go(pilot, page)
+        clock = autoplay.time.monotonic() + autoplay._SIGNED_IN_WAIT + 1  # noqa: SLF001
+        monkeypatch.setattr(autoplay.time, "monotonic", lambda: clock)
+        self._go(pilot, page)
+        assert pilot._index == 1  # noqa: SLF001
+
+    def test_no_waiting_without_a_sign_in(self, autoplay, tmp_path) -> None:
+        pilot = self._pilot(autoplay, tmp_path)
+        page = self._Lobby(orange=True)
+        self._go(pilot, page)
+        assert pilot._index == 1  # noqa: SLF001
+
     def test_the_table_is_handed_to_the_bot(self, autoplay, tmp_path) -> None:
         pilot = self._pilot(autoplay, tmp_path)
         pilot.note(self._message(".lq.FastTest.authGame", None))
