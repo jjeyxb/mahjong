@@ -39,6 +39,7 @@ from mia.vision.tiles.river import (
     SLOTS,
     River,
     RiverView,
+    call_banner,
     classify_river_tile,
     classify_sideways,
     face_size,
@@ -646,6 +647,18 @@ def test_a_red_five_is_not_a_tile_back() -> None:
     assert is_face_up(face)
 
 
+@pytest.mark.parametrize("name", ["river_red_5p_face_own.png", "river_red_5p_face_dim.png"])
+def test_a_red_five_with_less_red_is_still_a_tile(name: str) -> None:
+    """有無判斷那一塊比裁過的牌面大,赤 5 筒的紅墨只有 0.5~0.6,過不了 ``WHOLE_RED``。
+
+    兩張都是錄影裡被當成牌背的那一格(091423 東1局5本場自己的河空了 9 秒)。
+    """
+    fixtures = Path(__file__).resolve().parents[1] / "fixtures"
+    face = cv2.imread(str(fixtures / name))
+    assert face is not None
+    assert is_face_up(face)
+
+
 class TestTheUpperSeatLeansLeft:
     """上家最後一欄的牌比格線偏左。實測那一欄 26/33,其他位置 94~100%。"""
 
@@ -850,6 +863,46 @@ class TestLastRowSearch:
         )
         assert before.label == "1m"
         assert before.score >= CONFIDENT[0] and before.margin >= CONFIDENT[1]
+
+
+class TestCallBanner:
+    """別家鳴牌的特效字蓋在牌河上,那一格不是牌。圖是攤平後的一整格(錄影裡上家的第 1 格)。"""
+
+    CELL = Rect(0, 0, *CELL)
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "river_banner_pon.png",  # 對家碰:青色的字
+            "river_banner_chi.png",  # 對家吃:薄荷綠的字
+        ],
+    )
+    def test_a_call_banner_is_not_a_tile(self, filename: str) -> None:
+        cell = cv2.imread(str(FIXTURES / filename))
+        assert cell is not None
+        assert call_banner(cell, self.CELL)
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "river_cell_8p.png",
+            "river_cell_chun.png",
+            "river_cell_red5m.png",
+            "river_spill_glow.png",  # 叫牌提示的淡綠光框
+            "river_spill_hover.png",  # 滑鼠停在同種牌上,染成淡藍
+        ],
+    )
+    def test_tiles_and_other_highlights_are_not_a_banner(self, filename: str) -> None:
+        cell = cv2.imread(str(FIXTURES / filename))
+        assert cell is not None
+        assert not call_banner(cell, self.CELL)
+
+    def test_haku_and_cloth_are_not_a_banner(self) -> None:
+        """白板平躺著染上桌子的藍(色相 104、飽和度 79),與碰的青色最接近。"""
+        haku = np.full((CELL[1], CELL[0], 3), _hsv(104, 79, 200), np.uint8)
+        cloth = np.full((CELL[1], CELL[0], 3), _hsv(112, 139, 84), np.uint8)
+        assert not call_banner(haku, self.CELL)
+        assert not call_banner(cloth, self.CELL)
 
 
 class TestSideSpill:

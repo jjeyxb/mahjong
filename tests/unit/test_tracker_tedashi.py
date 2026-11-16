@@ -52,6 +52,46 @@ class TestAlongTheLine:
         assert watcher.tsumogiri(3, later) is True
 
 
+class TestKamichaWithAMeld:
+    """上家有副露時,一幀「短了一大截」是手臂,不是空出一格。"""
+
+    SHORT = BackShape(242.0, False, 1, True)
+    SHORT_DRAWN = BackShape(242.0, True, 1, True)
+    #: 手臂蓋掉一大截,剩下近端一小段看起來像隔開的摸牌。
+    COVERED = BackShape(95.0, True, 1, True)
+    #: 空出一格。
+    HOLE = BackShape(218.0, True, 2, True)
+
+    @staticmethod
+    def _feed(watcher: TsumogiriWatcher, *shapes: BackShape) -> float:
+        now = 0.0
+        for shape in shapes:
+            watcher.observe(3, now, shape, melds=1)
+            now += 0.15
+        return now
+
+    def test_one_covered_look_is_not_a_hole(self) -> None:
+        watcher = TsumogiriWatcher()
+        now = self._feed(watcher, self.SHORT, self.SHORT_DRAWN, self.COVERED, self.SHORT)
+        assert watcher.tsumogiri(3, now) is True
+
+    def test_one_tile_missing_is_still_a_hole(self) -> None:
+        watcher = TsumogiriWatcher()
+        now = self._feed(watcher, self.SHORT, self.SHORT_DRAWN, self.HOLE, self.SHORT)
+        assert watcher.tsumogiri(3, now) is False
+
+    def test_two_covered_looks_count(self) -> None:
+        watcher = TsumogiriWatcher()
+        shapes = (self.SHORT, self.SHORT_DRAWN, self.COVERED, self.COVERED, self.SHORT)
+        now = self._feed(watcher, *shapes)
+        assert watcher.tsumogiri(3, now) is False
+
+    def test_without_a_meld_one_look_is_enough(self) -> None:
+        watcher = TsumogiriWatcher()
+        now = feed(watcher, 3, self.SHORT, self.SHORT_DRAWN, self.COVERED, self.SHORT)
+        assert watcher.tsumogiri(3, now) is False
+
+
 class TestInPieces:
     def test_two_whole_pieces_are_a_hole(self) -> None:
         watcher = TsumogiriWatcher()

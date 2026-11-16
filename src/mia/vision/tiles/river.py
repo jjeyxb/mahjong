@@ -40,7 +40,7 @@ import numpy as np
 
 from mia.utils.geometry import Rect
 from mia.vision.stats import median_u8
-from mia.vision.tiles.classify import WHOLE_RED, Match, TemplateSet, classify, red_ink, settle_five
+from mia.vision.tiles.classify import Match, TemplateSet, classify, red_ink, settle_five
 
 __all__ = [
     "CELL",
@@ -60,6 +60,7 @@ __all__ = [
     "SLOTS",
     "River",
     "RiverView",
+    "call_banner",
     "classify_river_tile",
     "classify_sideways",
     "face_coverage",
@@ -354,6 +355,19 @@ _DENSE_FACE = 0.4
 #:
 #: 色環是繞的,所以紅紫兩端都要含進來(接近 0 與接近 179 是同一個顏色)。
 _BACK_HUE = (90.0, 170.0)
+
+#: 紙夠多(:data:`_DENSE_FACE`)而墨水有這麼多是紅的,就是赤五或中,不是牌背。
+#:
+#: 原本用 :data:`~mia.vision.tiles.classify.WHOLE_RED`(0.8),那是在裁過的牌面上量的。
+#: 這裡量的是有無判斷用的那一塊,範圍比較大,赤 5 筒只有 0.48~0.72:28 份錄影 14632 張
+#: 捨牌裡有 6 張赤 5 筒因此被當成牌背、判成空格,一直到白光掃過把飽和度壓下來才算有牌。
+#: 錄影 selfplay-20261110-091423 東1局5本場空了 9 秒,後面兩張一起出現時第幾張對錯了位,
+#: 之後自己的五張摸牌全部錯開一手。
+#:
+#: 牌背與空格這一塊的紅墨幾乎是 0:同一批錄影每張捨牌的下一格裡,看起來像牌背的
+#: 678 格,95 百分位是 0。唯一超過 0.45 的是角色立繪的手(指甲是紅的),那一幀的河
+#: 本來就不連續、整家丟掉。
+_RED_FACE = 0.45
 
 #: :func:`face_patch` 往內裁幾像素。
 _FACE_TRIM = 6
@@ -1226,6 +1240,46 @@ def side_spill(flat: np.ndarray, cell: Rect) -> bool:
     return float(paper.mean()) < _SIDE_PAPER
 
 
+#: 鳴牌特效字的顏色:青色(碰,OpenCV 色相 91~98)與薄荷綠(吃,76~83),飽和度 50~100。
+_BANNER_HUE = (60, 100)
+_BANNER_SATURATION = 40
+#: 亮的像素至少佔一格的這麼多,而其中至少這麼多是特效的顏色。
+_BANNER_BRIGHT = 0.3
+_BANNER_SHARE = 0.7
+
+
+def call_banner(flat: np.ndarray, cell: Rect) -> bool:
+    """這一格被別家鳴牌的特效字(碰、吃)蓋住了。
+
+    對家一鳴牌,特效字有半秒多蓋在上家河的前兩格。被蓋住的格子夠亮、又不是橘的,判成有牌,
+    停穩兩輪就被當成上家的新捨牌收下(讀成 3p、S 之類)。上家那一手的序號因此被佔掉,真的牌
+    出現時事件流裡已經是假的那張。29 場錄影上家捨牌錯 17 張,有 8 張是這樣,全是第 1、2 張。
+
+    特效那一格的亮像素幾乎全是青綠色(0.88~1.0);真的牌面是象牙色,28 份錄影 14632 張捨牌
+    停穩後最高 0.49(索子的綠),白板 689 張最高 0.005。吃的特效蓋到第 2 格的那一段是奶油色,
+    這一格本身看不出來,所以上層要看整條河有沒有一格是特效,而不是只看要收的那一格。
+
+    跟 :func:`side_spill` 一樣只給「要不要收下新的一格」用,不改 :func:`read_river` 的有無判斷。
+    """
+    patch = flat[_face_of(cell, CELL).as_slice()]
+    if patch.size == 0:
+        return False
+    grey = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+    bright = grey > _OCCUPIED_MEDIAN
+    count = int(bright.sum())
+    if count < _BANNER_BRIGHT * bright.size:
+        return False
+    hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+    hue, saturation = hsv[:, :, 0], hsv[:, :, 1]
+    tint = (
+        bright
+        & (hue >= _BANNER_HUE[0])
+        & (hue <= _BANNER_HUE[1])
+        & (saturation >= _BANNER_SATURATION)
+    )
+    return float(tint.sum()) / count >= _BANNER_SHARE
+
+
 def is_face_up(patch: np.ndarray) -> bool:
     """這一塊是一張**翻開的牌**嗎 —— 不是桌布,也不是牌背。
 
@@ -1254,8 +1308,8 @@ def _face_up(patch: np.ndarray, grey: np.ndarray, hsv: np.ndarray) -> bool:
         return False
     # 赤五整張紅,中位數落在牌背的色相上:實測赤 5 筒因此被當成牌背,河中間一個洞,
     # 整家判成不連續。兩個條件要一起看:牌背也紅,但沒有紙。只看紙的話,動畫中的牌
-    # 與半張牌背會過關。
-    if dense and red_ink(patch, hsv=hsv) >= WHOLE_RED:
+    # 與半張牌背會過關。門檻見 :data:`_RED_FACE`。
+    if dense and red_ink(patch, hsv=hsv) >= _RED_FACE:
         return True
     return not _is_back(median_u8(hsv, 0), median_u8(hsv, 1))
 

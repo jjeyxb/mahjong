@@ -86,6 +86,7 @@ from mia.tracker.tedashi import HOLD, TsumogiriWatcher
 from mia.utils.geometry import Rect
 from mia.utils.logging import logger
 from mia.vision.hud import Hud, HudDigits, read_hud, read_turn, read_wall
+from mia.vision.riichi import kamicha_riichi
 from mia.vision.roi import MissingRoiError, RoiSet
 from mia.vision.tiles.backs import read_backs
 from mia.vision.tiles.classify import (
@@ -111,6 +112,7 @@ from mia.vision.tiles.river import (
     DEFAULT_CORNERS,
     SEATS,
     River,
+    call_banner,
     classify_river_tile,
     classify_sideways,
     face_patch,
@@ -202,8 +204,10 @@ _OPENING_WALL = (70, 69)
 #: 河裡多一張之後,等手牌跟上幾輪。見 ``_catch_up_own``。
 _OWN_PATIENCE = 2
 
-#: 自己的河最多比手牌交代的多幾張。手牌會慢一兩手,再多就不是牌了。見 ``_own_river_covered``。
-_OWN_RIVER_LEAD = 2
+#: 自己的河最多比手牌交代的多幾張,再多就不是牌了。見 ``_own_river_covered``。平常是河比手牌慢
+#: (河要等牌落下才讀),只有摸切快到手牌沒讀到時河才會多一張。原本給 2,吃牌的選擇框剛好蓋出
+#: 兩張假牌時就過了:113550 西1局排出一次不存在的「摸白、打白」,那次吃也排不進去。
+_OWN_RIVER_LEAD = 1
 
 #: 河裡那張手上也有時,等幾輪。多半是從手牌打出去的,新的手牌讀數只是還沒到,先補的話
 #: 讀數一到,同一次摸打就記了兩次(實測一局 13 手有 9 手因此晚一輪)。但手上有同一張
@@ -666,6 +670,7 @@ class TableWorker(threading.Thread):
         flats = [DEFAULT_CORNERS[seat].rectify(image, table) for seat in SEATS]
         rivers = [read_river(flat) for flat in flats]
         self._watch_backs(image, table)
+        self._watch_riichi(image, table)
         completed = self._faces_ready.is_set()
         if completed:
             self._faces_ready.clear()
@@ -748,14 +753,27 @@ class TableWorker(threading.Thread):
         self._last_round = now
         return True
 
+    def _watch_riichi(self, image: np.ndarray, table: Rect) -> None:
+        """上家的「立直」特效字。每次看河都看:它只停 0.6 秒,而整輪不一定每幀都走。
+
+        特效字出現時宣言牌還沒落下,所以立直記在上家的**下一張**捨牌上,宣言牌一排進事件流
+        就帶著立直,一定排在自己摸牌之前。點數那條路要等自己摸牌時才扣,平均晚 0.7 秒,
+        見 :mod:`mia.vision.riichi`。之後橫放牌找到確切的那一張會蓋過去。
+        """
+        if self._kyoku.empty or _KAMICHA in self._reach_marks:
+            return
+        if kamicha_riichi(image, table):
+            self._declare_reach(_KAMICHA, self._rivers.thrown(_KAMICHA))
+
     def _watch_backs(self, image: np.ndarray, table: Rect) -> None:
         """量三家手牌的牌背,每次看河都量:手切的樣子只維持一秒左右。三家約 3 毫秒。"""
         if self._kyoku.empty:
             return
         now = self._clock()
         for position, seat in enumerate(SEATS[1:], 1):
-            shape = read_backs(image, table, seat, self._melds.groups[position])
-            self._tedashi.observe(position, now, shape)
+            melds = self._melds.groups[position]
+            shape = read_backs(image, table, seat, melds)
+            self._tedashi.observe(position, now, shape, melds)
             for key, (seen_at, before) in self._seen_tsumogiri.items():
                 if (
                     key[0] != position or key in self._tsumogiri
@@ -821,6 +839,8 @@ class TableWorker(threading.Thread):
         river = self._shifted(position, flat, river)
         if is_skin(face_patch(flat, river.cells[known])) or side_spill(flat, river.cells[known]):
             return False
+        if self._bannered(flat, river):
+            return False
         pai, _ = self._read_cell(position, flat, river, known)
         return pai not in (UNKNOWN, _HAKU)
 
@@ -860,6 +880,12 @@ class TableWorker(threading.Thread):
         if len(filled) < len(known):
             # 被鳴走的一定是最後打的那張,前面的牌沒有動。被蓋住的話,讀回來時像素一樣,不必重認。
             del known[len(filled) :]
+            sideways = self._sideways[position]
+            if sideways is not None and sideways >= len(filled):
+                # 橫放的宣言牌被鳴走了。照規則他的下一張改成橫放,那一張由 _mark_declared 重新標;
+                # 留著舊的位置的話,新的橫放牌落在同一格時不會挪格線,一張被當成兩格。錄影
+                # human-20261103-121943 東1局:上家宣言牌 8s 被鳴走,下一張 6s 被讀成 8p。
+                self._sideways[position] = None
             self._unsteady[position] = {k for k in self._unsteady[position] if k < len(filled)}
             self._uncertain_until[position] = {
                 k: until for k, until in self._uncertain_until[position].items() if k < len(filled)
@@ -879,6 +905,11 @@ class TableWorker(threading.Thread):
             return
 
         fresh = [k for k in filled if k >= len(known)] if len(known) else list(filled)
+        if fresh and self._bannered(flat, river):
+            # 別家鳴牌的特效字蓋在這條河上,多出來的格子是特效,不是牌。等它消失,見
+            # mia.vision.tiles.river.call_banner。
+            self._emit(position, known)
+            return
         # 整條重認(剛接上、立直之後)不必防白光:那不是白光掃過的時機。
         incremental = bool(known)
         for cell in fresh:
@@ -932,7 +963,10 @@ class TableWorker(threading.Thread):
                 break
             self._haku[position] = None
             known.append(pai)
-            if not steady or pai == UNKNOWN:
+            # 收下的白也要停穩之後再看一次:角色的手拿著牌放進河裡時,牌斜著露出空白的一面,手跟
+            # 牌一起停兩幀(0.05 秒)就算停穩,「白要看兩次」也過了。錄影 153513 東2局上家的 8m
+            # 這樣被收成白,之後沒有重讀。真的白再讀一次還是白,不改任何東西。
+            if not steady or pai in (UNKNOWN, _HAKU):
                 self._unsteady[position].add(cell)
             if pai == UNKNOWN:
                 self._uncertain_until[position][cell] = self._clock() + _UNCERTAIN_RETRY
@@ -963,6 +997,14 @@ class TableWorker(threading.Thread):
             return True
         self._lean_wait[position] = (cell, wait[1], now)
         return now - wait[1] < _LEAN_HOLD
+
+    @staticmethod
+    def _bannered(flat: np.ndarray, river: River) -> bool:
+        """這條河有一格被鳴牌的特效字蓋住。
+
+        要看整條:吃的特效蓋到下一格的那段是奶油色,那一格本身看起來像牌紙。
+        """
+        return any(call_banner(flat, river.cells[cell]) for cell in river.filled)
 
     def _shifted(self, position: int, flat: np.ndarray, river: River) -> River:
         """這一家有橫放牌的話,換成讓開它的格線。"""
@@ -1251,7 +1293,11 @@ class TableWorker(threading.Thread):
         # 照補的話憑空多一手,實測手牌之後每一手都晚一輪,最後余牌對不上,那一局 40 手沒有建議。
         called = bool(self._own.moves) and self._own.moves[-1].move is Move.CALL
         passed = not discards or called or self._rivers.thrown(_KAMICHA) > self._kamicha_then
-        self._own_behind = self._own_behind + 1 if thrown > discards and passed else 0
+        # 漏掉的摸切一次只會多一張:兩次摸牌之間隔著三家,手牌早就跟上了。一次多兩張以上的是吃牌的
+        # 選擇框蓋在河上(兩張還過得了 _OWN_RIVER_LEAD):113550 西1局補出一次不存在的摸切打白,
+        # 那次吃又排不進去。
+        behind = thrown == discards + 1 and passed
+        self._own_behind = self._own_behind + 1 if behind else 0
         # 要的是手牌還沒交代的那一張,不是河裡最新的那張:手牌可能已經又落後一手。
         pai, guess = self._readings.get((0, discards), (None, None))
         tile = pai or guess

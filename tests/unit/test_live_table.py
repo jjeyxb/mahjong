@@ -613,9 +613,14 @@ class TestTheChiChooser:
         assert worker._own_river_covered(17)  # noqa: SLF001
 
     def test_the_hand_being_a_step_behind_is_normal(self, templates: TemplateSet) -> None:
+        """摸切快到手牌沒讀到:河多一張。"""
         worker = self._worker(templates, 13)
         assert not worker._own_river_covered(14)  # noqa: SLF001
-        assert not worker._own_river_covered(15)  # noqa: SLF001
+
+    def test_two_more_is_already_the_box(self, templates: TemplateSet) -> None:
+        """選擇框只有兩種組合時剛好蓋出兩張(113550 西1局)。"""
+        worker = self._worker(templates, 13)
+        assert worker._own_river_covered(15)  # noqa: SLF001
 
     def test_without_any_moves_it_says_nothing(self, templates: TemplateSet) -> None:
         """中途接上時手牌什麼都不知道,不能拿它擋。"""
@@ -873,6 +878,42 @@ class TestRevisit:
         assert worker._rivers.rivers[1] == ["6s"]  # noqa: SLF001
         assert not worker._unsteady[1]  # noqa: SLF001
 
+    def test_a_white_tile_taken_as_steady_is_read_again_after_it_lands(
+        self, templates: TemplateSet, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """手拿著牌放進河裡,斜著露出空白的一面,手跟牌一起停兩幀就算停穩,被收成白。
+        錄影 153513 東2局上家的 8m 就是這樣,之後沒有重讀。"""
+        worker, _ = _worker(templates)
+        worker._began = 1.0  # noqa: SLF001
+        worker._still[1] = {0}  # noqa: SLF001
+        worker._haku[1] = 0  # noqa: SLF001
+        read = Mock(side_effect=[("P", "P"), ("8m", "8m")])
+        monkeypatch.setattr(worker, "_read_cell", read)
+        river = TestLanding._river(0)  # noqa: SLF001
+        flat = np.zeros((200, 200, 3), np.uint8)
+        worker._read_seat(1, flat, river)  # noqa: SLF001
+        assert worker._known[1] == ["P"]  # noqa: SLF001
+        assert worker._unsteady[1] == {0}  # noqa: SLF001
+        worker._read_seat(1, flat, river)  # noqa: SLF001
+        assert worker._known[1] == ["8m"]  # noqa: SLF001
+        assert worker._readings[(1, 0)] == ("8m", "8m")  # noqa: SLF001
+        assert not worker._unsteady[1]  # noqa: SLF001
+
+    def test_a_real_white_tile_stays_white(
+        self, templates: TemplateSet, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        worker, _ = _worker(templates)
+        worker._began = 1.0  # noqa: SLF001
+        worker._still[1] = {0}  # noqa: SLF001
+        worker._haku[1] = 0  # noqa: SLF001
+        monkeypatch.setattr(worker, "_read_cell", lambda *_: ("P", "P"))
+        river = TestLanding._river(0)  # noqa: SLF001
+        flat = np.zeros((200, 200, 3), np.uint8)
+        worker._read_seat(1, flat, river)  # noqa: SLF001
+        worker._read_seat(1, flat, river)  # noqa: SLF001
+        assert worker._known[1] == ["P"]  # noqa: SLF001
+        assert not worker._unsteady[1]  # noqa: SLF001
+
     def test_a_weak_revisit_does_not_erase_a_confirmed_tile(
         self, templates: TemplateSet, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1022,6 +1063,71 @@ class TestTheDeclaredTileBeforeThePoints:
     ) -> None:
         pai, guess = self._guess(templates, monkeypatch, Match("7p", 0.4, "8p", 0.4))
         assert (pai, guess) == ("?", "3m")
+
+
+class TestTheRiichiBanner:
+    """上家的「立直」特效字出現時宣言牌還沒落下:立直記在他的下一張捨牌上。"""
+
+    @staticmethod
+    def _worker(
+        templates: TemplateSet, monkeypatch: pytest.MonkeyPatch, seen: bool
+    ) -> TableWorker:
+        worker, _ = _worker(templates)
+        monkeypatch.setattr("mia.live.table.kamicha_riichi", lambda *_: seen)
+        worker._kyoku.empty = False  # noqa: SLF001
+        worker._rivers._thrown[3] = 5  # noqa: SLF001
+        return worker
+
+    def test_the_next_discard_is_the_declared_tile(
+        self, templates: TemplateSet, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        worker = self._worker(templates, monkeypatch, seen=True)
+        worker._watch_riichi(np.zeros((10, 10, 3), np.uint8), TABLE)  # noqa: SLF001
+        assert worker._reach_marks == {3: 5}  # noqa: SLF001
+        assert worker._table.players[3].reach  # noqa: SLF001
+
+    def test_it_is_marked_once(
+        self, templates: TemplateSet, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """特效字停 0.6 秒,宣言牌落下之後還看得到,那時不能再往後挪一張。"""
+        worker = self._worker(templates, monkeypatch, seen=True)
+        frame = np.zeros((10, 10, 3), np.uint8)
+        worker._watch_riichi(frame, TABLE)  # noqa: SLF001
+        worker._rivers._thrown[3] = 6  # noqa: SLF001
+        worker._watch_riichi(frame, TABLE)  # noqa: SLF001
+        assert worker._reach_marks == {3: 5}  # noqa: SLF001
+
+    def test_no_banner_no_riichi(
+        self, templates: TemplateSet, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        worker = self._worker(templates, monkeypatch, seen=False)
+        worker._watch_riichi(np.zeros((10, 10, 3), np.uint8), TABLE)  # noqa: SLF001
+        assert worker._reach_marks == {}  # noqa: SLF001
+        assert not worker._table.players[3].reach  # noqa: SLF001
+
+
+class TestTheDeclaredTileCalledAway:
+    """橫放的宣言牌被鳴走:他的下一張改成橫放,舊的位置要放掉。"""
+
+    def test_the_old_position_is_dropped(self, templates: TemplateSet) -> None:
+        worker, _ = _worker(templates)
+        worker._known[3] = ["1m"] * 6 + ["?"]  # noqa: SLF001
+        worker._sideways[3] = 6  # noqa: SLF001
+        flat = np.full((200, 200, 3), 200, np.uint8)
+        worker._read_seat(3, flat, TestLanding._river(*range(6)))  # noqa: SLF001
+        assert worker._known[3] == ["1m"] * 6  # noqa: SLF001
+        assert worker._sideways[3] is None  # noqa: SLF001
+
+    def test_a_tile_called_from_after_it_keeps_the_position(
+        self, templates: TemplateSet
+    ) -> None:
+        """宣言牌之後的牌被鳴走,宣言牌還在,格線照舊挪著。"""
+        worker, _ = _worker(templates)
+        worker._known[3] = ["1m"] * 4 + ["?", "2m", "3m"]  # noqa: SLF001
+        worker._sideways[3] = 4  # noqa: SLF001
+        flat = np.full((200, 200, 3), 200, np.uint8)
+        worker._read_seat(3, flat, TestLanding._river(*range(6)))  # noqa: SLF001
+        assert worker._sideways[3] == 4  # noqa: SLF001
 
 
 class TestUrgentReadsOfAFlyingTile:
@@ -1212,6 +1318,16 @@ class TestAFlashOverOnesOwnRiver:
         for _ in range(6):
             worker._catch_up_own()  # noqa: SLF001
         assert worker._own.moves[-1] == OwnMove(Move.DISCARD, ("C",), tsumogiri=True)  # noqa: SLF001
+
+    def test_two_at_once_are_the_chi_choices(self, templates: TemplateSet) -> None:
+        """吃牌的選擇框蓋在河上,一次多出兩張:不是漏掉的摸切。"""
+        worker = self._after_a_discard(templates)
+        worker._rivers.observe(0, ["P", "C"])  # noqa: SLF001
+        worker._rivers.observe(0, ["P", "C", "3s"])  # noqa: SLF001
+        worker._rivers.observe(3, ["1s"])  # noqa: SLF001
+        for _ in range(6):
+            worker._catch_up_own()  # noqa: SLF001
+        assert len(worker._own.moves) == 2  # noqa: SLF001
 
     def test_a_tile_that_vanished_with_nobody_calling_never_was(
         self, templates: TemplateSet

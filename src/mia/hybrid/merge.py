@@ -19,12 +19,15 @@
    * 別家的段落用 YOLO,除非 YOLO 在那一段落後太多(:data:`LAG_OK`):那是 YOLO 卡住、整局錯位。
    * 樣板有吃碰、YOLO 整段什麼都沒有,用樣板。被立刻鳴走的牌只在河裡停一下,YOLO 要牌停穩才收,
      捨牌、鳴牌、鳴後打的那張整段都不在;樣板的假吃碰則是 YOLO 在同一個位置看到那家照常摸打。
-     夾著摸牌的那段不算(:func:`_called_away`):鳴牌取代了摸牌。
+     夾著摸牌的那段不算(:func:`_called_away`):鳴牌取代了摸牌。但被鳴的那張捨牌也在段裡的話
+     還是用樣板(:func:`_snatched`):YOLO 沒看到那張,有時連之後幾家照常的摸打都一起跳過,
+     有時把那家下一張捨牌當成這一張。
      立直成立也一樣:立直棒放上桌之前 YOLO 不送。樣板有槓、YOLO 那段沒有槓、整局那家的槓也比樣板少
      (:func:`_missed_kans`),也用樣板。
 
 3. 最後一個一致點之後用樣板:YOLO 還沒追上,不等它,建議的速度由樣板決定。
-4. 拼起來會被引擎拒收的(:func:`plausible`),一段一段換,換了會拒收的那段退回樣板。
+4. 拼起來會被引擎拒收的(:func:`plausible`),或輪次接不上的地方比樣板多的(:func:`_turn_breaks`),
+   先試只退一段,不行再一段一段換,換了不合理的那段退回樣板。
 
 離線用七份錄影的兩條事件流驗證,自己的回合建議與封包相同:樣板 697、YOLO 688、合併 702 / 705;
 出牌那一刻看得到的建議:686、645、692。YOLO 再慢 1 秒,合併仍有 701 / 690。
@@ -38,6 +41,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
+from itertools import pairwise
 
 from mia.mjai.events import (
     Ankan,
@@ -255,6 +259,7 @@ def merge(
         )
         # 立直棒放上桌之前 YOLO 不送立直成立,樣板已經有了:YOLO 是還沒看到,不是看到沒有。
         flash = flash or (not theirs and all(isinstance(event, ReachAccepted) for event in mine))
+        flash = flash or (_snatched(mine) and not any(isinstance(e, _CALLS) for e in theirs))
         late = y.seen[j2] - t.seen[i2] > lag_ok
         repaired = (
             any(not valid_meld(event) for event in mine)
@@ -272,19 +277,40 @@ def merge(
             reason = "yolo"
         if stats is not None:
             stats[reason] += 1
+    # 樣板自己的事件流也偶爾有輪次斷點(漏讀一手),只擋換了之後多出來的。
+    breaks = _turn_breaks(t.events)
+
+    def fits(events: Sequence[MjaiEvent]) -> bool:
+        return plausible(events) and _turn_breaks(events) <= breaks
+
     use: Sequence[int] = range(len(pieces))
     merged = _assemble(pieces, use)
-    if not plausible(merged):
-        # 拼起來不合理:一段一段換,換了會不合理的那段退回樣板。實測 YOLO 把上家一張 8p 讀成 E,
-        # E 變 5 張;整條退回的話,同一局 YOLO 讀對、樣板讀錯的另一張也跟著丟了。
+    if not fits(merged):
+        # 拼起來不合理:先試只退一段樣板(從後面試起),不行再一段一段換,換了會不合理的那段
+        # 退回樣板。實測 YOLO 把上家一張 8p 讀成 E,E 變 5 張;整條退回的話,同一局 YOLO 讀對、
+        # 樣板讀錯的另一張也跟著丟了。先試只退一段是因為有的修正要一起換:樣板晚讀一巡的槓,
+        # YOLO 那邊是「放進對的位置」與「刪掉晚讀的那個」兩段,只放進來是兩個槓,只刪掉槓就不見了
+        # (053001 西2局3本場,同一局後面還有一段被輪次擋下來)。
+        corrections = [index for index, (_, theirs) in enumerate(pieces) if theirs is not None]
+        rest = next(
+            (
+                kept
+                for dropped in reversed(corrections)
+                if fits(_assemble(pieces, kept := [i for i in corrections if i != dropped]))
+            ),
+            None,
+        )
         chosen: list[int] = []
-        for index, (_, correction) in enumerate(pieces):
-            if correction is None:
-                continue
-            if plausible(_assemble(pieces, [*chosen, index])):
-                chosen.append(index)
-            elif stats is not None:
+        if rest is not None:
+            chosen = rest
+            if stats is not None:
                 stats["implausible"] += 1
+        else:
+            for index in corrections:
+                if fits(_assemble(pieces, [*chosen, index])):
+                    chosen.append(index)
+                elif stats is not None:
+                    stats["implausible"] += 1
         use = chosen
         merged = _assemble(pieces, use)
     if found is not None and differing:
@@ -374,6 +400,27 @@ def _called_away(events: Sequence[MjaiEvent]) -> bool:
     return True
 
 
+def _snatched(events: Sequence[MjaiEvent]) -> bool:
+    """這段裡有一張捨牌打出來就被鳴走:捨牌與鳴它的那個事件都在段裡。
+
+    YOLO 要牌停穩才收,這張牌它看不到,後面就接不上,有時整段跳過,連之後幾家照常的摸打都沒有。
+    夾著別的摸牌所以不算 :func:`_called_away`,整段刪掉的話那幾張真的捨牌也一起不見:
+    053001 東3局上家打白、下家馬上碰,實際速度重播 5 次有 2 次整段被刪,漏 3 張捨牌與那組碰。
+    樣板的假吃碰不一樣:被鳴的那張在段外、YOLO 也讀到了(091423 東2局1本場)。
+
+    YOLO 那段不是空的也一樣,只要它那段沒有鳴牌:被鳴走的牌會從河上拿掉,YOLO 把那家下一張
+    捨牌當成這一張,鳴牌那家當成照常摸打(164613 南4局1本場下家 5s 被對家吃,YOLO 讀成下家打 4p、
+    對家摸打)。二十六份記錄裡這種段落 11 次,封包裡全是樣板那段。
+    """
+    return any(
+        isinstance(event, Dahai)
+        and isinstance(after, _CALLS)
+        and after.target == event.actor
+        and normalize_red(after.pai) == normalize_red(event.pai)
+        for event, after in pairwise(events)
+    )
+
+
 def _missed_kans(template: Sequence[MjaiEvent], yolo: Sequence[MjaiEvent]) -> set[int]:
     """YOLO 整局讀到的槓比樣板少的那幾家。
 
@@ -443,6 +490,45 @@ def _assemble(
     for index, (mine, theirs) in enumerate(pieces):
         out.extend(theirs if index in use and theirs is not None else mine)
     return tuple(out)
+
+
+def _turn_breaks(events: Sequence[MjaiEvent]) -> int:
+    """輪次接不上的地方有幾處:捨牌前面不是那家的摸牌、立直或吃碰,摸牌前面不是上一家打完或
+    自己槓完,鳴牌前面不是被鳴那家的捨牌。翻寶牌不看,排在嶺上摸牌前後都可以。
+
+    兩邊對齊時,一邊漏掉一大段的話,漏掉之後碰巧一樣的那個事件會被當成一致點:實際速度重播
+    053001 西2局3本場,YOLO 漏了下家立直前的十幾個事件,只剩「立直宣言」與之後對家打的 3m,
+    宣言被當成一致點,下家的宣言牌、立直成立與之後兩家的摸打被當成「YOLO 那段是空的」整段刪掉,
+    拼出來是「下家宣言立直、對家打 3m」。兩邊各自合乎輪次的前提在這裡不成立。
+    """
+    count = 0
+    before: MjaiEvent | None = None
+    for event in events:
+        if isinstance(event, Dora):
+            continue
+        prev, before = before, event
+        if prev is None:
+            continue
+        match event:
+            case Dahai():
+                ok = isinstance(prev, Tsumo | Reach | Chi | Pon) and prev.actor == event.actor
+            case Reach() | Ankan() | Kakan():
+                ok = isinstance(prev, Tsumo) and prev.actor == event.actor
+            case Tsumo():
+                if isinstance(prev, _KANS):
+                    ok = prev.actor == event.actor
+                elif isinstance(prev, Dahai | ReachAccepted):
+                    ok = event.actor == (prev.actor + 1) % 4
+                elif isinstance(prev, StartKyoku):
+                    ok = event.actor == prev.oya
+                else:
+                    ok = False
+            case Chi() | Pon() | Daiminkan():
+                ok = isinstance(prev, Dahai | ReachAccepted) and prev.actor == event.target
+            case _:
+                ok = True
+        count += not ok
+    return count
 
 
 def plausible(events: Sequence[MjaiEvent]) -> bool:

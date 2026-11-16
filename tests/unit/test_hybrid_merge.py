@@ -90,6 +90,40 @@ def test_a_phantom_call_with_other_draws_inside_is_dropped():
     assert merge(side(phantom), side([*OPENING, *NEXT])) == (*OPENING, *NEXT)
 
 
+def test_a_snatched_discard_keeps_the_turns_after_it():
+    """上家打白、下家馬上碰,YOLO 沒看到白,連之後對家、上家的摸打都跳過(實際速度重播 053001 東3局)。
+
+    被鳴的那張捨牌在段裡:不是樣板的假碰,整段留著。
+    """
+    snatched = [*OPENING[:7], Dahai(actor=3, pai="P", tsumogiri=False),
+                Pon(actor=1, target=3, pai="P", consumed=["P", "P"]),
+                Dahai(actor=1, pai="6s", tsumogiri=False), *turn(2, "W"), *turn(3, "1s"), *NEXT]
+    skipped = [*OPENING, *NEXT]
+    assert merge(side(snatched), side(skipped)) == tuple(snatched)
+
+
+def test_a_snatched_discard_beats_the_next_discard_yolo_put_in_its_place():
+    """下家打 9m 馬上被對家吃,牌從河上拿掉;YOLO 把下家下一張 7m 當成這一張,對家照常摸打
+    (實際速度重播 164613 南4局1本場)。"""
+    snatched = [*OPENING[:4], Dahai(actor=1, pai="9m", tsumogiri=False),
+                Chi(actor=2, target=1, pai="9m", consumed=["7m", "8m"]),
+                Dahai(actor=2, pai="N", tsumogiri=False), *OPENING[7:], *NEXT]
+    shifted = [*OPENING[:4], Dahai(actor=1, pai="7m", tsumogiri=False), *OPENING[5:], *NEXT]
+    assert merge(side(snatched), side(shifted)) == tuple(snatched)
+
+
+def test_a_skipped_stretch_does_not_cut_out_a_reach_declaration():
+    """YOLO 漏了一大段,只剩下家的立直宣言與之後對家的 3m(實際速度重播 053001 西2局3本場)。
+
+    宣言被當成一致點,後面那段 YOLO 是空的;刪掉的話變成「下家宣言立直、對家打 3m」。
+    """
+    reach = [Tsumo(actor=1, pai="?"), Reach(actor=1), Dahai(actor=1, pai="3s", tsumogiri=False),
+             ReachAccepted(actor=1), *turn(2, "N"), *turn(3, "3m")]
+    template = [*OPENING, *turn(0, "C", "2s"), *reach]
+    skipped = [*OPENING, Reach(actor=1), Dahai(actor=3, pai="3m", tsumogiri=False)]
+    assert merge(side(template), side(skipped)) == tuple(template)
+
+
 def test_own_moves_stay_with_the_template():
     yolo_misread = [*OPENING, *turn(0, "C", "3s"), *turn(1, "7m")]
     assert merge(side([*OPENING, *NEXT]), side(yolo_misread)) == (*OPENING, *NEXT)
@@ -210,6 +244,25 @@ def test_a_kan_the_template_read_late_is_not_doubled():
     yolo = [*OPENING[:5], *kan, Dahai(actor=2, pai="N", tsumogiri=False), *OPENING[7:], *NEXT,
             *turn(2, "S"), *tail]
     assert merge(side(template), side(yolo)) == tuple(yolo)
+
+
+def test_corrections_that_only_work_together_survive_an_implausible_one():
+    """同一局 YOLO 把晚讀的槓移回對的位置,後面又漏掉一段、刪掉立直宣言之後的牌(053001 西2局3本場)。
+
+    「放進對的位置」與「刪掉晚讀的那個」要一起換:一段一段試的話,只放進來是兩個槓、不合理,
+    只刪掉的話槓就不見了。拿掉不合理的那段,其他一起換。
+    """
+    kan = [Tsumo(actor=2, pai="?"), Ankan(actor=2, consumed=["9p"] * 4),
+           Tsumo(actor=2, pai="?"), Dora(dora_marker="3s")]
+    tail = [*turn(3, "2s"), *turn(0, "E", "5m")]
+    reach = [Tsumo(actor=1, pai="?"), Reach(actor=1), Dahai(actor=1, pai="3s", tsumogiri=False),
+             ReachAccepted(actor=1), *turn(2, "N"), *turn(3, "3m")]
+    template = [*OPENING, *NEXT, *kan, Dahai(actor=2, pai="S", tsumogiri=False), *tail, *reach]
+    head = [*OPENING[:5], *kan, Dahai(actor=2, pai="N", tsumogiri=False), *OPENING[7:], *NEXT,
+            *turn(2, "S"), *tail]
+    # 漏掉的那段有自己的摸打,那段本來就用樣板。
+    yolo = [*head[:-2], Reach(actor=1), Dahai(actor=3, pai="3m", tsumogiri=False)]
+    assert merge(side(template), side(yolo)) == (*head, *reach)
 
 
 def cut(events: Sequence[MjaiEvent], actor: int, pai: str) -> list[MjaiEvent]:

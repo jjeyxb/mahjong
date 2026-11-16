@@ -48,6 +48,12 @@ _WHOLE = 0.9
 #: 數區塊的是面積。
 _TOO_SMALL = {1: 5000.0, 2: 50.0, 3: 50.0}
 
+#: 上家有副露時,只看到一幀手切的樣子的話,本體至多短這麼多(沿線的點數,約一張牌半)才算:
+#: 短一大截的是角色的手臂橫過手牌,剩下近端那一小段看起來像隔開放的摸牌。29 場上家有副露的
+#: 自己決定的捨牌,這一手的證據裡最像一張牌的那一幀:摸切 120 張只有 1 張短不到 40 點,手切
+#: 217 張有 169 張。看到兩幀以上照舊算。沒有副露時摸切幾乎不會出現這種幀(1745 張約 10 張),不改。
+_ARM = 40
+
 
 @dataclass
 class TsumogiriWatcher:
@@ -57,19 +63,23 @@ class TsumogiriWatcher:
         default_factory=lambda: {position: deque() for position in (1, 2, 3)}
     )
     _drawn_seen: set[int] = field(default_factory=set)
+    _melds: dict[int, int] = field(default_factory=dict)
 
     def reset(self) -> None:
         """新的一局。"""
         for history in self._seen.values():
             history.clear()
         self._drawn_seen.clear()
+        self._melds.clear()
 
     def forget(self, position: int) -> None:
         """這家鳴牌了。手牌短了一截,之前看到的長度會讓之後每一手都像少了一張。"""
         self._seen[position].clear()
         self._drawn_seen.discard(position)
 
-    def observe(self, position: int, now: float, shape: BackShape) -> None:
+    def observe(self, position: int, now: float, shape: BackShape, melds: int = 0) -> None:
+        """``melds`` 是這家現在有幾組副露。"""
+        self._melds[position] = melds
         history = self._seen[position]
         history.append((now, shape))
         if shape.drawn and shape.clean:
@@ -107,4 +117,7 @@ class TsumogiriWatcher:
         if position == 1:
             return sum(s.pieces >= 2 and s.body >= _WHOLE * full for s in recent)
         shorter = _SHORTER[position]
-        return sum(s.drawn and s.clean and s.body <= full - shorter for s in recent)
+        frames = [s for s in recent if s.drawn and s.clean and s.body <= full - shorter]
+        if position == 3 and self._melds.get(position, 0) and len(frames) < 2:
+            return sum(s.body > full - _ARM for s in frames)
+        return len(frames)

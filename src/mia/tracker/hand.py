@@ -400,6 +400,11 @@ class HandWatcher:
                 # 摸打都發生在兩次讀取之間。
                 return [OwnMove(Move.DRAW, (gained[0],)), self._discard(lost[0])]
             if swap is _Swap.THROWN:
+                # 打完一張到下一次摸牌隔著三家,真的打了又摸到,摸到的那張一定擺在旁邊。沒擺在旁邊的
+                # 是打牌動畫中途、空出來的位置被讀成一張牌:human-20261108-200700 東2局摸切 8s 之後
+                # 一幀讀成白,收成「打 8s、摸白」,下一幀再打白,自己憑空多一手。
+                if drawn != gained[0]:
+                    return None
                 return [self._discard(lost[0]), OwnMove(Move.DRAW, (gained[0],))]
             if not waiting and self._can_add_kan(lost[0]):
                 return [OwnMove(Move.CALL, (lost[0],)), OwnMove(Move.DRAW, (gained[0],))]

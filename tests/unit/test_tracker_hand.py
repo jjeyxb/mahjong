@@ -444,6 +444,24 @@ class TestMisreads:
         assert watcher.moves[0] == OwnMove(Move.DRAW, ("7p",))
         assert sorted(watcher.hand) == sorted(["7p", *TEHAI[1:]])
 
+    def test_a_discard_and_the_next_draw_between_reads(self) -> None:
+        watcher = dealt()
+        watcher.observe([*TEHAI, "9p"], "9p", thrown=0)
+        moves = watcher.observe([*TEHAI, "2p"], "2p", thrown=1)
+        discard = OwnMove(Move.DISCARD, ("9p",), tsumogiri=True)
+        assert moves == [discard, OwnMove(Move.DRAW, ("2p",))]
+
+    def test_a_tile_not_set_apart_is_no_new_draw(self) -> None:
+        """打牌動畫中途空出來的位置讀成白。真的摸到的牌會擺在旁邊。"""
+        watcher = dealt()
+        watcher.observe([*TEHAI, "9p"], "9p", thrown=0)
+        assert watcher.observe([*TEHAI, "P"], thrown=1) == []
+        assert watcher.observe(TEHAI, thrown=1) == [OwnMove(Move.DISCARD, ("9p",), tsumogiri=True)]
+        assert watcher.moves == [
+            OwnMove(Move.DRAW, ("9p",)),
+            OwnMove(Move.DISCARD, ("9p",), tsumogiri=True),
+        ]
+
     def test_one_flickering_tile_is_not_a_turn(self) -> None:
         watcher = dealt()
         assert watcher.observe(["9p", *TEHAI[1:]], thrown=0) == []

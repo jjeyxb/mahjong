@@ -118,6 +118,9 @@ _KAN_REACH = 12
 #: 放最右。吃一定是上家的,排成 [被吃的, 小, 大]。
 _PON_SIDEWAYS = {3: 0, 2: 1, 1: 2}
 
+#: 立直立繪蓋在自己手牌上的視角座位:下家、上家。見 :meth:`_Composer._tsumogiri`。
+_CUT_IN_OVER_HAND = (1, 3)
+
 
 @dataclass(frozen=True, slots=True)
 class MeldShape:
@@ -575,15 +578,28 @@ class _Composer:
 
         鳴了之後打的一定是手切;立直之後(宣言牌以外)一定是摸切。都不是又沒量到就填手切,
         與之前一樣。
+
+        下家、上家的宣言牌不看形狀,當成沒量到:他們的立直立繪蓋在自己那一側的手牌上(下家在右下、
+        上家在左邊),從宣言前到手牌重新排好整段都被蓋著,量到的是「尾端那張不見了」。29 場的宣言牌
+        下家 20/62、上家 17/51 因此被說成摸切,封包全是手切;對家的特效在上方中間,49 張全對。
+
+        莊家的第一張(之前沒有暗槓)一定是手切:封包 29 場別家當莊 185 張全是手切。看形狀的話,
+        上家當莊 62 張全被說成摸切,下家、對家各錯 7、6 張。
         """
         last = self.events[-1] if self.events else None
         if isinstance(last, Chi | Pon) and last.actor == step.actor:
+            return False
+        if step.actor == self.log.hud.dealer and not any(
+            isinstance(event, Dahai | Ankan) for event in self.events
+        ):
             return False
         accepted = any(
             isinstance(event, ReachAccepted) and event.actor == step.actor for event in self.events
         )
         if accepted and not reached:
             return True
+        if reached and step.actor in _CUT_IN_OVER_HAND:
+            return False
         return self.log.tsumogiri.get((step.actor, step.serial), False)
 
     def _own_kans(self) -> None:

@@ -869,9 +869,20 @@ class TestOtherMelds:
         assert events[2] == Daiminkan(actor=3, target=1, pai="7p", consumed=["7p", "7p", "7p"])
 
     def test_the_hand_shape_says_tsumogiri(self) -> None:
-        steps = [Step(T, 1), Step(D, 1, "7p", serial=0)]
-        kyoku = log(steps=steps, tsumogiri={(1, 0): True})
-        assert body(compose(kyoku).events)[1] == Dahai(actor=1, pai="7p", tsumogiri=True)
+        steps = [Step(T, 1), Step(D, 1, "9m"), Step(T, 2), Step(D, 2, "7p", serial=0)]
+        kyoku = log(steps=steps, tsumogiri={(2, 0): True})
+        assert body(compose(kyoku).events)[3] == Dahai(actor=2, pai="7p", tsumogiri=True)
+
+    def test_the_dealer_first_discard_is_never_tsumogiri(self) -> None:
+        """封包裡莊家的第一張一律是手切。"""
+        steps = [Step(T, 1), Step(D, 1, "7p", serial=0), Step(T, 2), Step(D, 2, "1s")]
+        steps += [Step(T, 3), Step(D, 3, "2s"), Step(T, 0), Step(D, 0, "9p")]
+        steps += [Step(T, 1), Step(D, 1, "8p", serial=1)]
+        moves = [OwnMove(Move.DRAW, ("9p",)), OwnMove(Move.DISCARD, ("9p",), tsumogiri=True)]
+        kyoku = log(steps=steps, moves=moves, tsumogiri={(1, 0): True, (1, 1): True})
+        events = body(compose(kyoku).events)
+        assert events[1] == Dahai(actor=1, pai="7p", tsumogiri=False)
+        assert events[-1] == Dahai(actor=1, pai="8p", tsumogiri=True)
 
     def test_after_a_call_it_is_never_tsumogiri(self) -> None:
         steps = [Step(T, 1), Step(D, 1, "7p"), Step(C, 2, target=1), Step(D, 2, "1s", serial=0)]
@@ -888,6 +899,19 @@ class TestOtherMelds:
         events = body(compose(kyoku).events)
         assert Dahai(actor=1, pai="7p", tsumogiri=False) in events
         assert events[-1] == Dahai(actor=1, pai="8p", tsumogiri=True)
+
+    @pytest.mark.parametrize("actor", [1, 3])
+    def test_a_declared_tile_under_the_cut_in_is_not_measured(self, actor: int) -> None:
+        """下家、上家的立直立繪蓋住他們的手牌,量到的「摸切」不算。"""
+        steps = [Step(T, actor), Step(D, actor, "7p", serial=0)]
+        kyoku = log(steps=steps, reaches=[(actor, 0)], tsumogiri={(actor, 0): True})
+        assert Dahai(actor=actor, pai="7p", tsumogiri=False) in body(compose(kyoku).events)
+
+    def test_the_far_seat_declared_tile_is_still_measured(self) -> None:
+        """對家的特效在上方中間,不蓋他的手牌。"""
+        steps = [Step(T, 2), Step(D, 2, "7p", serial=0)]
+        kyoku = log(steps=steps, reaches=[(2, 0)], tsumogiri={(2, 0): True})
+        assert Dahai(actor=2, pai="7p", tsumogiri=True) in body(compose(kyoku).events)
 
     def test_a_lone_upright_face_is_a_pon(self) -> None:
         """直的框認到被鳴的 7 筒:吃的直放牌不會是被鳴的那張。"""
