@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mia"
-version = "0.1.0"
+version = "0.1.1"
 description = "Mahjong Intelligence Assistant (MIA) — 螢幕擷取 + 電腦視覺 + Mortal AI"
 requires-python = ">=3.14"
 license = "AGPL-3.0-or-later"

@@ -3,7 +3,7 @@
   #define Payload "..\..\dist\windows-x64\MIA"
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.1.0"
+  #define AppVersion "0.1.1"
 #endif
 
 [Setup]
