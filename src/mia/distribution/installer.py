@@ -78,10 +78,29 @@ def wait_for_parent(pid: int, timeout: float = 180) -> None:
         time.sleep(0.2)
 
 
+def _rename(source: Path, target: Path, *, attempts: int = 30) -> None:
+    """改名整個資料夾;Windows 上被拒絕就等一下再試。
+
+    MIA 剛退出時,它開的推論程序與瀏覽器可能還要一兩秒才結束;在那之前它們開著的檔案或
+    工作資料夾會讓整個 program 資料夾改不了名(WinError 32)。30 秒還不行才算失敗。
+    """
+    for attempt in range(attempts):
+        try:
+            source.rename(target)
+            return
+        except PermissionError:
+            if sys.platform != "win32" or attempt == attempts - 1:
+                raise
+            time.sleep(1)
+
+
 def _health(command: list[str], health: Path, version: str, nonce: str) -> None:
     health.unlink(missing_ok=True)
     process = subprocess.Popen(
         [*command, "--update-health", str(health), nonce],
+        # 新版就是使用者接下來用的 MIA:工作資料夾跟捷徑一樣放在程式旁邊,不要留在這次更新的
+        # 暫存資料夾裡(否則之後清不掉它)。
+        cwd=Path(command[0]).parent,
         env={**os.environ, "PYINSTALLER_RESET_ENVIRONMENT": "1"},
     )
     deadline = time.monotonic() + 60
@@ -188,9 +207,9 @@ def install(
                 "version": release.version,
             },
         )
-        target.rename(backup)
+        _rename(target, backup)
         try:
-            staged.rename(target)
+            _rename(staged, target)
             health(
                 [str(target / executable), "--live"],
                 plan_path.parent / "health.json",
@@ -200,8 +219,8 @@ def install(
             atomic_json(info_path, {**info, "version": release.version})
         except BaseException:
             if target.exists():
-                target.rename(plan_path.parent / "failed")
-            backup.rename(target)
+                _rename(target, plan_path.parent / "failed")
+            _rename(backup, target)
             _settings(data, plan_path.parent, restore=True)
             atomic_json(info_path, info)
             raise
@@ -215,6 +234,10 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--plan", type=Path, required=True)
     args = parser.parse_args()
+    # 工作資料夾不能在要換掉的 program 裡:Windows 上有程序的工作資料夾在裡面,整個資料夾就
+    # 改不了名(WinError 32)。捷徑的「開始位置」就是 program,MIA 與這個程序都會繼承它
+    # —— 0.1.0 → 0.1.1 的 App 內更新就是這樣失敗的(2026-11-17)。
+    os.chdir(args.plan.resolve().parent)
     # Trust configuration is copied with this helper from the installed build.
     config_path = Path(getattr(sys, "_MEIPASS", Path(__file__).parent)) / "resources/release.json"
     try:

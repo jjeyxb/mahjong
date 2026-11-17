@@ -88,6 +88,8 @@ def launch_installer(layout: Layout, plan: Path) -> subprocess.Popen[bytes]:
     with log.open("ab") as output:
         return subprocess.Popen(
             [str(executable), "--plan", str(plan)],
+            # 不要繼承 MIA 的工作資料夾(捷徑設在 program 裡),否則 Windows 上 program 改不了名。
+            cwd=plan.parent,
             stdin=subprocess.DEVNULL,
             stdout=output,
             stderr=output,

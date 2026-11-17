@@ -5,6 +5,8 @@ import hashlib
 import io
 import json
 import stat
+import subprocess
+import sys
 import zipfile
 from dataclasses import replace
 from pathlib import Path
@@ -286,6 +288,74 @@ def test_mac_update_replaces_the_app_in_applications(tmp_path, keys):
     assert (target / "Contents/MacOS/MIA").read_text() == "new"
     assert (plan.parent / "settings-backup/ui_state.json").read_text() == '{"old":true}'
     assert not (root / "MIA.app").exists()
+
+
+def setup_windows_install(tmp_path, keys):
+    private, public = keys
+    root = tmp_path / "MIA"
+    job = root / "updates/job"
+    job.mkdir(parents=True)
+    (root / "program").mkdir()
+    (root / "program/MIA.exe").write_text("old")
+    (root / "userdata").mkdir()
+    atomic_json(root / "install-info.json", {"app_id": APP_ID, "version": "0.1.0"})
+    data = zipped({"program/MIA.exe": b"new"})
+    info = replace(release(data), platform="windows-x64")
+    (job / f"{info.sha256}.zip").write_bytes(data)
+    (job / "release.json").write_bytes(signed(info, private))
+    atomic_json(
+        job / "plan.json",
+        {
+            "app_id": APP_ID,
+            "root": str(root),
+            "data": str(root / "userdata"),
+            "archive": f"{info.sha256}.zip",
+            "from_version": "0.1.0",
+            "parent_pid": 123,
+        },
+    )
+    config = dict(public_key=public, platform="windows-x64", version="0.1.0")
+    return root, job / "plan.json", config
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="只有 Windows 會因為工作資料夾鎖住資料夾")
+def test_windows_update_waits_for_processes_still_inside_program(tmp_path, keys):
+    """0.1.0 → 0.1.1 實測:MIA 的子程序工作資料夾還在 program 裡,改名回 WinError 32 就放棄了。
+
+    剛退出的程序過一兩秒才放開,等它們而不是直接失敗。
+    """
+    root, plan, config = setup_windows_install(tmp_path, keys)
+    straggler = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(2)"], cwd=root / "program"
+    )
+    try:
+        target = install(plan, config, wait=lambda _pid: None, health=lambda *_args: None)
+    finally:
+        straggler.wait(timeout=30)
+    assert (target / "MIA.exe").read_text() == "new"
+    assert (plan.parent / "previous/MIA.exe").read_text() == "old"
+
+
+def test_the_update_helper_does_not_start_inside_program(tmp_path, monkeypatch):
+    """捷徑的「開始位置」是 program,更新程序若繼承它,Windows 上 program 永遠改不了名。"""
+    from mia.distribution import service
+
+    layout = Layout(tmp_path / "program/_internal/resources", tmp_path, True)
+    helper = layout.worker("updater")
+    helper.parent.mkdir(parents=True)
+    helper.write_bytes(b"exe")
+    plan = tmp_path / "updates/job/plan.json"
+    plan.parent.mkdir(parents=True)
+    seen = {}
+
+    def popen(command, **kwargs):
+        seen.update(kwargs, command=command)
+        return None
+
+    monkeypatch.setattr(service.subprocess, "Popen", popen)
+    service.launch_installer(layout, plan)
+    assert Path(seen["cwd"]) == plan.parent
+    assert not Path(seen["command"][0]).is_relative_to(tmp_path / "program")
 
 
 def test_the_plan_cannot_point_at_another_app(tmp_path, keys):
