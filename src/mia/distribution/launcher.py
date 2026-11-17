@@ -11,7 +11,7 @@ from pathlib import Path
 
 from mia.distribution import APP_ID
 from mia.distribution.layout import LAYOUT
-from mia.distribution.service import atomic_json, configuration
+from mia.distribution.service import atomic_json, clean_updates, configuration
 
 HEALTH: tuple[Path, str] | None = None
 _MUTEX: object | None = None
@@ -101,6 +101,8 @@ def main() -> int:
         # Mac 上換新版可以直接把新的 MIA.app 拖進去蓋掉,不經過更新程式,所以每次
         # 啟動都對一次版本。啟動檢查那一次不寫:那是更新程式的交易,由它決定。
         _record_install(LAYOUT.install_info, configuration()["version"])
+        # 之前更新留下的暫存(每次約 4 GB)。更新後的啟動檢查那一次不清:更新程序還在用。
+        clean_updates(LAYOUT.updates)
     return int(importlib.import_module("tools.ui").main(args or ["--live"]))
 
 

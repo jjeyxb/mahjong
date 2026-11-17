@@ -31,6 +31,13 @@ DiskSliceSize=1900000000
 #endif
 CloseApplications=no
 
+[InstallDelete]
+; 覆蓋安裝時先清掉舊版:program 只覆蓋同名檔,舊版多出來的檔案會一直留著;updates 是之前
+; App 內更新的暫存(每次約 4 GB)。兩者都只放 MIA 自己的東西。userdata(設定、錄影)與
+; components(GPU 加速元件)不動。
+Type: filesandordirs; Name: "{app}\program"
+Type: filesandordirs; Name: "{app}\updates"
+
 [Files]
 Source: "{#Payload}\program\*"; DestDir: "{app}\program"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#Payload}\install-info.json"; DestDir: "{app}"; Flags: ignoreversion

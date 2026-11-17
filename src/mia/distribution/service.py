@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -73,6 +74,24 @@ def prepare_update(
         },
     )
     return folder / "plan.json"
+
+
+def clean_updates(updates: Path, *, stale_after: float = 24 * 3600) -> None:
+    """清掉之前更新留下的暫存:下載的壓縮檔、解開的新版、換下來的舊版(各 1~3 GB)。
+
+    安裝裝完(或失敗)之後就用不到了,但原本沒有人刪,每更新一次多約 4 GB。
+    更新程序正在換程式時(install.lock 在)一律不動;還沒進到安裝的(例如正在下載)只刪
+    放了超過一天的。
+    """
+    if not updates.is_dir() or (updates / "install.lock").exists():
+        return
+    now = time.time()
+    for job in updates.iterdir():
+        if job.is_symlink() or not job.is_dir() or job.name == "install.lock":
+            continue
+        finished = (job / "transaction.json").exists() or (job / "result.json").exists()
+        if finished or now - job.stat().st_mtime > stale_after:
+            shutil.rmtree(job, ignore_errors=True)
 
 
 def launch_installer(layout: Layout, plan: Path) -> subprocess.Popen[bytes]:

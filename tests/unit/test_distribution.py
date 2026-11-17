@@ -497,3 +497,29 @@ def test_the_weight_download_list_matches_what_the_package_bundles() -> None:
                     bundled |= {f"yolo/{n}" for n in names}
     assert bundled
     assert fetched == bundled
+
+
+def test_finished_update_leftovers_are_cleaned_but_not_a_running_one(tmp_path):
+    """每次更新留下約 4 GB(壓縮檔、解開的新版、換下來的舊版),之前從來沒人刪。"""
+    import os
+    import time
+
+    from mia.distribution.service import clean_updates
+
+    updates = tmp_path / "updates"
+    done, failed, downloading, abandoned = (updates / n for n in ("a", "b", "c", "d"))
+    for job in (done, failed, downloading, abandoned):
+        (job / "previous").mkdir(parents=True)
+    (done / "result.json").write_text("{}")
+    (failed / "transaction.json").write_text("{}")
+    old = time.time() - 3 * 24 * 3600
+    os.utime(abandoned, (old, old))
+    (updates / "install.lock").mkdir()
+    clean_updates(updates)
+    assert all(job.exists() for job in (done, failed, downloading, abandoned))
+    (updates / "install.lock").rmdir()
+    clean_updates(updates)
+    assert not done.exists()
+    assert not failed.exists()
+    assert not abandoned.exists()
+    assert downloading.exists()
