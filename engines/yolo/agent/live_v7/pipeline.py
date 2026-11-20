@@ -502,15 +502,29 @@ class Pipeline:
         self._update_start(t)
         # 上一局有沒有真的打過(要在 hand_no 往前之前看:hand_id 跟著 hand_no 變)。
         # 只算定案的:錄影開頭載入畫面的假牌河會留下牌面讀不到的待定打牌。
-        played = any(e["type"] in ("dahai", "chi", "pon", "daiminkan", "ankan",
-                                   "kakan", "hora", "ryukyoku")
-                     and e.get("export_eligible")
-                     for e in self.ledger.ordered(self.hand_id))
+        # ★ 2026-11-20 selfplay-20261109-182732:開局前的畫面讀到兩張假捨牌(白、9m)
+        #   而且定案了;牌河空了 76 幀之後,真的東1局莊家第一打讓牌河從 2 張變 1 張 ->
+        #   換局。假局的場況是真的東1局頭 4 秒讀到的「東1/0」,因為有那兩張假牌就被
+        #   記成上一局 -> 真的東1局被當成舊面板擋掉,之後一路晚一局,直到南1局1本場
+        #   整局被跳過才對回來(那一場 YOLO 捨牌 184/558)。所以只算場況確定「之後」
+        #   的動作:start_kyoku 變成確定的時刻(t_confirm_ms,建立時就齊的用 t_first_ms)。
+        #   正常的局場況開局幾秒就齊,後面一定還有打牌。
+        st_ev = self.ledger.get(self.start_eid) if self.start_eid else None
+        start_ok = None
+        if st_ev and st_ev.get("export_eligible"):
+            start_ok = st_ev.get("t_confirm_ms")
+            if start_ok is None:
+                start_ok = st_ev.get("t_first_ms")
+        played = start_ok is not None and any(
+            e["type"] in ("dahai", "chi", "pon", "daiminkan", "ankan",
+                          "kakan", "hora", "ryukyoku")
+            and e.get("export_eligible")
+            and (e.get("t_first_ms") or 0) >= start_ok
+            for e in self.ledger.ordered(self.hand_id))
         self.hand_no += 1
         rel = self.adapter.new_hand(self.hand_id, frame)
         self.signals.new_hand()
         self.declare = DeclarationDetector()
-        st_ev = self.ledger.get(self.start_eid) if self.start_eid else None
         # ★ 2026-11-07 錄影 20261024-123746:錄影一開始就是東1局發牌,第 1 幀開的那一局
         #   讀到「東1/0」,f98 手牌整手出現又換一次局(_fresh_deal)-> 新局的「東1/0」
         #   被當成上一局的舊面板擋掉,局末讀到「東2」才填 -> 之後每一局都錯一位。
