@@ -506,9 +506,9 @@ class Pipeline:
         #   而且定案了;牌河空了 76 幀之後,真的東1局莊家第一打讓牌河從 2 張變 1 張 ->
         #   換局。假局的場況是真的東1局頭 4 秒讀到的「東1/0」,因為有那兩張假牌就被
         #   記成上一局 -> 真的東1局被當成舊面板擋掉,之後一路晚一局,直到南1局1本場
-        #   整局被跳過才對回來(那一場 YOLO 捨牌 184/558)。所以只算場況確定「之後」
-        #   的動作:start_kyoku 變成確定的時刻(t_confirm_ms,建立時就齊的用 t_first_ms)。
-        #   正常的局場況開局幾秒就齊,後面一定還有打牌。
+        #   整局被跳過才對回來(那一場 YOLO 捨牌 184/558)。打牌與鳴牌要在
+        #   start_kyoku 讀齊之後才算證據。辨識到的和牌或流局可證明這一局有打過,
+        #   即使場況在終局之後才讀齊。換局時補出的 INFERRED 流局不能當成證據。
         st_ev = self.ledger.get(self.start_eid) if self.start_eid else None
         start_ok = None
         if st_ev and st_ev.get("export_eligible"):
@@ -516,10 +516,11 @@ class Pipeline:
             if start_ok is None:
                 start_ok = st_ev.get("t_first_ms")
         played = start_ok is not None and any(
-            e["type"] in ("dahai", "chi", "pon", "daiminkan", "ankan",
-                          "kakan", "hora", "ryukyoku")
-            and e.get("export_eligible")
-            and (e.get("t_first_ms") or 0) >= start_ok
+            e.get("export_eligible") and (
+                (e["type"] in ("hora", "ryukyoku") and e["status"] == "CONFIRMED")
+                or (e["type"] in ("dahai", "chi", "pon", "daiminkan", "ankan", "kakan")
+                    and e["t_first_ms"] is not None and e["t_first_ms"] >= start_ok)
+            )
             for e in self.ledger.ordered(self.hand_id))
         self.hand_no += 1
         rel = self.adapter.new_hand(self.hand_id, frame)
@@ -529,8 +530,7 @@ class Pipeline:
         #   讀到「東1/0」,f98 手牌整手出現又換一次局(_fresh_deal)-> 新局的「東1/0」
         #   被當成上一局的舊面板擋掉,局末讀到「東2」才填 -> 之後每一局都錯一位。
         #   上一局什麼都沒發生(沒人打牌、鳴牌、和牌、流局)就不算數。
-        self.kyoku.reset(remember=bool(st_ev and st_ev.get("export_eligible"))
-                         and played)
+        self.kyoku.reset(remember=played)
         self.meld.reset()
         self.fsm.new_hand(self.hand_id, t, frame)
         self.start_eid = None
